@@ -1,0 +1,106 @@
+# =========================
+# OS / Editor
+# =========================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*.pyd
+*.egg-info/
+.python-version
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Python build outputs
+build/
+dist/
+
+# =========================
+# Node / Frontend (Vite)
+# =========================
+node_modules/
+frontend/node_modules/
+
+# Vite / bundler cache
+.vite/
+frontend/.vite/
+
+# Frontend build outputs
+frontend/dist/
+
+# Package manager caches
+.npm-cache/
+.pnpm-store/
+.yarn/
+
+# =========================
+# Logs / runtime
+# =========================
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# =========================
+# Environment / secrets
+# =========================
+.env
+.env.local
+.env.*.local
+
+# Keep template env files if needed
+!.env.example
+
+# =========================
+# Databases / vector stores / temp
+# =========================
+*.db
+*.sqlite
+chroma/
+qdrant/
+tmp/
+temp/
+
+# =========================
+# Local tooling / workspace artifacts
+# =========================
+.uv/
+.codex/
+.superpowers/
+.worktrees/
+
+# =========================
+# Optional local agent guidance files
+# (remove these lines if you want to version them)
+# =========================
+CLAUDE.md
+RULE.md
+AGENT.md
+frontend/.playwright-browsers/
+
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage/
+htmlcov/
+.cache/
+.idea/
+.vscode/
+.next/
+.nuxt/
+.svelte-kit/
+
+volumes/
+.claude/
