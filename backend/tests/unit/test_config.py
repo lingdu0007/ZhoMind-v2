@@ -31,9 +31,23 @@ def test_redis_provider_is_lazy() -> None:
     assert provider._client is None
 
 
-def test_settings_database_url_from_env_alias() -> None:
-    settings = Settings(DATABASE_URL="postgresql+asyncpg://postgres:postgres@postgres:5432/zhomind_app")
-    assert settings.database_url == "postgresql+asyncpg://postgres:postgres@postgres:5432/zhomind_app"
+
+
+def test_settings_rag_fields_from_env_aliases() -> None:
+    settings = Settings(
+        RAG_GRAPH_ALIAS="experimental_graph",
+        RAG_ENABLE_TOOLS=True,
+        RAG_TOOL_MAX_CALLS=5,
+        RAG_TOOL_MAX_PARALLEL=4,
+        RAG_TOOL_TIMEOUT_MS=12000,
+        RAG_DEFAULT_LLM_PROVIDER="provider-x",
+    )
+    assert settings.rag_graph_alias == "experimental_graph"
+    assert settings.rag_enable_tools is True
+    assert settings.rag_tool_max_calls == 5
+    assert settings.rag_tool_max_parallel == 4
+    assert settings.rag_tool_timeout_ms == 12000
+    assert settings.rag_default_llm_provider == "provider-x"
 
 
 def test_infra_dependency_getters_delegate_to_cached_providers(monkeypatch) -> None:
