@@ -91,6 +91,22 @@ services:
     depends_on:
       - etcd
 
+  backend:
+    container_name: zhomind-backend
+    build:
+      context: ./backend
+    env_file:
+      - ./backend/.env.example
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      milvus:
+        condition: service_started
+
   attu:
     container_name: zhomind-attu
     image: zilliz/attu:v2.5.11
