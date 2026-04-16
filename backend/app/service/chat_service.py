@@ -1,6 +1,7 @@
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 import re
+import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.extensions.registry import get_extension_registry
 from app.model.document import DocumentChunk
 from app.rag.interfaces import LlmProvider, RelevanceJudge, Reranker, Retriever
+from app.rag.runtime.graph_runner import RagGraphRunner
 from app.repository.chat_repository import ChatRepository
 
 CHAT_RETRIEVER_PROVIDER = "chat-default-retriever"
@@ -169,6 +171,56 @@ class ChatService:
             lines.append(f"{idx}. {content}")
         return "\n".join(lines)
 
+    def _rag_steps(
+        self,
+        *,
+        question: str,
+        retriever_name: str,
+        reranker_name: str,
+        judge_name: str,
+        llm_name: str,
+        retrieved_count: int,
+        reranked_count: int,
+        gate_passed: bool,
+        gate_reason: str,
+    ) -> list[dict]:
+        return [
+            {
+                "step": "retrieve",
+                "detail": {
+                    "query": question,
+                    "retriever": retriever_name,
+                    "retrieved_count": retrieved_count,
+                    "gate_passed": gate_passed,
+                    "gate_reason": gate_reason,
+                },
+            },
+            {
+                "step": "rerank",
+                "detail": {
+                    "model": reranker_name,
+                    "reranked_count": reranked_count,
+                },
+            },
+            {
+                "step": "verify",
+                "detail": {
+                    "judge": judge_name,
+                },
+            },
+            {
+                "step": "generate",
+                "detail": {
+                    "llm": llm_name,
+                },
+            },
+        ]
+
+    async def ensure_session_id(self, session_id: str | None) -> str:
+        if session_id and session_id.strip():
+            return session_id.strip()
+        return f"session_{uuid.uuid4().hex[:16]}"
+
     async def list_sessions(self, user_id: str) -> list[dict]:
         sessions = await self.repo.list_sessions(user_id=user_id, limit=20)
         items: list[dict] = []
@@ -222,22 +274,47 @@ class ChatService:
         reranker, reranker_name = self._resolve_reranker()
         judge, judge_name = self._resolve_judge()
 
-        retrieved = await retriever.retrieve(normalized_question, top_k=3)
-        reranked = await reranker.rerank(normalized_question, retrieved)
-        gate_passed = await judge.judge(normalized_question, reranked)
-        gate_reason = "sufficient_evidence" if gate_passed else "reject_insufficient_evidence"
+        runner = RagGraphRunner(
+            retriever=retriever,
+            reranker=reranker,
+            judge=judge,
+        )
+        runtime_result = await runner.run(
+            request_id=f"chat-{uuid.uuid4().hex[:8]}",
+            user_id=user_id,
+            session_id=session.id,
+            question=normalized_question,
+        )
+
+        gate = runtime_result["gate"]
+        gate_passed = bool(gate.get("passed"))
+        gate_reason = str(gate.get("reason") or "reject_insufficient_evidence")
+        reranked = runtime_result["evidence"]
+        retrieved = runtime_result.get("retrieved") or reranked
+
+        if not reranked and gate_passed:
+            gate_passed = False
+            gate_reason = "reject_insufficient_evidence"
+
+        llm, llm_name = self._resolve_llm()
+        reply = await self._assistant_reply(
+            question=normalized_question,
+            retrieved=reranked,
+            gate_passed=gate_passed,
+            llm=llm,
+        )
 
         rag_steps = self._rag_steps(
             question=normalized_question,
             retriever_name=retriever_name,
             reranker_name=reranker_name,
             judge_name=judge_name,
+            llm_name=llm_name,
             retrieved_count=len(retrieved),
             reranked_count=len(reranked),
             gate_passed=gate_passed,
             gate_reason=gate_reason,
         )
-        reply = self._assistant_reply(retrieved=reranked, gate_passed=gate_passed)
 
         rag_trace = {
             "query": normalized_question,
