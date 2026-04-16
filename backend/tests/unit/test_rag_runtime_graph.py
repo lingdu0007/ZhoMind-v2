@@ -32,4 +32,12 @@ def test_graph_runner_returns_gate_and_answer() -> None:
     assert "gate" in result
     assert "steps" in result
     assert "answer" in result
+    assert "graph_alias" in result
+    assert result["graph_alias"] == "default_v1"
     assert isinstance(result["steps"], list)
+
+    steps = {item["step"]: item for item in result["steps"]}
+    assert "memory_read" in steps
+    assert "memory_write_gate" in steps
+    assert steps["memory_write_gate"]["detail"]["allow"] is False
+    assert steps["memory_write_gate"]["detail"]["reason"] == "unsafe"

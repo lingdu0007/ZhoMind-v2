@@ -12,6 +12,8 @@ from app.tasks.interfaces import InMemoryTaskBackend, create_inmemory_task_backe
 def test_settings_defaults() -> None:
     settings = Settings()
     assert settings.api_v1_prefix == "/api/v1"
+    assert settings.rag_graph_alias == "default_v1"
+    assert settings.rag_default_llm_provider == "chat-default-llm"
 
 
 def test_ok_response_shape() -> None:

@@ -2,6 +2,8 @@ import asyncio
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.common.config import get_settings
+from app.extensions.registry import get_extension_registry
 from app.model.base import Base
 from app.service.chat_service import ChatService
 
@@ -48,3 +50,22 @@ def test_assistant_reply_rejects_when_gate_failed() -> None:
         )
     )
     assert "未检索到足够相关的知识片段" in answer
+
+
+def test_resolve_llm_prefers_configured_provider(monkeypatch) -> None:
+    get_settings.cache_clear()
+    get_extension_registry.cache_clear()
+    monkeypatch.setenv("RAG_DEFAULT_LLM_PROVIDER", "cfg-llm")
+
+    service = _build_service()
+
+    class _ConfiguredLlm:
+        async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
+            return "ok"
+
+    registry = get_extension_registry()
+    registry.register_llm("cfg-llm", _ConfiguredLlm())
+
+    provider, provider_name = service._resolve_llm()
+    assert provider_name == "cfg-llm"
+    assert provider is registry.get_llm("cfg-llm")

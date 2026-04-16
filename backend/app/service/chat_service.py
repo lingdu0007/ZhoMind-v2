@@ -6,6 +6,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.config import get_settings
 from app.extensions.registry import get_extension_registry
 from app.model.document import DocumentChunk
 from app.rag.interfaces import LlmProvider, RelevanceJudge, Reranker, Retriever
@@ -141,9 +142,10 @@ class ChatService:
         return fallback, fallback.name
 
     def _resolve_llm(self) -> tuple[LlmProvider, str]:
-        provider = get_extension_registry().get_llm(CHAT_LLM_PROVIDER)
+        provider_name = get_settings().rag_default_llm_provider or CHAT_LLM_PROVIDER
+        provider = get_extension_registry().get_llm(provider_name)
         if provider is not None:
-            return provider, CHAT_LLM_PROVIDER
+            return provider, provider_name
 
         fallback = _EchoLlm()
         return fallback, fallback.name
