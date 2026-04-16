@@ -13,6 +13,15 @@ class ExtensionRegistry:
     retrievers: dict[str, Retriever] = field(default_factory=dict)
     judges: dict[str, RelevanceJudge] = field(default_factory=dict)
     task_backends: dict[str, TaskBackend] = field(default_factory=dict)
+    capabilities: dict[str, dict[str, dict]] = field(
+        default_factory=lambda: {
+            "llm": {},
+            "retriever": {},
+            "reranker": {},
+            "judge": {},
+            "tool": {},
+        }
+    )
 
     def register_llm(self, name: str, provider: LlmProvider) -> None:
         self.llm_providers[name] = provider
@@ -49,6 +58,20 @@ class ExtensionRegistry:
 
     def get_task_backend(self, name: str) -> TaskBackend | None:
         return self.task_backends.get(name)
+
+    def register_capability(self, kind: str, name: str, capability: dict) -> None:
+        bucket = self.capabilities.setdefault(kind, {})
+        bucket[name] = capability
+
+    def get_capability(self, kind: str, name: str) -> dict | None:
+        return self.capabilities.get(kind, {}).get(name)
+
+    def choose_provider(self, kind: str, candidates: list[str], required: dict) -> str | None:
+        for name in candidates:
+            capability = self.get_capability(kind, name) or {}
+            if all(capability.get(k) == v for k, v in required.items()):
+                return name
+        return None
 
 
 @lru_cache

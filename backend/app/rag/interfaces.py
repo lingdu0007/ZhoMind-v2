@@ -1,5 +1,7 @@
 from typing import Protocol
 
+from app.rag.runtime.state import RagStateDict
+
 
 class Retriever(Protocol):
     async def retrieve(self, query: str, top_k: int) -> list[dict]: ...
