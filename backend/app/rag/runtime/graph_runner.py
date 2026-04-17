@@ -209,6 +209,8 @@ class RagGraphRunner:
 
     def _to_output(self, state: RagStateDict) -> dict:
         return {
+            "request_id": state["request_id"],
+            "session_id": state["session_id"],
             "answer": state["answer"],
             "steps": state["trace_steps"],
             "gate": state["gate_result"],

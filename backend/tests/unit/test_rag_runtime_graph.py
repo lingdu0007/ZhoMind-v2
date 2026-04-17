@@ -29,6 +29,10 @@ def test_graph_runner_returns_gate_and_answer() -> None:
             question="测试系统状态",
         )
     )
+    assert "request_id" in result
+    assert "session_id" in result
+    assert result["request_id"] == "rid-2"
+    assert result["session_id"] == "s2"
     assert "gate" in result
     assert "steps" in result
     assert "answer" in result

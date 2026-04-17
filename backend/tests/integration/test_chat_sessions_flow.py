@@ -102,6 +102,8 @@ def test_chat_and_sessions_flow() -> None:
             assert isinstance(chat_data["rag_steps"], list)
             assert chat_data["rag_trace"]["query"] == "请介绍系统当前状态"
             runtime_trace = chat_data["rag_trace"]["runtime"]
+            assert runtime_trace["request_id"].startswith("chat-")
+            assert runtime_trace["session_id"] == "session_test_1"
             assert runtime_trace["graph_alias"] == "default_v1"
             assert runtime_trace["gate"]["passed"] is True
             assert runtime_trace["gate"]["reason"] == "sufficient_evidence"
@@ -245,6 +247,8 @@ def test_chat_reject_gate_when_no_evidence() -> None:
             data = _extract_data(body)
             assert data["rag_steps"][0]["step"] == "retrieve"
             runtime_trace = data["rag_trace"]["runtime"]
+            assert runtime_trace["request_id"].startswith("chat-")
+            assert runtime_trace["session_id"] == "session_reject_1"
             assert runtime_trace["graph_alias"] == "default_v1"
             assert runtime_trace["gate"]["passed"] is False
             assert runtime_trace["gate"]["reason"] == "reject_insufficient_evidence"

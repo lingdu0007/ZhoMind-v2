@@ -221,6 +221,8 @@ class ChatService:
     def _runtime_trace(self, runtime_result: dict) -> dict:
         runtime_steps = list(runtime_result.get("steps") or [])
         return {
+            "request_id": runtime_result.get("request_id"),
+            "session_id": runtime_result.get("session_id"),
             "graph_alias": runtime_result.get("graph_alias"),
             "gate": runtime_result.get("gate") or {},
             "steps": runtime_steps,
