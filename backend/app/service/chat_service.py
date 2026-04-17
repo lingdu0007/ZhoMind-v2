@@ -218,6 +218,15 @@ class ChatService:
             },
         ]
 
+    def _runtime_trace(self, runtime_result: dict) -> dict:
+        runtime_steps = list(runtime_result.get("steps") or [])
+        return {
+            "graph_alias": runtime_result.get("graph_alias"),
+            "gate": runtime_result.get("gate") or {},
+            "steps": runtime_steps,
+            "step_names": [str(item.get("step") or "") for item in runtime_steps],
+        }
+
     async def ensure_session_id(self, session_id: str | None) -> str:
         if session_id and session_id.strip():
             return session_id.strip()
@@ -327,6 +336,7 @@ class ChatService:
             },
             "evidence": reranked,
             "answer_preview": reply[:120],
+            "runtime": self._runtime_trace(runtime_result),
         }
 
         assistant_message = await self.repo.add_message(

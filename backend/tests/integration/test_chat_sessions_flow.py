@@ -101,6 +101,28 @@ def test_chat_and_sessions_flow() -> None:
             assert chat_data["message"]["type"] == "assistant"
             assert isinstance(chat_data["rag_steps"], list)
             assert chat_data["rag_trace"]["query"] == "请介绍系统当前状态"
+            runtime_trace = chat_data["rag_trace"]["runtime"]
+            assert runtime_trace["graph_alias"] == "default_v1"
+            assert runtime_trace["gate"]["passed"] is True
+            assert runtime_trace["gate"]["reason"] == "sufficient_evidence"
+            assert runtime_trace["step_names"] == [
+                "normalize",
+                "memory_read",
+                "query_understand",
+                "plan",
+                "tool_plan",
+                "tool_execute",
+                "tool_verify",
+                "retrieve",
+                "fusion",
+                "rerank",
+                "verify",
+                "context_pack",
+                "generate",
+                "memory_write_gate",
+                "finalize",
+            ]
+            assert runtime_trace["steps"][0]["step"] == "normalize"
             assert chat_data["rag_steps"][0]["step"] == "retrieve"
             assert chat_data["rag_steps"][0]["detail"]["retriever"] == CHAT_RETRIEVER_PROVIDER
             assert chat_data["rag_steps"][0]["detail"]["gate_passed"] is True
@@ -222,6 +244,27 @@ def test_chat_reject_gate_when_no_evidence() -> None:
             body = response.json()
             data = _extract_data(body)
             assert data["rag_steps"][0]["step"] == "retrieve"
+            runtime_trace = data["rag_trace"]["runtime"]
+            assert runtime_trace["graph_alias"] == "default_v1"
+            assert runtime_trace["gate"]["passed"] is False
+            assert runtime_trace["gate"]["reason"] == "reject_insufficient_evidence"
+            assert runtime_trace["step_names"] == [
+                "normalize",
+                "memory_read",
+                "query_understand",
+                "plan",
+                "tool_plan",
+                "tool_execute",
+                "tool_verify",
+                "retrieve",
+                "fusion",
+                "rerank",
+                "verify",
+                "context_pack",
+                "generate",
+                "memory_write_gate",
+                "finalize",
+            ]
             assert data["rag_steps"][0]["detail"]["retriever"] == "inmemory-lexical-retriever"
             assert data["rag_steps"][0]["detail"]["gate_passed"] is False
             assert data["rag_steps"][0]["detail"]["gate_reason"] == "reject_insufficient_evidence"
