@@ -58,6 +58,8 @@ def test_chat_response_contract_stable() -> None:
             assert data["message"]["rag_trace"] == data["rag_trace"]
 
             runtime = data["rag_trace"]["runtime"]
+            assert runtime["request_id"].startswith("chat-")
+            assert runtime["session_id"] == "contract_s1"
             assert runtime["graph_alias"] == "default_v1"
             assert runtime["gate"]["passed"] is False
             assert runtime["gate"]["reason"] == "reject_insufficient_evidence"
@@ -92,6 +94,8 @@ def test_chat_response_contract_stable() -> None:
             assert trace_data is not None
             trace_event = json.loads(trace_data)
             trace = trace_event["trace"]
+            assert trace["runtime"]["request_id"].startswith("chat-")
+            assert trace["runtime"]["session_id"] == "contract_s1"
             assert trace["runtime"]["graph_alias"] == "default_v1"
             assert trace["runtime"]["step_names"] == runtime["step_names"]
             assert trace["runtime"]["gate"]["reason"] == "reject_insufficient_evidence"
