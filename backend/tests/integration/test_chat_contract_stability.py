@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Generator
+import json
 
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -7,6 +8,19 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.infra.db import get_db_session
 from app.main import app
 from app.model.base import Base
+
+
+def _extract_sse_event_data(payload: str, event: str) -> str | None:
+    for block in payload.split("\n\n"):
+        lines = block.splitlines()
+        if len(lines) < 2:
+            continue
+        if lines[0] != f"event: {event}":
+            continue
+        if not lines[1].startswith("data: "):
+            continue
+        return lines[1][6:]
+    return None
 
 
 def test_chat_response_contract_stable() -> None:
@@ -41,6 +55,46 @@ def test_chat_response_contract_stable() -> None:
             assert "request_id" in body
             data = body["data"]
             assert set(["session_id", "answer", "message", "rag_steps", "rag_trace"]).issubset(data.keys())
+            assert data["message"]["rag_trace"] == data["rag_trace"]
+
+            runtime = data["rag_trace"]["runtime"]
+            assert runtime["graph_alias"] == "default_v1"
+            assert runtime["gate"]["passed"] is False
+            assert runtime["gate"]["reason"] == "reject_insufficient_evidence"
+            assert runtime["step_names"] == [
+                "normalize",
+                "memory_read",
+                "query_understand",
+                "plan",
+                "tool_plan",
+                "tool_execute",
+                "tool_verify",
+                "retrieve",
+                "fusion",
+                "rerank",
+                "verify",
+                "context_pack",
+                "generate",
+                "memory_write_gate",
+                "finalize",
+            ]
+            assert runtime["steps"][0]["step"] == "normalize"
+
+            stream_resp = client.post(
+                "/api/v1/chat/stream",
+                headers=headers,
+                json={"message": "你好", "session_id": "contract_s1"},
+            )
+            assert stream_resp.status_code == 200
+            assert stream_resp.headers["content-type"].startswith("text/event-stream")
+
+            trace_data = _extract_sse_event_data(stream_resp.text, "trace")
+            assert trace_data is not None
+            trace_event = json.loads(trace_data)
+            trace = trace_event["trace"]
+            assert trace["runtime"]["graph_alias"] == "default_v1"
+            assert trace["runtime"]["step_names"] == runtime["step_names"]
+            assert trace["runtime"]["gate"]["reason"] == "reject_insufficient_evidence"
     finally:
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
