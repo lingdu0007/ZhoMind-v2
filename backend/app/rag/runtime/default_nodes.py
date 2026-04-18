@@ -1,4 +1,4 @@
-from app.rag.interfaces import RelevanceJudge, Reranker, Retriever
+from app.rag.runtime.provider_adapters import JudgeAdapter, RerankerAdapter, RetrieverAdapter
 from app.rag.runtime.state import RagStateDict
 
 
@@ -51,7 +51,7 @@ class RetrievalPlanNode:
 
 
 class RetrieveNode:
-    def __init__(self, retriever: Retriever | None, *, top_k: int = 3) -> None:
+    def __init__(self, retriever: RetrieverAdapter, *, top_k: int = 3) -> None:
         self.retriever = retriever
         self.top_k = top_k
 
@@ -59,13 +59,15 @@ class RetrieveNode:
         plan = state.get("retrieval_plan") or {}
         top_k = int(plan.get("top_k") or self.top_k)
 
-        if self.retriever is None:
-            retrieved: list[dict] = []
-        else:
-            retrieved = await self.retriever.retrieve(state["query_norm"], top_k=top_k)
+        retrieved, exec_detail = await self.retriever.retrieve(state["query_norm"], top_k=top_k)
 
         state["candidates_sparse"] = retrieved
         state["candidates_dense"] = []
+        state["provider_trace"]["retrieve"] = {
+            "provider": exec_detail["provider"],
+            "fallback_used": exec_detail["fallback_used"],
+            "provider_error": exec_detail["error"],
+        }
         state["trace_steps"].append(
             {
                 "step": "retrieve",
@@ -73,10 +75,14 @@ class RetrieveNode:
                     "strategy": plan.get("strategy", "sparse_only"),
                     "sparse_count": len(state["candidates_sparse"]),
                     "dense_count": len(state["candidates_dense"]),
+                    "provider": exec_detail["provider"],
+                    "fallback_used": exec_detail["fallback_used"],
+                    "provider_error": exec_detail["error"],
                 },
             }
         )
         return state
+
 
 
 class FusionNode:
@@ -108,34 +114,59 @@ class FusionNode:
 
 
 class RerankNode:
-    def __init__(self, reranker: Reranker | None) -> None:
+    def __init__(self, reranker: RerankerAdapter) -> None:
         self.reranker = reranker
 
     async def run(self, state: RagStateDict) -> RagStateDict:
         items = state["candidates_fused"]
-        if self.reranker is None:
-            reranked = items
-        else:
-            reranked = await self.reranker.rerank(state["query_norm"], items)
+        reranked, exec_detail = await self.reranker.rerank(state["query_norm"], items)
         state["candidates_reranked"] = reranked
-        state["trace_steps"].append({"step": "rerank", "detail": {"reranked_count": len(reranked)}})
+        state["provider_trace"]["rerank"] = {
+            "provider": exec_detail["provider"],
+            "fallback_used": exec_detail["fallback_used"],
+            "provider_error": exec_detail["error"],
+        }
+        state["trace_steps"].append(
+            {
+                "step": "rerank",
+                "detail": {
+                    "reranked_count": len(reranked),
+                    "provider": exec_detail["provider"],
+                    "fallback_used": exec_detail["fallback_used"],
+                    "provider_error": exec_detail["error"],
+                },
+            }
+        )
         return state
 
 
+
 class VerifyNode:
-    def __init__(self, judge: RelevanceJudge | None) -> None:
+    def __init__(self, judge: JudgeAdapter) -> None:
         self.judge = judge
 
     async def run(self, state: RagStateDict) -> RagStateDict:
-        if self.judge is None:
-            passed = len(state["candidates_reranked"]) > 0
-        else:
-            passed = await self.judge.judge(state["query_norm"], state["candidates_reranked"])
+        passed, exec_detail = await self.judge.judge(state["query_norm"], state["candidates_reranked"])
         state["gate_result"] = {
             "passed": passed,
             "reason": "sufficient_evidence" if passed else "reject_insufficient_evidence",
         }
-        state["trace_steps"].append({"step": "verify", "detail": state["gate_result"]})
+        state["provider_trace"]["verify"] = {
+            "provider": exec_detail["provider"],
+            "fallback_used": exec_detail["fallback_used"],
+            "provider_error": exec_detail["error"],
+        }
+        state["trace_steps"].append(
+            {
+                "step": "verify",
+                "detail": {
+                    **state["gate_result"],
+                    "provider": exec_detail["provider"],
+                    "fallback_used": exec_detail["fallback_used"],
+                    "provider_error": exec_detail["error"],
+                },
+            }
+        )
         return state
 
 

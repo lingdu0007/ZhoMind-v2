@@ -19,6 +19,11 @@ import asyncio
 from app.rag.runtime.graph_runner import RagGraphRunner
 
 
+class _RetrieverBoom:
+    async def retrieve(self, query: str, top_k: int) -> list[dict]:
+        raise RuntimeError("retriever exploded")
+
+
 def test_graph_runner_returns_gate_and_answer() -> None:
     runner = RagGraphRunner()
     result = asyncio.run(
@@ -45,3 +50,42 @@ def test_graph_runner_returns_gate_and_answer() -> None:
     assert "memory_write_gate" in steps
     assert steps["memory_write_gate"]["detail"]["allow"] is False
     assert steps["memory_write_gate"]["detail"]["reason"] == "unsafe"
+
+
+def test_graph_runner_retriever_failure_uses_fallback_trace_and_rejects() -> None:
+    runner = RagGraphRunner(retriever=_RetrieverBoom())
+    result = asyncio.run(
+        runner.run(
+            request_id="rid-3",
+            user_id="u3",
+            session_id="s3",
+            question="测试检索失败",
+        )
+    )
+
+    assert result["request_id"] == "rid-3"
+    assert result["session_id"] == "s3"
+    assert result["graph_alias"] == "default_v1"
+
+    step_order = [step["step"] for step in result["steps"]]
+    assert step_order == [
+        "normalize",
+        "memory_read",
+        "query_understand",
+        "plan",
+        "tool_plan",
+        "tool_execute",
+        "tool_verify",
+        "retrieve",
+        "fusion",
+        "rerank",
+        "verify",
+        "context_pack",
+        "generate",
+        "memory_write_gate",
+        "finalize",
+    ]
+
+    retrieve_step = next(step for step in result["steps"] if step["step"] == "retrieve")
+    assert retrieve_step["detail"]["fallback_used"] is True
+    assert result["gate"]["reason"] == "reject_insufficient_evidence"
