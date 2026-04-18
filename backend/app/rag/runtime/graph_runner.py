@@ -231,6 +231,9 @@ class RagGraphRunner:
             "evidence": state["candidates_reranked"],
             "retrieved": state["candidates_fused"],
             "graph_alias": self.graph_alias,
+            "tool_budget": state.get("tool_budget") or {},
+            "tool_errors": list(state.get("tool_errors") or []),
+            "provider_trace": state.get("provider_trace") or {},
         }
 
     async def run(self, *, request_id: str, user_id: str, session_id: str, question: str) -> dict:

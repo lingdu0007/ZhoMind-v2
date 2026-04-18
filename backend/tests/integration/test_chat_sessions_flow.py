@@ -105,6 +105,7 @@ def test_chat_and_sessions_flow() -> None:
             assert runtime_trace["request_id"].startswith("chat-")
             assert runtime_trace["session_id"] == "session_test_1"
             assert runtime_trace["graph_alias"] == "default_v1"
+            assert isinstance(runtime_trace.get("tool_errors", []), list)
             assert runtime_trace["gate"]["passed"] is True
             assert runtime_trace["gate"]["reason"] == "sufficient_evidence"
             assert runtime_trace["step_names"] == [
