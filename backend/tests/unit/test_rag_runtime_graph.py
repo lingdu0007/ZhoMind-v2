@@ -16,6 +16,8 @@ def test_rag_state_has_required_keys() -> None:
 
 import asyncio
 
+import pytest
+
 from app.rag.runtime.graph_runner import RagGraphRunner
 
 
@@ -89,3 +91,26 @@ def test_graph_runner_retriever_failure_uses_fallback_trace_and_rejects() -> Non
     retrieve_step = next(step for step in result["steps"] if step["step"] == "retrieve")
     assert retrieve_step["detail"]["fallback_used"] is True
     assert result["gate"]["reason"] == "reject_insufficient_evidence"
+
+
+def test_graph_runner_langgraph_path_when_available() -> None:
+    runner = RagGraphRunner()
+
+    if runner._compiled_graph is None:
+        pytest.skip("LangGraph is optional; sequential fallback is expected when dependency is unavailable")
+
+    assert runner._compiled_graph is not None
+
+    result = asyncio.run(
+        runner.run(
+            request_id="rid-4",
+            user_id="u4",
+            session_id="s4",
+            question="验证 LangGraph 路径",
+        )
+    )
+
+    assert result["request_id"] == "rid-4"
+    assert result["session_id"] == "s4"
+    assert result["graph_alias"] == "default_v1"
+
