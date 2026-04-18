@@ -208,9 +208,43 @@ class GenerateNode:
 
 
 async def add_tool_reservation_steps(state: RagStateDict, *, enabled: bool) -> RagStateDict:
-    state["trace_steps"].append({"step": "tool_plan", "detail": {"enabled": enabled, "items": len(state["tool_plan"])}})
-    state["trace_steps"].append({"step": "tool_execute", "detail": {"enabled": enabled, "calls": len(state["tool_calls"])}})
-    state["trace_steps"].append({"step": "tool_verify", "detail": {"enabled": enabled, "errors": len(state["tool_errors"])}})
+    budget = state.get("tool_budget") or {}
+    budget_meta = {
+        "max_calls": int(budget.get("max_calls", 0)),
+        "max_parallel": int(budget.get("max_parallel", 0)),
+        "max_latency_ms": int(budget.get("max_latency_ms", 0)),
+    }
+
+    state["trace_steps"].append(
+        {
+            "step": "tool_plan",
+            "detail": {
+                "enabled": enabled,
+                "items": len(state["tool_plan"]),
+                **budget_meta,
+            },
+        }
+    )
+    state["trace_steps"].append(
+        {
+            "step": "tool_execute",
+            "detail": {
+                "enabled": enabled,
+                "calls": len(state["tool_calls"]),
+                **budget_meta,
+            },
+        }
+    )
+    state["trace_steps"].append(
+        {
+            "step": "tool_verify",
+            "detail": {
+                "enabled": enabled,
+                "errors": len(state["tool_errors"]),
+                "tool_errors": list(state["tool_errors"]),
+            },
+        }
+    )
     return state
 
 
