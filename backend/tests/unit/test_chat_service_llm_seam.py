@@ -52,6 +52,26 @@ def test_assistant_reply_rejects_when_gate_failed() -> None:
     assert "未检索到足够相关的知识片段" in answer
 
 
+def test_runtime_trace_keeps_required_keys_and_adds_metadata() -> None:
+    service = _build_service()
+    trace = service._runtime_trace(
+        {
+            "request_id": "rid-1",
+            "session_id": "s-1",
+            "graph_alias": "default_v1",
+            "gate": {"passed": False, "reason": "reject_insufficient_evidence"},
+            "steps": [{"step": "normalize", "detail": {"ok": True}}],
+            "tool_budget": {"max_calls": 2, "max_parallel": 2, "max_latency_ms": 5000},
+            "tool_errors": [],
+        }
+    )
+    assert set(["request_id", "session_id", "graph_alias", "gate", "steps", "step_names"]).issubset(
+        trace.keys()
+    )
+    assert trace["step_names"] == ["normalize"]
+    assert trace["tool_budget"]["max_calls"] == 2
+
+
 def test_resolve_llm_prefers_configured_provider(monkeypatch) -> None:
     get_settings.cache_clear()
     get_extension_registry.cache_clear()
