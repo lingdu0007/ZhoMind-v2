@@ -61,6 +61,7 @@ def test_chat_response_contract_stable() -> None:
             assert runtime["request_id"].startswith("chat-")
             assert runtime["session_id"] == "contract_s1"
             assert runtime["graph_alias"] == "default_v1"
+            assert set(["gate", "steps", "step_names"]).issubset(runtime.keys())
             assert runtime["gate"]["passed"] is False
             assert runtime["gate"]["reason"] == "reject_insufficient_evidence"
             assert runtime["step_names"] == [
@@ -81,6 +82,9 @@ def test_chat_response_contract_stable() -> None:
                 "finalize",
             ]
             assert runtime["steps"][0]["step"] == "normalize"
+            assert "tool_budget" in runtime
+            assert "max_calls" in runtime["tool_budget"]
+            assert "tool_errors" in runtime
 
             stream_resp = client.post(
                 "/api/v1/chat/stream",
