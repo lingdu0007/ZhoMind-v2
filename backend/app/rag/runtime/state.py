@@ -1,6 +1,12 @@
 from typing import Any, TypedDict
 
 
+class ProviderTraceDetail(TypedDict):
+    provider: str
+    fallback_used: bool
+    provider_error: dict[str, Any] | None
+
+
 class RagStateDict(TypedDict):
     request_id: str
     user_id: str
@@ -17,7 +23,8 @@ class RagStateDict(TypedDict):
     answer: str
     memory_read_set: dict[str, Any]
     memory_write_decision: dict[str, Any]
-    trace_steps: list[dict]
+    trace_steps: list[dict[str, Any]]
+    provider_trace: dict[str, ProviderTraceDetail]
     latency_ms: int
     token_usage: dict[str, int]
     tool_plan: list[dict]
@@ -49,6 +56,7 @@ class RagState:
             "memory_read_set": {},
             "memory_write_decision": {},
             "trace_steps": [],
+            "provider_trace": {},
             "latency_ms": 0,
             "token_usage": {"prompt": 0, "completion": 0, "total": 0},
             "tool_plan": [],
