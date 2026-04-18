@@ -1,6 +1,7 @@
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 import re
+from typing import Any
 import uuid
 
 from sqlalchemy import select
@@ -220,7 +221,7 @@ class ChatService:
 
     def _runtime_trace(self, runtime_result: dict) -> dict:
         runtime_steps = list(runtime_result.get("steps") or [])
-        return {
+        trace: dict[str, Any] = {
             "request_id": runtime_result.get("request_id"),
             "session_id": runtime_result.get("session_id"),
             "graph_alias": runtime_result.get("graph_alias"),
@@ -228,6 +229,15 @@ class ChatService:
             "steps": runtime_steps,
             "step_names": [str(item.get("step") or "") for item in runtime_steps],
         }
+
+        if runtime_result.get("tool_budget") is not None:
+            trace["tool_budget"] = runtime_result.get("tool_budget")
+        if runtime_result.get("tool_errors") is not None:
+            trace["tool_errors"] = list(runtime_result.get("tool_errors") or [])
+        if runtime_result.get("provider_trace") is not None:
+            trace["provider_trace"] = runtime_result.get("provider_trace")
+
+        return trace
 
     async def ensure_session_id(self, session_id: str | None) -> str:
         if session_id and session_id.strip():
