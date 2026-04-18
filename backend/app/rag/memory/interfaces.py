@@ -1,0 +1,13 @@
+from typing import Protocol
+
+
+class SessionMemoryStore(Protocol):
+    async def read(self, session_id: str) -> dict: ...
+
+    async def write(self, session_id: str, payload: dict) -> None: ...
+
+
+class UserMemoryStore(Protocol):
+    async def read(self, user_id: str) -> list[dict]: ...
+
+    async def append(self, user_id: str, fact: dict) -> None: ...

@@ -27,7 +27,15 @@ class Settings(BaseSettings):
     minio_secret_key: str = Field("minioadmin", alias="MINIO_SECRET_KEY")
     minio_secure: bool = Field(False, alias="MINIO_SECURE")
 
+    rag_graph_alias: str = Field("default_v1", alias="RAG_GRAPH_ALIAS")
+    rag_enable_tools: bool = Field(False, alias="RAG_ENABLE_TOOLS")
+    rag_tool_max_calls: int = Field(3, alias="RAG_TOOL_MAX_CALLS")
+    rag_tool_max_parallel: int = Field(2, alias="RAG_TOOL_MAX_PARALLEL")
+    rag_tool_timeout_ms: int = Field(8000, alias="RAG_TOOL_TIMEOUT_MS")
+    rag_default_llm_provider: str = Field("chat-default-llm", alias="RAG_DEFAULT_LLM_PROVIDER")
+
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
