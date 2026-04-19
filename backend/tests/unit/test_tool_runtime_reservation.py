@@ -77,3 +77,27 @@ def test_tool_runtime_normalizes_execution_errors() -> None:
         }
     ]
 
+
+def test_tool_runtime_step_order_regression() -> None:
+    runner = RagGraphRunner(enable_tools=True, tool_max_calls=2, tool_max_parallel=2, tool_timeout_ms=5000)
+    result = asyncio.run(
+        runner.run(request_id="rid-tool-order", user_id="u-tool", session_id="s-tool", question="查询外部信息")
+    )
+
+    assert [item["step"] for item in result["steps"]] == [
+        "normalize",
+        "memory_read",
+        "query_understand",
+        "plan",
+        "tool_plan",
+        "tool_execute",
+        "tool_verify",
+        "retrieve",
+        "fusion",
+        "rerank",
+        "verify",
+        "context_pack",
+        "generate",
+        "memory_write_gate",
+        "finalize",
+    ]
