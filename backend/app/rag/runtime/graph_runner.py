@@ -18,6 +18,7 @@ from app.rag.runtime.default_nodes import (
     VerifyNode,
     add_tool_reservation_steps,
 )
+from app.rag.runtime.provider_adapters import JudgeAdapter, RerankerAdapter, RetrieverAdapter
 from app.rag.runtime.state import RagState, RagStateDict
 from app.rag.tools.runtime import ToolExecutionRuntime
 
@@ -59,13 +60,26 @@ class RagGraphRunner:
             min_stability=0.8,
         )
 
+        self._retriever_adapter = RetrieverAdapter(
+            self.retriever,
+            provider_name="retriever-primary",
+        )
+        self._reranker_adapter = RerankerAdapter(
+            self.reranker,
+            provider_name="reranker-primary",
+        )
+        self._judge_adapter = JudgeAdapter(
+            self.judge,
+            provider_name="judge-primary",
+        )
+
         self._normalize_node = NormalizeNode()
         self._query_understand_node = QueryUnderstandNode()
         self._retrieval_plan_node = RetrievalPlanNode(default_top_k=3)
-        self._retrieve_node = RetrieveNode(self.retriever)
+        self._retrieve_node = RetrieveNode(self._retriever_adapter)
         self._fusion_node = FusionNode()
-        self._rerank_node = RerankNode(self.reranker)
-        self._verify_node = VerifyNode(self.judge)
+        self._rerank_node = RerankNode(self._reranker_adapter)
+        self._verify_node = VerifyNode(self._judge_adapter)
         self._context_pack_node = ContextPackNode(top_k=3)
         self._generate_node = GenerateNode()
         self._memory_write_node = MemoryWriteNode()
@@ -217,6 +231,9 @@ class RagGraphRunner:
             "evidence": state["candidates_reranked"],
             "retrieved": state["candidates_fused"],
             "graph_alias": self.graph_alias,
+            "tool_budget": state.get("tool_budget") or {},
+            "tool_errors": list(state.get("tool_errors") or []),
+            "provider_trace": state.get("provider_trace") or {},
         }
 
     async def run(self, *, request_id: str, user_id: str, session_id: str, question: str) -> dict:
