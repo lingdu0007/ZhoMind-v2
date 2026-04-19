@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.infra.db import get_db_session
+from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
 
@@ -48,7 +49,7 @@ def test_chat_response_contract_stable() -> None:
             token = reg.json()["data"]["access_token"]
             headers = {"Authorization": f"Bearer {token}"}
 
-            resp = client.post("/api/v1/chat", headers=headers, json={"message": "你好", "session_id": "contract_s1"})
+            resp = client.post("/api/v1/chat", headers=headers, json={"message": "合同稳定性随机无证据问题", "session_id": "contract_s1"})
             assert resp.status_code == 200
             body = resp.json()
             assert body["code"] == "OK"
@@ -89,7 +90,7 @@ def test_chat_response_contract_stable() -> None:
             stream_resp = client.post(
                 "/api/v1/chat/stream",
                 headers=headers,
-                json={"message": "你好", "session_id": "contract_s1"},
+                json={"message": "合同稳定性流式随机无证据问题", "session_id": "contract_s1"},
             )
             assert stream_resp.status_code == 200
             assert stream_resp.headers["content-type"].startswith("text/event-stream")

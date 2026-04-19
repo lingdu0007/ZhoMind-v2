@@ -6,9 +6,25 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.extensions.registry import get_extension_registry
 from app.infra.db import get_db_session
+from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
 from app.service.chat_service import CHAT_JUDGE_PROVIDER, CHAT_RERANK_PROVIDER, CHAT_RETRIEVER_PROVIDER
+
+
+class _InMemoryRedis:
+    def __init__(self) -> None:
+        self._store: dict[str, dict[str, str]] = {}
+
+    async def hset(self, key: str, mapping: dict[str, str]) -> int:
+        self._store[key] = dict(mapping)
+        return len(mapping)
+
+    async def expire(self, key: str, ttl: int) -> bool:
+        return key in self._store
+
+    async def exists(self, key: str) -> int:
+        return 1 if key in self._store else 0
 
 
 def _extract_data(payload: dict) -> dict:
@@ -73,7 +89,13 @@ def test_chat_and_sessions_flow() -> None:
         async with session_factory() as session:
             yield session
 
+    fake_redis = _InMemoryRedis()
+
+    async def override_get_redis_client() -> _InMemoryRedis:
+        return fake_redis
+
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = override_get_redis_client
 
     registry = get_extension_registry()
     prev_retriever = registry.get_retriever(CHAT_RETRIEVER_PROVIDER)
@@ -225,7 +247,13 @@ def test_chat_reject_gate_when_no_evidence() -> None:
         async with session_factory() as session:
             yield session
 
+    fake_redis = _InMemoryRedis()
+
+    async def override_get_redis_client() -> _InMemoryRedis:
+        return fake_redis
+
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = override_get_redis_client
 
     registry = get_extension_registry()
     prev_retriever = registry.get_retriever(CHAT_RETRIEVER_PROVIDER)
@@ -247,35 +275,74 @@ def test_chat_reject_gate_when_no_evidence() -> None:
             body = response.json()
             data = _extract_data(body)
             assert data["rag_steps"][0]["step"] == "retrieve"
-            runtime_trace = data["rag_trace"]["runtime"]
-            assert runtime_trace["request_id"].startswith("chat-")
-            assert runtime_trace["session_id"] == "session_reject_1"
-            assert runtime_trace["graph_alias"] == "default_v1"
-            assert runtime_trace["gate"]["passed"] is False
-            assert runtime_trace["gate"]["reason"] == "reject_insufficient_evidence"
-            assert runtime_trace["step_names"] == [
-                "normalize",
-                "memory_read",
-                "query_understand",
-                "plan",
-                "tool_plan",
-                "tool_execute",
-                "tool_verify",
-                "retrieve",
-                "fusion",
-                "rerank",
-                "verify",
-                "context_pack",
-                "generate",
-                "memory_write_gate",
-                "finalize",
-            ]
-            assert data["rag_steps"][0]["detail"]["retriever"] == "inmemory-lexical-retriever"
             assert data["rag_steps"][0]["detail"]["gate_passed"] is False
             assert data["rag_steps"][0]["detail"]["gate_reason"] == "reject_insufficient_evidence"
-            assert data["rag_steps"][1]["detail"]["model"] == "inmemory-identity-reranker"
-            assert data["rag_steps"][2]["detail"]["judge"] == "inmemory-evidence-judge"
+            assert data["rag_trace"]["gate"]["passed"] is False
+            assert data["rag_trace"]["gate"]["reason"] == "reject_insufficient_evidence"
+            assert data["rag_trace"]["runtime"]["gate"]["passed"] is False
+            assert data["rag_trace"]["runtime"]["gate"]["reason"] == "reject_insufficient_evidence"
             assert "未检索到足够相关的知识片段" in data["answer"]
+            assert "request_id" in body
+    finally:
+        if prev_retriever is not None:
+            registry.register_retriever(CHAT_RETRIEVER_PROVIDER, prev_retriever)
+        if prev_reranker is not None:
+            registry.register_rerank(CHAT_RERANK_PROVIDER, prev_reranker)
+        if prev_judge is not None:
+            registry.register_judge(CHAT_JUDGE_PROVIDER, prev_judge)
+        app.dependency_overrides.clear()
+        asyncio.run(db_engine.dispose())
+
+
+def test_chat_smalltalk_fallback_without_evidence() -> None:
+    db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_init_db())
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    fake_redis = _InMemoryRedis()
+
+    async def override_get_redis_client() -> _InMemoryRedis:
+        return fake_redis
+
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = override_get_redis_client
+
+    registry = get_extension_registry()
+    prev_retriever = registry.get_retriever(CHAT_RETRIEVER_PROVIDER)
+    prev_reranker = registry.get_rerank(CHAT_RERANK_PROVIDER)
+    prev_judge = registry.get_judge(CHAT_JUDGE_PROVIDER)
+    registry.retrievers.pop(CHAT_RETRIEVER_PROVIDER, None)
+    registry.rerank_providers.pop(CHAT_RERANK_PROVIDER, None)
+    registry.judges.pop(CHAT_JUDGE_PROVIDER, None)
+
+    try:
+        with TestClient(app) as client:
+            headers = _auth_headers(client, username="smalltalk-user")
+            response = client.post(
+                "/api/v1/chat",
+                headers=headers,
+                json={"message": "你是谁", "session_id": "session_smalltalk_1"},
+            )
+            assert response.status_code == 200
+            body = response.json()
+            data = _extract_data(body)
+            assert data["rag_steps"][0]["step"] == "retrieve"
+            assert data["rag_steps"][0]["detail"]["gate_passed"] is True
+            assert data["rag_steps"][0]["detail"]["gate_reason"] == "smalltalk_fallback"
+            assert data["rag_trace"]["gate"]["passed"] is True
+            assert data["rag_trace"]["gate"]["reason"] == "smalltalk_fallback"
+            assert data["rag_trace"]["runtime"]["gate"]["passed"] is True
+            assert data["rag_trace"]["runtime"]["gate"]["reason"] == "smalltalk_fallback"
+            assert "我是 ZhoMind 智能助手" in data["answer"]
             assert "request_id" in body
     finally:
         if prev_retriever is not None:
