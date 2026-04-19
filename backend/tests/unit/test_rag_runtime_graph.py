@@ -16,7 +16,14 @@ def test_rag_state_has_required_keys() -> None:
 
 import asyncio
 
+import pytest
+
 from app.rag.runtime.graph_runner import RagGraphRunner
+
+
+class _RetrieverBoom:
+    async def retrieve(self, query: str, top_k: int) -> list[dict]:
+        raise RuntimeError("retriever exploded")
 
 
 def test_graph_runner_returns_gate_and_answer() -> None:
@@ -45,3 +52,65 @@ def test_graph_runner_returns_gate_and_answer() -> None:
     assert "memory_write_gate" in steps
     assert steps["memory_write_gate"]["detail"]["allow"] is False
     assert steps["memory_write_gate"]["detail"]["reason"] == "unsafe"
+
+
+def test_graph_runner_retriever_failure_uses_fallback_trace_and_rejects() -> None:
+    runner = RagGraphRunner(retriever=_RetrieverBoom())
+    result = asyncio.run(
+        runner.run(
+            request_id="rid-3",
+            user_id="u3",
+            session_id="s3",
+            question="测试检索失败",
+        )
+    )
+
+    assert result["request_id"] == "rid-3"
+    assert result["session_id"] == "s3"
+    assert result["graph_alias"] == "default_v1"
+
+    step_order = [step["step"] for step in result["steps"]]
+    assert step_order == [
+        "normalize",
+        "memory_read",
+        "query_understand",
+        "plan",
+        "tool_plan",
+        "tool_execute",
+        "tool_verify",
+        "retrieve",
+        "fusion",
+        "rerank",
+        "verify",
+        "context_pack",
+        "generate",
+        "memory_write_gate",
+        "finalize",
+    ]
+
+    retrieve_step = next(step for step in result["steps"] if step["step"] == "retrieve")
+    assert retrieve_step["detail"]["fallback_used"] is True
+    assert result["gate"]["reason"] == "reject_insufficient_evidence"
+
+
+def test_graph_runner_langgraph_path_when_available() -> None:
+    runner = RagGraphRunner()
+
+    if runner._compiled_graph is None:
+        pytest.skip("LangGraph is optional; sequential fallback is expected when dependency is unavailable")
+
+    assert runner._compiled_graph is not None
+
+    result = asyncio.run(
+        runner.run(
+            request_id="rid-4",
+            user_id="u4",
+            session_id="s4",
+            question="验证 LangGraph 路径",
+        )
+    )
+
+    assert result["request_id"] == "rid-4"
+    assert result["session_id"] == "s4"
+    assert result["graph_alias"] == "default_v1"
+
