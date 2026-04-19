@@ -159,7 +159,41 @@ class ChatService:
         lines.append("请给出简洁中文回答。")
         return "\n".join(lines)
 
-    async def _assistant_reply(self, question: str, retrieved: list[dict], gate_passed: bool, *, llm: LlmProvider) -> str:
+    def _is_smalltalk_question(self, question: str) -> bool:
+        compact = self._compact(question.strip().lower())
+        if not compact:
+            return False
+
+        patterns = (
+            "你是谁",
+            "你叫什麼",
+            "你叫什么",
+            "介绍你自己",
+            "自我介绍",
+            "whoareyou",
+            "whatyourname",
+            "whatareyou",
+        )
+        if any(pattern in compact for pattern in patterns):
+            return True
+
+        return compact in {"你好", "您好", "hello", "hi", "hey"}
+
+    def _smalltalk_reply(self) -> str:
+        return "我是 ZhoMind 智能助手，可以帮你基于知识库问答、梳理文档与会话内容。"
+
+    async def _assistant_reply(
+        self,
+        question: str,
+        retrieved: list[dict],
+        gate_passed: bool,
+        *,
+        gate_reason: str,
+        llm: LlmProvider,
+    ) -> str:
+        if gate_reason == "smalltalk_fallback":
+            return self._smalltalk_reply()
+
         if not gate_passed:
             return "未检索到足够相关的知识片段，请补充更具体的问题或关键词。"
 
@@ -319,14 +353,18 @@ class ChatService:
             gate_passed = False
             gate_reason = "reject_insufficient_evidence"
 
+        if not gate_passed and self._is_smalltalk_question(normalized_question):
+            gate_passed = True
+            gate_reason = "smalltalk_fallback"
+
         llm, llm_name = self._resolve_llm()
         reply = await self._assistant_reply(
             question=normalized_question,
             retrieved=reranked,
             gate_passed=gate_passed,
+            gate_reason=gate_reason,
             llm=llm,
         )
-
         rag_steps = self._rag_steps(
             question=normalized_question,
             retriever_name=retriever_name,
@@ -339,6 +377,12 @@ class ChatService:
             gate_reason=gate_reason,
         )
 
+        runtime_trace = self._runtime_trace(runtime_result)
+        runtime_trace["gate"] = {
+            "passed": gate_passed,
+            "reason": gate_reason,
+        }
+
         rag_trace = {
             "query": normalized_question,
             "steps": rag_steps,
@@ -348,7 +392,7 @@ class ChatService:
             },
             "evidence": reranked,
             "answer_preview": reply[:120],
-            "runtime": self._runtime_trace(runtime_result),
+            "runtime": runtime_trace,
         }
 
         assistant_message = await self.repo.add_message(
