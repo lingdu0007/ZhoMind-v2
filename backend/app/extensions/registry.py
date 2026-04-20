@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from functools import lru_cache
 
+from app.common.config import get_settings
+from app.extensions.ark_llm_provider import ArkLlmProvider
 from app.rag.interfaces import EmbeddingProvider, LlmProvider, RelevanceJudge, Reranker, Retriever
 from app.tasks.interfaces import InMemoryTaskBackend, TaskBackend, create_inmemory_task_backend
 
@@ -77,6 +79,18 @@ class ExtensionRegistry:
 @lru_cache
 def get_extension_registry() -> ExtensionRegistry:
     registry = ExtensionRegistry()
+    settings = get_settings()
+
+    if settings.ark_api_key and settings.llm_base_url and settings.llm_model:
+        registry.register_llm(
+            "chat-default-llm",
+            ArkLlmProvider(
+                api_key=settings.ark_api_key,
+                model=settings.llm_model,
+                base_url=settings.llm_base_url,
+            ),
+        )
+
     registry.register_task_backend("inmemory", create_inmemory_task_backend())
     return registry
 

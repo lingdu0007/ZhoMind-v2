@@ -33,6 +33,7 @@ def test_assistant_reply_uses_llm_when_gate_passed() -> None:
             question="测试问题",
             retrieved=[{"content_preview": "证据A"}],
             gate_passed=True,
+            gate_reason="passed",
             llm=_StubLlm(),
         )
     )
@@ -46,6 +47,7 @@ def test_assistant_reply_rejects_when_gate_failed() -> None:
             question="测试问题",
             retrieved=[],
             gate_passed=False,
+            gate_reason="reject_insufficient_evidence",
             llm=_StubLlm(),
         )
     )

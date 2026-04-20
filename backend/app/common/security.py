@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import uuid
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -17,10 +18,21 @@ def verify_password(raw_password: str, password_hash: str) -> bool:
     return pwd_context.verify(raw_password, password_hash)
 
 
+def build_auth_session_key(subject: str, jti: str) -> str:
+    return f"auth:session:{subject}:{jti}"
+
+
 def create_access_token(subject: str, role: str) -> str:
     settings = get_settings()
-    expire_at = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes)
-    payload = {"sub": subject, "role": role, "exp": int(expire_at.timestamp())}
+    now = datetime.now(timezone.utc)
+    expire_at = now + timedelta(minutes=settings.jwt_expire_minutes)
+    payload = {
+        "sub": subject,
+        "role": role,
+        "jti": uuid.uuid4().hex,
+        "iat": int(now.timestamp()),
+        "exp": int(expire_at.timestamp()),
+    }
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 

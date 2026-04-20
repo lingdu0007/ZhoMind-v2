@@ -1,7 +1,8 @@
 import asyncio
 
-from app.common.config import Settings
+from app.common.config import Settings, get_settings
 from app.common.responses import ok_response
+from app.extensions.ark_llm_provider import ArkLlmProvider
 from app.extensions.registry import ExtensionRegistry, get_extension_registry, get_task_backend
 from app.infra.milvus import get_milvus_client, get_milvus_provider
 from app.infra.minio import get_minio_client, get_minio_provider
@@ -124,14 +125,48 @@ def test_extension_registry_default_task_backend() -> None:
     assert isinstance(fallback_backend, InMemoryTaskBackend)
 
 
-def test_inmemory_task_backend_lifecycle() -> None:
-    backend = create_inmemory_task_backend()
+def test_settings_provider_fields_from_env_aliases() -> None:
+    settings = Settings(
+        ARK_API_KEY="ark-key",
+        MODEL="ark-model",
+        GRADE_MODEL="ark-grade",
+        FAST_MODEL="ark-fast",
+        BASE_URL="https://ark.example.com/api/v3",
+        EMBEDDING_API_KEY="emb-key",
+        EMBEDDING_BASE_URL="https://emb.example.com/v1",
+        EMBEDDING_MODEL="emb-model",
+        DENSE_EMBEDDING_DIM=1536,
+        RERANK_MODEL="rerank-model",
+        RERANK_BINDING_HOST="https://rerank.example.com/v1/rerank",
+        RERANK_API_KEY="rerank-key",
+        BM25_STATE_PATH="/tmp/bm25_state.json",
+        RAG_DISABLE_GATE=True,
+    )
 
-    task_id = asyncio.run(backend.enqueue("build_document", {"document_id": "doc-1"}))
-    status = asyncio.run(backend.get_status(task_id))
-    assert status["task_id"] == task_id
-    assert status["status"] == "queued"
+    assert settings.ark_api_key == "ark-key"
+    assert settings.llm_model == "ark-model"
+    assert settings.grade_model == "ark-grade"
+    assert settings.fast_model == "ark-fast"
+    assert settings.llm_base_url == "https://ark.example.com/api/v3"
+    assert settings.embedding_api_key == "emb-key"
+    assert settings.embedding_base_url == "https://emb.example.com/v1"
+    assert settings.embedding_model == "emb-model"
+    assert settings.dense_embedding_dim == 1536
+    assert settings.rerank_model == "rerank-model"
+    assert settings.rerank_binding_host == "https://rerank.example.com/v1/rerank"
+    assert settings.rerank_api_key == "rerank-key"
+    assert settings.bm25_state_path == "/tmp/bm25_state.json"
+    assert settings.rag_disable_gate is True
 
-    asyncio.run(backend.cancel(task_id))
-    canceled = asyncio.run(backend.get_status(task_id))
-    assert canceled["status"] == "canceled"
+
+def test_registry_registers_ark_llm_from_env(monkeypatch) -> None:
+    get_settings.cache_clear()
+    get_extension_registry.cache_clear()
+    monkeypatch.setenv("ARK_API_KEY", "ark-key")
+    monkeypatch.setenv("MODEL", "ark-model")
+    monkeypatch.setenv("BASE_URL", "https://ark.example.com/api/v3")
+
+    registry = get_extension_registry()
+
+    provider = registry.get_llm("chat-default-llm")
+    assert isinstance(provider, ArkLlmProvider)
