@@ -1,5 +1,6 @@
 import asyncio
 
+from app.extensions.ark_llm_provider import ArkLlmProvider
 from app.rag.runtime.provider_adapters import (
     JudgeAdapter,
     LlmAdapter,
@@ -82,6 +83,57 @@ class _JudgeBoom:
 class _LlmBoom:
     async def complete(self, prompt: str, system_prompt: str | None = None) -> str:
         raise RuntimeError("llm exploded")
+
+
+class _FakeResponse:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class _FakeAsyncClient:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    async def post(self, url: str, *, headers: dict, content: str):
+        return _FakeResponse(self._payload)
+
+
+def test_ark_llm_provider_parses_chat_completions_payload(monkeypatch) -> None:
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": "  这是模型回答  ",
+                }
+            }
+        ]
+    }
+
+    monkeypatch.setattr(
+        "app.extensions.ark_llm_provider.AsyncClient",
+        lambda timeout: _FakeAsyncClient(payload),
+    )
+
+    provider = ArkLlmProvider(
+        api_key="ark-key",
+        model="ark-model",
+        base_url="https://ark.example.com/api/v3",
+    )
+
+    text = asyncio.run(provider.complete("hello"))
+    assert text == "这是模型回答"
 
 
 def test_reranker_primary_success() -> None:

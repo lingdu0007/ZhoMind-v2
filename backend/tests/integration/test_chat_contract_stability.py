@@ -5,10 +5,25 @@ import json
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.common.config import get_settings
 from app.infra.db import get_db_session
 from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
+
+
+class _InMemoryRedis:
+    def __init__(self) -> None:
+        self.hashes: dict[str, dict[str, str]] = {}
+
+    async def hset(self, key: str, mapping: dict[str, str]) -> None:
+        self.hashes[key] = {str(k): str(v) for k, v in mapping.items()}
+
+    async def expire(self, key: str, seconds: int) -> bool:
+        return key in self.hashes and seconds > 0
+
+    async def exists(self, key: str) -> int:
+        return 1 if key in self.hashes else 0
 
 
 def _extract_sse_event_data(payload: str, event: str) -> str | None:
@@ -24,9 +39,13 @@ def _extract_sse_event_data(payload: str, event: str) -> str | None:
     return None
 
 
-def test_chat_response_contract_stable() -> None:
+def test_chat_response_contract_stable(monkeypatch) -> None:
     db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    fake_redis = _InMemoryRedis()
+
+    monkeypatch.setenv("RAG_DISABLE_GATE", "false")
+    get_settings.cache_clear()
 
     async def _init_db() -> None:
         async with db_engine.begin() as conn:
@@ -39,6 +58,7 @@ def test_chat_response_contract_stable() -> None:
             yield session
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
 
     try:
         with TestClient(app) as client:
@@ -106,4 +126,5 @@ def test_chat_response_contract_stable() -> None:
             assert trace["runtime"]["gate"]["reason"] == "reject_insufficient_evidence"
     finally:
         app.dependency_overrides.clear()
+        get_settings.cache_clear()
         asyncio.run(db_engine.dispose())

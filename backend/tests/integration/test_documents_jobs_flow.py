@@ -5,8 +5,24 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.infra.db import get_db_session
+from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
+
+
+class _InMemoryRedis:
+    def __init__(self) -> None:
+        self._store: dict[str, dict[str, str]] = {}
+
+    async def hset(self, key: str, mapping: dict[str, str]) -> int:
+        self._store[key] = dict(mapping)
+        return len(mapping)
+
+    async def expire(self, key: str, ttl: int) -> bool:
+        return key in self._store
+
+    async def exists(self, key: str) -> int:
+        return 1 if key in self._store else 0
 
 
 async def _create_admin_token(client: TestClient, username: str = "admin") -> str:
@@ -45,7 +61,9 @@ def test_documents_and_jobs_flow() -> None:
         async with session_factory() as session:
             yield session
 
+    fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
 
     previous_admin_code = app.state.__dict__.get("_test_admin_invite_code", None)
 
@@ -215,7 +233,9 @@ def test_documents_requires_admin_role() -> None:
         async with session_factory() as session:
             yield session
 
+    fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
 
     try:
         with TestClient(app) as client:

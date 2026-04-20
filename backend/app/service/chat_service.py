@@ -353,6 +353,10 @@ class ChatService:
             gate_passed = False
             gate_reason = "reject_insufficient_evidence"
 
+        if get_settings().rag_disable_gate:
+            gate_passed = True
+            gate_reason = "gate_disabled"
+
         if not gate_passed and self._is_smalltalk_question(normalized_question):
             gate_passed = True
             gate_reason = "smalltalk_fallback"

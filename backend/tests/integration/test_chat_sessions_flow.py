@@ -4,6 +4,7 @@ from collections.abc import Generator
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.common.config import get_settings
 from app.extensions.registry import get_extension_registry
 from app.infra.db import get_db_session
 from app.infra.redis import get_redis_client
@@ -75,9 +76,13 @@ class _CustomJudge:
         return len(context) > 0
 
 
-def test_chat_and_sessions_flow() -> None:
+def test_chat_and_sessions_flow(monkeypatch) -> None:
     db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    monkeypatch.setenv("RAG_DISABLE_GATE", "false")
+    monkeypatch.setenv("RAG_DEFAULT_LLM_PROVIDER", "missing-test-llm")
+    get_settings.cache_clear()
 
     async def _init_db() -> None:
         async with db_engine.begin() as conn:
@@ -230,12 +235,17 @@ def test_chat_and_sessions_flow() -> None:
             registry.register_judge(CHAT_JUDGE_PROVIDER, prev_judge)
 
         app.dependency_overrides.clear()
+        get_settings.cache_clear()
         asyncio.run(db_engine.dispose())
 
 
-def test_chat_reject_gate_when_no_evidence() -> None:
+def test_chat_reject_gate_when_no_evidence(monkeypatch) -> None:
     db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    monkeypatch.setenv("RAG_DISABLE_GATE", "false")
+    monkeypatch.setenv("RAG_DEFAULT_LLM_PROVIDER", "missing-test-llm")
+    get_settings.cache_clear()
 
     async def _init_db() -> None:
         async with db_engine.begin() as conn:
@@ -291,12 +301,17 @@ def test_chat_reject_gate_when_no_evidence() -> None:
         if prev_judge is not None:
             registry.register_judge(CHAT_JUDGE_PROVIDER, prev_judge)
         app.dependency_overrides.clear()
+        get_settings.cache_clear()
         asyncio.run(db_engine.dispose())
 
 
-def test_chat_smalltalk_fallback_without_evidence() -> None:
+def test_chat_smalltalk_fallback_without_evidence(monkeypatch) -> None:
     db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    monkeypatch.setenv("RAG_DISABLE_GATE", "false")
+    monkeypatch.setenv("RAG_DEFAULT_LLM_PROVIDER", "missing-test-llm")
+    get_settings.cache_clear()
 
     async def _init_db() -> None:
         async with db_engine.begin() as conn:
@@ -352,4 +367,5 @@ def test_chat_smalltalk_fallback_without_evidence() -> None:
         if prev_judge is not None:
             registry.register_judge(CHAT_JUDGE_PROVIDER, prev_judge)
         app.dependency_overrides.clear()
+        get_settings.cache_clear()
         asyncio.run(db_engine.dispose())
