@@ -65,7 +65,7 @@ export const useChatStore = defineStore('chat', {
         this.streamController.abort();
       }
     },
-    async sendMessage(question) {
+    async sendMessage(question, options = {}) {
       if (!question?.trim() || this.loading) return;
 
       if (!this.activeSessionId || this.activeSessionId === 'default_session') {
@@ -96,7 +96,8 @@ export const useChatStore = defineStore('chat', {
           {
             message: question,
             session_id: this.activeSessionId || undefined,
-            signal: this.streamController.signal
+            signal: this.streamController.signal,
+            token: options?.token || ''
           },
           {
             onContent: (chunk) => {

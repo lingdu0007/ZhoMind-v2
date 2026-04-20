@@ -196,7 +196,7 @@ const onSend = async () => {
   }
   const question = input.value;
   input.value = '';
-  await chatStore.sendMessage(question);
+  await chatStore.sendMessage(question, { token: authStore.token });
 };
 
 watch(

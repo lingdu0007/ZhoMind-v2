@@ -1,101 +1,126 @@
 import http, { resolveApiBaseURL } from './http';
 import { createSSEParser, normalizeSSEFrame } from './sse';
 
+const unwrapData = (payload) => payload?.data ?? payload;
+
 export const apiAdapter = {
   // Auth
   async register(payload) {
     const { data } = await http.post('/auth/register', payload);
-    return data;
+    return unwrapData(data);
   },
   async login(payload) {
     const { data } = await http.post('/auth/login', payload);
-    return data;
+    return unwrapData(data);
   },
   async getCurrentUser() {
     const { data } = await http.get('/auth/me');
-    return data;
+    return unwrapData(data);
   },
 
   // Chat & sessions
   async chat(payload) {
     const { data } = await http.post('/chat', payload);
-    return data;
+    return unwrapData(data);
   },
   async listSessions() {
     const { data } = await http.get('/sessions');
-    return data;
+    return unwrapData(data);
   },
   async getSessionMessages(sessionId) {
     const { data } = await http.get(`/sessions/${encodeURIComponent(sessionId)}`);
-    return data;
+    return unwrapData(data);
   },
   async deleteSession(sessionId) {
     const { data } = await http.delete(`/sessions/${encodeURIComponent(sessionId)}`);
-    return data;
+    return unwrapData(data);
   },
 
   // Documents (admin)
   async listDocuments(params) {
     const { data } = await http.get('/documents', { params });
-    return data;
+    return unwrapData(data);
   },
   async uploadDocument(formData) {
     const { data } = await http.post('/documents/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     });
-    return data;
+    return unwrapData(data);
   },
   async buildDocument(documentId, payload) {
     const { data } = await http.post(`/documents/${encodeURIComponent(documentId)}/build`, payload);
-    return data;
+    return unwrapData(data);
   },
   async batchBuildDocuments(payload) {
     const { data } = await http.post('/documents/batch-build', payload);
-    return data;
+    return unwrapData(data);
   },
   async batchDeleteDocuments(payload) {
     const { data } = await http.post('/documents/batch-delete', payload);
-    return data;
+    return unwrapData(data);
   },
   async getDocumentChunks(documentId, params) {
     const { data } = await http.get(`/documents/${encodeURIComponent(documentId)}/chunks`, { params });
-    return data;
+    return unwrapData(data);
   },
   async deleteDocument(filename) {
     const { data } = await http.delete(`/documents/${encodeURIComponent(filename)}`);
-    return data;
+    return unwrapData(data);
   },
 
   // Document async jobs (admin)
   async listDocumentJobs(params) {
     const { data } = await http.get('/documents/jobs', { params });
-    return data;
+    return unwrapData(data);
   },
   async getDocumentJob(jobId) {
     const { data } = await http.get(`/documents/jobs/${encodeURIComponent(jobId)}`);
-    return data;
+    return unwrapData(data);
   },
   async cancelDocumentJob(jobId) {
     const { data } = await http.post(`/documents/jobs/${encodeURIComponent(jobId)}/cancel`);
-    return data;
+    return unwrapData(data);
   }
 };
 
-export const streamChat = async ({ message, session_id, signal }, handlers = {}) => {
-  const token = localStorage.getItem('access_token');
+export const streamChat = async ({ message, session_id, signal, token }, handlers = {}) => {
+  const authToken = token || localStorage.getItem('access_token');
   const base = resolveApiBaseURL();
   const response = await fetch(`${base}/chat/stream`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {})
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {})
     },
     body: JSON.stringify({ message, session_id }),
     signal
   });
 
   if (!response.ok || !response.body) {
-    throw new Error(`流式请求失败: ${response.status}`);
+    let messageText = `流式请求失败: ${response.status}`;
+    let code = '';
+    let requestId = '';
+
+    try {
+      const payload = await response.clone().json();
+      const envelopeData = payload?.data || {};
+      messageText =
+        payload?.message ||
+        payload?.detail ||
+        envelopeData?.message ||
+        envelopeData?.detail ||
+        messageText;
+      code = payload?.code || envelopeData?.code || '';
+      requestId = payload?.request_id || envelopeData?.request_id || '';
+    } catch {
+      // ignore json parse failure and keep fallback message
+    }
+
+    const error = new Error(messageText);
+    error.status = response.status;
+    error.code = code;
+    error.request_id = requestId;
+    throw error;
   }
 
   const reader = response.body.getReader();
