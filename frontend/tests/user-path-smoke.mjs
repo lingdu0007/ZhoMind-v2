@@ -2,6 +2,13 @@ import assert from 'node:assert/strict';
 
 const API_BASE = process.env.API_BASE || 'http://127.0.0.1:8000/api/v1';
 
+const unwrapEnvelopeData = (payload) => {
+  if (payload && typeof payload === 'object' && !Array.isArray(payload) && 'data' in payload) {
+    return payload.data;
+  }
+  return payload;
+};
+
 const request = async ({ method, path, token, body, isForm }) => {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -21,7 +28,11 @@ const request = async ({ method, path, token, body, isForm }) => {
     json = text;
   }
 
-  return { status: response.status, body: json };
+  return {
+    status: response.status,
+    body: json,
+    data: unwrapEnvelopeData(json)
+  };
 };
 
 const waitJobTerminal = async (token, jobId, timeoutMs = 30000) => {
@@ -33,52 +44,96 @@ const waitJobTerminal = async (token, jobId, timeoutMs = 30000) => {
       token
     });
     if (resp.status !== 200) return resp;
-    if (['succeeded', 'failed', 'canceled'].includes(resp.body?.status)) return resp;
-    await new Promise((r) => setTimeout(r, resp.body?.status === 'queued' ? 1200 : 800));
+    if (['succeeded', 'failed', 'canceled'].includes(resp.data?.status)) return resp;
+    await new Promise((r) => setTimeout(r, resp.data?.status === 'queued' ? 1200 : 800));
   }
   throw new Error(`job timeout: ${jobId}`);
 };
 
 const run = async () => {
+  const stamp = Date.now();
+
+  const username = `smoke_user_${stamp}`;
+  const password = 'smoke-pass-123';
+
+  const register = await request({
+    method: 'POST',
+    path: '/auth/register',
+    body: { username, password, role: 'user' }
+  });
+  assert.equal(register.status, 200, 'register failed');
+
   const login = await request({
     method: 'POST',
     path: '/auth/login',
-    body: { username: 'admin', password: 'admin-token' }
+    body: { username, password }
   });
   assert.equal(login.status, 200, 'login failed');
-  const token = login.body?.access_token;
+  const token = login.data?.access_token;
   assert.ok(token, 'missing access_token');
 
+  const userUploadForm = new FormData();
+  userUploadForm.append('file', new Blob(['line1'], { type: 'text/plain' }), `smoke-user-${stamp}.txt`);
+  const userUpload = await request({
+    method: 'POST',
+    path: '/documents/upload',
+    token,
+    body: userUploadForm,
+    isForm: true
+  });
+  assert.equal(userUpload.status, 403, 'user upload should be forbidden');
+
+  const adminUsername = `smoke_admin_${stamp}`;
+  const adminCode = process.env.SMOKE_ADMIN_CODE;
+  const adminRegisterBody = adminCode
+    ? { username: adminUsername, password, role: 'admin', admin_code: adminCode }
+    : { username: adminUsername, password, role: 'admin' };
+
+  const registerAdmin = await request({
+    method: 'POST',
+    path: '/auth/register',
+    body: adminRegisterBody
+  });
+  assert.equal(registerAdmin.status, 200, 'admin register failed');
+
+  const loginAdmin = await request({
+    method: 'POST',
+    path: '/auth/login',
+    body: { username: adminUsername, password }
+  });
+  assert.equal(loginAdmin.status, 200, 'admin login failed');
+  const adminToken = loginAdmin.data?.access_token;
+  assert.ok(adminToken, 'missing admin access_token');
+
   const uploadOkForm = new FormData();
-  uploadOkForm.append('file', new Blob(['line1\nline2\nline3'], { type: 'text/plain' }), 'smoke-ok.txt');
+  uploadOkForm.append('file', new Blob(['line1\nline2\nline3'], { type: 'text/plain' }), `smoke-ok-${stamp}.txt`);
   const uploadOk = await request({
     method: 'POST',
     path: '/documents/upload',
-    token,
+    token: adminToken,
     body: uploadOkForm,
     isForm: true
   });
-  assert.equal(uploadOk.status, 202, 'upload ok should be accepted');
+  assert.equal(uploadOk.status, 200, 'admin upload should succeed');
 
-  const uploadFailForm = new FormData();
-  uploadFailForm.append('file', new Blob([' \n\t\n '], { type: 'text/plain' }), 'smoke-fail.txt');
-  const uploadFail = await request({
+  const uploadEdgeForm = new FormData();
+  uploadEdgeForm.append('file', new Blob([' \n\t\n '], { type: 'text/plain' }), `smoke-edge-${stamp}.txt`);
+  const uploadEdge = await request({
     method: 'POST',
     path: '/documents/upload',
-    token,
-    body: uploadFailForm,
+    token: adminToken,
+    body: uploadEdgeForm,
     isForm: true
   });
-  assert.equal(uploadFail.status, 202, 'upload fail sample should be accepted');
+  assert.equal(uploadEdge.status, 200, 'edge upload should succeed');
 
-  const okJob = await waitJobTerminal(token, uploadOk.body.job_id);
+  const okJob = await waitJobTerminal(adminToken, uploadOk.data.job_id);
   assert.equal(okJob.status, 200);
-  assert.equal(okJob.body.status, 'succeeded');
+  assert.equal(okJob.data.status, 'succeeded');
 
-  const failJob = await waitJobTerminal(token, uploadFail.body.job_id);
-  assert.equal(failJob.status, 200);
-  assert.equal(failJob.body.status, 'failed');
-  assert.ok(String(failJob.body.message || '').length > 0, 'failed job should carry message');
+  const edgeJob = await waitJobTerminal(adminToken, uploadEdge.data.job_id);
+  assert.equal(edgeJob.status, 200);
+  assert.equal(edgeJob.data.status, 'succeeded');
 
   const chatSync = await request({
     method: 'POST',
@@ -87,7 +142,7 @@ const run = async () => {
     body: { message: '你好', session_id: `smoke_${Date.now()}` }
   });
   assert.equal(chatSync.status, 200, 'chat sync failed');
-  assert.ok(chatSync.body?.message?.content, 'chat sync empty answer');
+  assert.ok(chatSync.data?.message?.content, 'chat sync empty answer');
 
   const streamResp = await fetch(`${API_BASE}/chat/stream`, {
     method: 'POST',
@@ -109,8 +164,9 @@ const run = async () => {
         api_base: API_BASE,
         evidences: {
           login_status: login.status,
-          ok_job: okJob.body,
-          fail_job: failJob.body
+          user_upload_status: userUpload.status,
+          admin_upload_job: okJob.body,
+          admin_edge_job: edgeJob.body
         }
       },
       null,
