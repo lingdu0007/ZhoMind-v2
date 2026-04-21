@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { extractRejectReason, formatStreamError, getDoneStatus } from '../src/store/chat-state.js';
+import { extractRejectReason, formatStreamError, getDoneStatus, getProviderStatus } from '../src/store/chat-state.js';
 
 test('extractRejectReason detects retrieve reject gates', () => {
   const reason = extractRejectReason({
@@ -31,3 +31,19 @@ test('getDoneStatus returns reject state label when rejected', () => {
   assert.equal(getDoneStatus({ rejected: true }), '已拒答（证据不足）');
   assert.equal(getDoneStatus({ rejected: false }), '');
 });
+
+test('getProviderStatus returns direct provider label', () => {
+  const status = getProviderStatus({ runtime: { final_provider: 'ark', fallback_hops: 0 } });
+  assert.equal(status, '模型提供方：ark');
+});
+
+test('getProviderStatus returns fallback label with hops', () => {
+  const status = getProviderStatus({ runtime: { final_provider: 'openai', fallback_hops: 1 } });
+  assert.equal(status, '已切换到 openai（1 次回退）');
+});
+
+test('getProviderStatus returns empty when provider missing', () => {
+  assert.equal(getProviderStatus({ runtime: {} }), '');
+  assert.equal(getProviderStatus(null), '');
+});
+

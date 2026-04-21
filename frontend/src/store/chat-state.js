@@ -24,3 +24,12 @@ export const getDoneStatus = (assistantMsg) => {
   if (assistantMsg?.rejected) return '已拒答（证据不足）';
   return '';
 };
+
+export const getProviderStatus = (trace) => {
+  const runtime = trace?.runtime || {};
+  const provider = runtime.final_provider;
+  const hops = Number(runtime.fallback_hops || 0);
+  if (!provider) return '';
+  if (hops > 0) return `已切换到 ${provider}（${hops} 次回退）`;
+  return `模型提供方：${provider}`;
+};

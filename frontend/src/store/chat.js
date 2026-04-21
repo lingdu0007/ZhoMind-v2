@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { apiAdapter, streamChat } from '../api/adapters';
-import { extractRejectReason, formatStreamError, getDoneStatus } from './chat-state';
+import { extractRejectReason, formatStreamError, getDoneStatus, getProviderStatus } from './chat-state';
 
 const toText = (value) => {
   if (typeof value === 'string') return value;
@@ -125,6 +125,8 @@ export const useChatStore = defineStore('chat', {
               const assistantMsg = getAssistantMsg();
               if (!assistantMsg) return;
               assistantMsg.rag_trace = trace;
+              const providerStatus = getProviderStatus(trace);
+              if (providerStatus) assistantMsg.status = providerStatus;
             },
             onError: (err) => {
               const assistantMsg = getAssistantMsg();
@@ -145,7 +147,7 @@ export const useChatStore = defineStore('chat', {
               if (assistantMsg.rejected && !assistantMsg.content) {
                 assistantMsg.content = '未检索到足够相关的知识片段，请补充更具体的问题或关键词。';
               }
-              assistantMsg.status = getDoneStatus(assistantMsg);
+              assistantMsg.status = getDoneStatus(assistantMsg) || assistantMsg.status;
               this.streamTick += 1;
             }
           }
