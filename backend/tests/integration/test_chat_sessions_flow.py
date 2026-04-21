@@ -81,7 +81,8 @@ def test_chat_and_sessions_flow(monkeypatch) -> None:
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
 
     monkeypatch.setenv("RAG_DISABLE_GATE", "false")
-    monkeypatch.setenv("RAG_DEFAULT_LLM_PROVIDER", "missing-test-llm")
+    monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "missing-test-llm")
+    monkeypatch.setenv("RAG_LLM_FALLBACK_PROVIDERS", "")
     get_settings.cache_clear()
 
     async def _init_db() -> None:
@@ -244,7 +245,8 @@ def test_chat_reject_gate_when_no_evidence(monkeypatch) -> None:
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
 
     monkeypatch.setenv("RAG_DISABLE_GATE", "false")
-    monkeypatch.setenv("RAG_DEFAULT_LLM_PROVIDER", "missing-test-llm")
+    monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "missing-test-llm")
+    monkeypatch.setenv("RAG_LLM_FALLBACK_PROVIDERS", "")
     get_settings.cache_clear()
 
     async def _init_db() -> None:
@@ -310,7 +312,8 @@ def test_chat_smalltalk_fallback_without_evidence(monkeypatch) -> None:
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
 
     monkeypatch.setenv("RAG_DISABLE_GATE", "false")
-    monkeypatch.setenv("RAG_DEFAULT_LLM_PROVIDER", "missing-test-llm")
+    monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "missing-test-llm")
+    monkeypatch.setenv("RAG_LLM_FALLBACK_PROVIDERS", "")
     get_settings.cache_clear()
 
     async def _init_db() -> None:
