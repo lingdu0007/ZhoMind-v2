@@ -1,18 +1,19 @@
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 import re
-from typing import Any
 import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.config import get_settings
+from app.extensions.provider_router import ProviderRouter
 from app.extensions.registry import get_extension_registry
 from app.model.document import DocumentChunk
-from app.rag.interfaces import LlmProvider, RelevanceJudge, Reranker, Retriever
+from app.rag.interfaces import RelevanceJudge, Reranker, Retriever
 from app.rag.runtime.graph_runner import RagGraphRunner
 from app.repository.chat_repository import ChatRepository
+from app.service.runtime_trace_mapper import RuntimeTraceMapper
 
 CHAT_RETRIEVER_PROVIDER = "chat-default-retriever"
 CHAT_RERANK_PROVIDER = "chat-default-reranker"
@@ -42,13 +43,6 @@ class _EvidenceJudge:
 
     async def judge(self, query: str, context: list[dict]) -> bool:
         return len(context) > 0
-
-
-class _EchoLlm:
-    name = "inmemory-echo-llm"
-
-    async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
-        return ""
 
 
 class ChatService:
@@ -142,14 +136,8 @@ class ChatService:
         fallback = _EvidenceJudge()
         return fallback, fallback.name
 
-    def _resolve_llm(self) -> tuple[LlmProvider, str]:
-        provider_name = get_settings().rag_default_llm_provider or CHAT_LLM_PROVIDER
-        provider = get_extension_registry().get_llm(provider_name)
-        if provider is not None:
-            return provider, provider_name
-
-        fallback = _EchoLlm()
-        return fallback, fallback.name
+    def _provider_router(self) -> ProviderRouter:
+        return ProviderRouter(providers=get_extension_registry().llm_providers)
 
     def _compose_llm_prompt(self, question: str, retrieved: list[dict]) -> str:
         lines = ["请基于以下证据回答用户问题。", f"问题：{question}"]
@@ -189,24 +177,43 @@ class ChatService:
         gate_passed: bool,
         *,
         gate_reason: str,
-        llm: LlmProvider,
-    ) -> str:
+    ) -> tuple[str, dict]:
         if gate_reason == "smalltalk_fallback":
-            return self._smalltalk_reply()
+            text = self._smalltalk_reply()
+            return text, {
+                "text": text,
+                "final_provider": "smalltalk",
+                "provider_attempts": [],
+                "fallback_hops": 0,
+            }
 
         if not gate_passed:
-            return "未检索到足够相关的知识片段，请补充更具体的问题或关键词。"
+            text = "未检索到足够相关的知识片段，请补充更具体的问题或关键词。"
+            return text, {
+                "text": text,
+                "final_provider": None,
+                "provider_attempts": [],
+                "fallback_hops": 0,
+            }
 
         prompt = self._compose_llm_prompt(question=question, retrieved=retrieved)
-        completion = (await llm.complete(prompt=prompt)).strip()
+        settings = get_settings()
+        llm_result = await self._provider_router().complete(
+            primary=settings.rag_primary_llm_provider,
+            fallbacks=settings.rag_llm_fallback_providers,
+            prompt=prompt,
+        )
+        completion = str(llm_result.get("text") or "").strip()
         if completion:
-            return completion
+            return completion, llm_result
 
         lines = ["根据检索到的知识片段，先给你一个最小可用回答："]
         for idx, item in enumerate(retrieved[:3], start=1):
             content = str(item.get("content_preview") or item.get("content") or "")
             lines.append(f"{idx}. {content}")
-        return "\n".join(lines)
+        text = "\n".join(lines)
+        llm_result["text"] = text
+        return text, llm_result
 
     def _rag_steps(
         self,
@@ -254,24 +261,7 @@ class ChatService:
         ]
 
     def _runtime_trace(self, runtime_result: dict) -> dict:
-        runtime_steps = list(runtime_result.get("steps") or [])
-        trace: dict[str, Any] = {
-            "request_id": runtime_result.get("request_id"),
-            "session_id": runtime_result.get("session_id"),
-            "graph_alias": runtime_result.get("graph_alias"),
-            "gate": runtime_result.get("gate") or {},
-            "steps": runtime_steps,
-            "step_names": [str(item.get("step") or "") for item in runtime_steps],
-        }
-
-        if runtime_result.get("tool_budget") is not None:
-            trace["tool_budget"] = runtime_result.get("tool_budget")
-        if runtime_result.get("tool_errors") is not None:
-            trace["tool_errors"] = list(runtime_result.get("tool_errors") or [])
-        if runtime_result.get("provider_trace") is not None:
-            trace["provider_trace"] = runtime_result.get("provider_trace")
-
-        return trace
+        return RuntimeTraceMapper.map_runtime(runtime_result)
 
     async def ensure_session_id(self, session_id: str | None) -> str:
         if session_id and session_id.strip():
@@ -361,14 +351,13 @@ class ChatService:
             gate_passed = True
             gate_reason = "smalltalk_fallback"
 
-        llm, llm_name = self._resolve_llm()
-        reply = await self._assistant_reply(
+        reply, llm_result = await self._assistant_reply(
             question=normalized_question,
             retrieved=reranked,
             gate_passed=gate_passed,
             gate_reason=gate_reason,
-            llm=llm,
         )
+        llm_name = str(llm_result.get("final_provider") or CHAT_LLM_PROVIDER)
         rag_steps = self._rag_steps(
             question=normalized_question,
             retriever_name=retriever_name,
@@ -380,6 +369,10 @@ class ChatService:
             gate_passed=gate_passed,
             gate_reason=gate_reason,
         )
+
+        runtime_result["final_provider"] = llm_result.get("final_provider")
+        runtime_result["provider_attempts"] = list(llm_result.get("provider_attempts") or [])
+        runtime_result["fallback_hops"] = int(llm_result.get("fallback_hops") or 0)
 
         runtime_trace = self._runtime_trace(runtime_result)
         runtime_trace["gate"] = {

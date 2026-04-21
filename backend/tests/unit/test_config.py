@@ -2,7 +2,7 @@ import asyncio
 
 from app.common.config import Settings, get_settings
 from app.common.responses import ok_response
-from app.extensions.ark_llm_provider import ArkLlmProvider
+from app.extensions.langchain_chat_providers import OpenAICompatibleChatProvider
 from app.extensions.registry import ExtensionRegistry, get_extension_registry, get_task_backend
 from app.infra.milvus import get_milvus_client, get_milvus_provider
 from app.infra.minio import get_minio_client, get_minio_provider
@@ -169,4 +169,18 @@ def test_registry_registers_ark_llm_from_env(monkeypatch) -> None:
     registry = get_extension_registry()
 
     provider = registry.get_llm("chat-default-llm")
-    assert isinstance(provider, ArkLlmProvider)
+    assert isinstance(provider, OpenAICompatibleChatProvider)
+    get_settings.cache_clear()
+    get_extension_registry.cache_clear()
+
+
+def test_llm_provider_routing_settings(monkeypatch) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "ark")
+    monkeypatch.setenv("RAG_LLM_FALLBACK_PROVIDERS", "openai,anthropic")
+
+    settings = get_settings()
+
+    assert settings.rag_primary_llm_provider == "ark"
+    assert settings.rag_llm_fallback_providers == ["openai", "anthropic"]
+    get_settings.cache_clear()
