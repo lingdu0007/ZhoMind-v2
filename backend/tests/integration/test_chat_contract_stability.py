@@ -106,6 +106,11 @@ def test_chat_response_contract_stable(monkeypatch) -> None:
             assert "tool_budget" in runtime
             assert "max_calls" in runtime["tool_budget"]
             assert "tool_errors" in runtime
+            assert "final_provider" in runtime
+            assert "provider_attempts" in runtime
+            assert "fallback_hops" in runtime
+            assert isinstance(runtime["provider_attempts"], list)
+            assert isinstance(runtime["fallback_hops"], int)
 
             stream_resp = client.post(
                 "/api/v1/chat/stream",

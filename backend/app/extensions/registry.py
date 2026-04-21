@@ -1,8 +1,11 @@
 from dataclasses import dataclass, field
 from functools import lru_cache
 
+from langchain_anthropic import ChatAnthropic
+from langchain_openai import ChatOpenAI
+
 from app.common.config import get_settings
-from app.extensions.ark_llm_provider import ArkLlmProvider
+from app.extensions.langchain_chat_providers import AnthropicChatProvider, OpenAICompatibleChatProvider
 from app.rag.interfaces import EmbeddingProvider, LlmProvider, RelevanceJudge, Reranker, Retriever
 from app.tasks.interfaces import InMemoryTaskBackend, TaskBackend, create_inmemory_task_backend
 
@@ -82,14 +85,35 @@ def get_extension_registry() -> ExtensionRegistry:
     settings = get_settings()
 
     if settings.ark_api_key and settings.llm_base_url and settings.llm_model:
-        registry.register_llm(
-            "chat-default-llm",
-            ArkLlmProvider(
-                api_key=settings.ark_api_key,
-                model=settings.llm_model,
-                base_url=settings.llm_base_url,
-            ),
+        ark_model = ChatOpenAI(
+            api_key=settings.ark_api_key,
+            base_url=settings.llm_base_url,
+            model=settings.llm_model,
+            temperature=0.2,
         )
+        registry.register_llm("ark", OpenAICompatibleChatProvider(model=ark_model, provider_name="ark"))
+
+    if settings.openai_api_key and settings.openai_model:
+        openai_kwargs = {
+            "api_key": settings.openai_api_key,
+            "model": settings.openai_model,
+            "temperature": 0.2,
+        }
+        if settings.openai_base_url:
+            openai_kwargs["base_url"] = settings.openai_base_url
+        openai_model = ChatOpenAI(**openai_kwargs)
+        registry.register_llm("openai", OpenAICompatibleChatProvider(model=openai_model, provider_name="openai"))
+
+    if settings.anthropic_api_key and settings.anthropic_model:
+        anthropic_model = ChatAnthropic(
+            api_key=settings.anthropic_api_key,
+            model=settings.anthropic_model,
+            temperature=0.2,
+        )
+        registry.register_llm("anthropic", AnthropicChatProvider(model=anthropic_model, provider_name="anthropic"))
+
+    if "ark" in registry.llm_providers:
+        registry.register_llm("chat-default-llm", registry.llm_providers["ark"])
 
     registry.register_task_backend("inmemory", create_inmemory_task_backend())
     return registry
