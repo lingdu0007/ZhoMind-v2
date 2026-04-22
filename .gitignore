@@ -106,3 +106,12 @@ volumes/
 .claude/
 docs/
 CLAUDE.md
+
+# =========================
+# Local planning docs (never commit)
+# =========================
+/findings.md
+/progress.md
+/progrss.md
+/task.md
+/task_plan.md
