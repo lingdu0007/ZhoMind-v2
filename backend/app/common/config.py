@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     minio_secure: bool = Field(False, alias="MINIO_SECURE")
 
     bm25_state_path: str = Field("", alias="BM25_STATE_PATH")
+    document_allowed_extensions_raw: str = Field("txt,md,pdf", alias="DOCUMENT_ALLOWED_EXTENSIONS")
+    doc_worker_enabled: bool = Field(True, alias="DOC_WORKER_ENABLED")
+    doc_worker_max_concurrency: int = Field(1, alias="DOC_WORKER_MAX_CONCURRENCY", ge=1)
 
     rag_graph_alias: str = Field("default_v1", alias="RAG_GRAPH_ALIAS")
     rag_enable_tools: bool = Field(False, alias="RAG_ENABLE_TOOLS")
@@ -64,6 +67,22 @@ class Settings(BaseSettings):
 
     anthropic_api_key: str = Field("", alias="ANTHROPIC_API_KEY")
     anthropic_model: str = Field("claude-sonnet-4-6", alias="ANTHROPIC_MODEL")
+
+    @staticmethod
+    def _normalize_document_extensions(raw_value: str) -> list[str]:
+        parts = [item.strip().lower().lstrip(".") for item in raw_value.split(",")]
+        return [item for item in parts if item]
+
+    @field_validator("document_allowed_extensions_raw")
+    @classmethod
+    def validate_document_allowed_extensions_raw(cls, value: str) -> str:
+        if not cls._normalize_document_extensions(value):
+            raise ValueError("DOCUMENT_ALLOWED_EXTENSIONS must include at least one extension")
+        return value
+
+    @property
+    def document_allowed_extensions(self) -> list[str]:
+        return self._normalize_document_extensions(self.document_allowed_extensions_raw)
 
     @property
     def rag_llm_fallback_providers(self) -> list[str]:

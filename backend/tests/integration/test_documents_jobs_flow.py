@@ -1,5 +1,8 @@
 import asyncio
 from collections.abc import Generator
+import os
+import tempfile
+import time
 
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -47,8 +50,47 @@ def _extract_data(payload: dict) -> dict:
     return payload.get("data") or payload
 
 
+def _poll_job_until_terminal(
+    client: TestClient,
+    *,
+    headers: dict[str, str],
+    job_id: str,
+    timeout_seconds: float = 2.0,
+) -> dict:
+    deadline = time.monotonic() + timeout_seconds
+    last_data: dict | None = None
+    while time.monotonic() < deadline:
+        response = client.get(f"/api/v1/documents/jobs/{job_id}", headers=headers)
+        assert response.status_code == 200
+        data = _extract_data(response.json())
+        last_data = data
+        if data["status"] in {"succeeded", "failed", "canceled"}:
+            return data
+        time.sleep(0.02)
+    raise AssertionError(f"job {job_id} did not reach terminal state, last={last_data}")
+
+
+def _get_document_item(client: TestClient, *, headers: dict[str, str], document_id: str) -> dict:
+    response = client.get("/api/v1/documents?page=1&page_size=50", headers=headers)
+    assert response.status_code == 200
+    items = _extract_data(response.json())["items"]
+    return next(item for item in items if item["document_id"] == document_id)
+
+
+def _get_chunk_snapshot(client: TestClient, *, headers: dict[str, str], document_id: str) -> list[tuple[int, str, dict]]:
+    response = client.get(
+        f"/api/v1/documents/{document_id}/chunks?page=1&page_size=50",
+        headers=headers,
+    )
+    assert response.status_code == 200
+    items = _extract_data(response.json())["items"]
+    return [(item["chunk_index"], item["content"], item["metadata"]) for item in items]
+
+
 def test_documents_and_jobs_flow() -> None:
-    db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-flow-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
 
     async def _init_db() -> None:
@@ -78,6 +120,14 @@ def test_documents_and_jobs_flow() -> None:
             token = asyncio.run(_create_admin_token(client))
             headers = _admin_headers(token)
 
+            unsupported_upload_response = client.post(
+                "/api/v1/documents/upload",
+                headers=headers,
+                files={"file": ("demo.docx", b"binary", "application/octet-stream")},
+            )
+            assert unsupported_upload_response.status_code == 415
+            assert unsupported_upload_response.json()["code"] == "DOC_FILE_TYPE_NOT_SUPPORTED"
+
             upload_response = client.post(
                 "/api/v1/documents/upload",
                 headers=headers,
@@ -87,6 +137,17 @@ def test_documents_and_jobs_flow() -> None:
             upload_data = _extract_data(upload_response.json())
             document_id = upload_data["document_id"]
             job_id = upload_data["job_id"]
+
+            upload_chunk_not_ready = client.get(
+                f"/api/v1/documents/{document_id}/chunks?page=1&page_size=5",
+                headers=headers,
+            )
+            assert upload_chunk_not_ready.status_code == 409
+            assert upload_chunk_not_ready.json()["code"] == "DOC_CHUNK_RESULT_NOT_READY"
+
+            upload_job_poll = _poll_job_until_terminal(client, headers=headers, job_id=job_id)
+            assert upload_job_poll["status"] == "succeeded"
+            assert upload_job_poll["stage"] == "completed"
 
             list_docs_response = client.get("/api/v1/documents?page=1&page_size=20", headers=headers)
             assert list_docs_response.status_code == 200
@@ -136,9 +197,7 @@ def test_documents_and_jobs_flow() -> None:
             assert not_ready_chunk_response.status_code == 409
             assert not_ready_chunk_response.json()["code"] == "DOC_CHUNK_RESULT_NOT_READY"
 
-            rebuilt_job_poll_response = client.get(f"/api/v1/documents/jobs/{rebuilt_job_id}", headers=headers)
-            assert rebuilt_job_poll_response.status_code == 200
-            rebuilt_job_data = _extract_data(rebuilt_job_poll_response.json())
+            rebuilt_job_data = _poll_job_until_terminal(client, headers=headers, job_id=rebuilt_job_id)
             assert rebuilt_job_data["status"] == "succeeded"
             assert rebuilt_job_data["stage"] == "completed"
             assert rebuilt_job_data["progress"] == 100
@@ -163,9 +222,15 @@ def test_documents_and_jobs_flow() -> None:
             batch_job_id = batch_build_data["items"][0]["job_id"]
             assert batch_build_data["items"][0]["status"] == "queued"
 
-            batch_job_poll_response = client.get(f"/api/v1/documents/jobs/{batch_job_id}", headers=headers)
-            assert batch_job_poll_response.status_code == 200
-            assert _extract_data(batch_job_poll_response.json())["status"] == "succeeded"
+            batch_job_poll_data = _poll_job_until_terminal(client, headers=headers, job_id=batch_job_id)
+            assert batch_job_poll_data["status"] == "succeeded"
+
+            invalid_batch_strategy_response = client.post(
+                "/api/v1/documents/batch-build",
+                headers=headers,
+                json={"document_ids": [document_id], "chunk_strategy": "outline"},
+            )
+            assert invalid_batch_strategy_response.status_code == 422
 
             cancel_completed_job_response = client.post(
                 f"/api/v1/documents/jobs/{job_id}/cancel",
@@ -177,7 +242,7 @@ def test_documents_and_jobs_flow() -> None:
             cancel_target_build_response = client.post(
                 f"/api/v1/documents/{document_id}/build",
                 headers=headers,
-                json={"chunk_strategy": "outline"},
+                json={"chunk_strategy": "paper"},
             )
             assert cancel_target_build_response.status_code == 200
             cancel_target_job = _extract_data(cancel_target_build_response.json())
@@ -192,6 +257,19 @@ def test_documents_and_jobs_flow() -> None:
             cancel_data = _extract_data(cancel_response.json())
             assert cancel_data["status"] == "canceled"
             assert cancel_data["stage"] == "failed"
+
+            canceled_docs_response = client.get("/api/v1/documents?page=1&page_size=20", headers=headers)
+            assert canceled_docs_response.status_code == 200
+            canceled_docs_data = _extract_data(canceled_docs_response.json())
+            canceled_doc = next(item for item in canceled_docs_data["items"] if item["document_id"] == document_id)
+            assert canceled_doc["status"] == "pending"
+
+            canceled_chunk_response = client.get(
+                f"/api/v1/documents/{document_id}/chunks?page=1&page_size=5",
+                headers=headers,
+            )
+            assert canceled_chunk_response.status_code == 409
+            assert canceled_chunk_response.json()["code"] == "DOC_CHUNK_RESULT_NOT_READY"
 
             list_jobs_response = client.get("/api/v1/documents/jobs?page=1&page_size=20", headers=headers)
             assert list_jobs_response.status_code == 200
@@ -217,10 +295,259 @@ def test_documents_and_jobs_flow() -> None:
         settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
+        os.remove(db_path)
+
+
+def test_documents_enqueue_failure_compensation(monkeypatch) -> None:
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-enqueue-fail-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_init_db())
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    fake_redis = _InMemoryRedis()
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+
+    from app.api.v1 import documents as documents_api
+    from app.common.config import get_settings
+
+    original_enqueue_task = documents_api._enqueue_document_task
+    fail_mode = {"enabled": True}
+
+    async def _maybe_fail_enqueue_task(name: str, payload: dict):
+        if fail_mode["enabled"]:
+            raise RuntimeError("enqueue failed")
+        return await original_enqueue_task(name=name, payload=payload)
+
+    monkeypatch.setattr(documents_api, "_enqueue_document_task", _maybe_fail_enqueue_task)
+
+    settings = get_settings()
+    original_code = settings.admin_invite_code
+    settings.admin_invite_code = "test-admin-code"
+
+    try:
+        with TestClient(app) as client:
+            token = asyncio.run(_create_admin_token(client))
+            headers = _admin_headers(token)
+
+            failed_upload = client.post(
+                "/api/v1/documents/upload",
+                headers=headers,
+                files={"file": ("retry.txt", b"content", "text/plain")},
+            )
+            assert failed_upload.status_code == 500
+            assert failed_upload.json()["code"] == "INTERNAL_ERROR"
+
+            empty_docs = client.get("/api/v1/documents?page=1&page_size=20", headers=headers)
+            assert empty_docs.status_code == 200
+            assert _extract_data(empty_docs.json())["items"] == []
+
+            fail_mode["enabled"] = False
+            successful_upload = client.post(
+                "/api/v1/documents/upload",
+                headers=headers,
+                files={"file": ("retry.txt", b"content", "text/plain")},
+            )
+            assert successful_upload.status_code == 200
+            upload_data = _extract_data(successful_upload.json())
+            document_id = upload_data["document_id"]
+            upload_job_id = upload_data["job_id"]
+            assert _poll_job_until_terminal(client, headers=headers, job_id=upload_job_id)["status"] == "succeeded"
+
+            fail_mode["enabled"] = True
+            failed_build = client.post(
+                f"/api/v1/documents/{document_id}/build",
+                headers=headers,
+                json={"chunk_strategy": "paper"},
+            )
+            assert failed_build.status_code == 500
+            assert failed_build.json()["code"] == "INTERNAL_ERROR"
+
+            docs_after_build_fail = client.get("/api/v1/documents?page=1&page_size=20", headers=headers)
+            assert docs_after_build_fail.status_code == 200
+            doc_item = next(item for item in _extract_data(docs_after_build_fail.json())["items"] if item["document_id"] == document_id)
+            assert doc_item["status"] == "ready"
+
+            jobs_after_build_fail = client.get("/api/v1/documents/jobs?page=1&page_size=20", headers=headers)
+            assert jobs_after_build_fail.status_code == 200
+            build_failed_job = next(
+                item
+                for item in _extract_data(jobs_after_build_fail.json())["items"]
+                if item["document_id"] == document_id and item["status"] == "failed"
+            )
+            assert build_failed_job["stage"] == "failed"
+
+            failed_batch_build = client.post(
+                "/api/v1/documents/batch-build",
+                headers=headers,
+                json={"document_ids": [document_id], "chunk_strategy": "qa"},
+            )
+            assert failed_batch_build.status_code == 500
+            assert failed_batch_build.json()["code"] == "INTERNAL_ERROR"
+
+            docs_after_batch_fail = client.get("/api/v1/documents?page=1&page_size=20", headers=headers)
+            assert docs_after_batch_fail.status_code == 200
+            doc_item = next(item for item in _extract_data(docs_after_batch_fail.json())["items"] if item["document_id"] == document_id)
+            assert doc_item["status"] == "ready"
+            assert doc_item["chunk_strategy"] == "general"
+
+            chunks_after_batch_fail = client.get(
+                f"/api/v1/documents/{document_id}/chunks?page=1&page_size=5",
+                headers=headers,
+            )
+            assert chunks_after_batch_fail.status_code == 200
+
+            jobs_after_batch_fail = client.get("/api/v1/documents/jobs?page=1&page_size=20", headers=headers)
+            assert jobs_after_batch_fail.status_code == 200
+            failed_jobs = [
+                item
+                for item in _extract_data(jobs_after_batch_fail.json())["items"]
+                if item["document_id"] == document_id and item["status"] == "failed"
+            ]
+            assert len(failed_jobs) >= 2
+    finally:
+        settings.admin_invite_code = original_code
+        app.dependency_overrides.clear()
+        asyncio.run(db_engine.dispose())
+        os.remove(db_path)
+
+
+def test_documents_batch_enqueue_failure_compensates_all_items(monkeypatch) -> None:
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-batch-enqueue-fail-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_init_db())
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    fake_redis = _InMemoryRedis()
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+
+    from app.api.v1 import documents as documents_api
+    from app.common.config import get_settings
+
+    original_enqueue_task = documents_api._enqueue_document_task
+    original_enqueue_runner = documents_api._enqueue_document_runner
+    settings = get_settings()
+    original_code = settings.admin_invite_code
+    settings.admin_invite_code = "test-admin-code"
+
+    try:
+        with TestClient(app) as client:
+            token = asyncio.run(_create_admin_token(client))
+            headers = _admin_headers(token)
+
+            first_upload = client.post(
+                "/api/v1/documents/upload",
+                headers=headers,
+                files={"file": ("batch-a.txt", b"alpha", "text/plain")},
+            )
+            assert first_upload.status_code == 200
+            first_data = _extract_data(first_upload.json())
+            first_document_id = first_data["document_id"]
+            assert _poll_job_until_terminal(client, headers=headers, job_id=first_data["job_id"])["status"] == "succeeded"
+
+            second_upload = client.post(
+                "/api/v1/documents/upload",
+                headers=headers,
+                files={"file": ("batch-b.txt", b"beta", "text/plain")},
+            )
+            assert second_upload.status_code == 200
+            second_data = _extract_data(second_upload.json())
+            second_document_id = second_data["document_id"]
+            assert _poll_job_until_terminal(client, headers=headers, job_id=second_data["job_id"])["status"] == "succeeded"
+
+            first_doc_before = _get_document_item(client, headers=headers, document_id=first_document_id)
+            second_doc_before = _get_document_item(client, headers=headers, document_id=second_document_id)
+            first_chunks_before = _get_chunk_snapshot(client, headers=headers, document_id=first_document_id)
+            second_chunks_before = _get_chunk_snapshot(client, headers=headers, document_id=second_document_id)
+
+            jobs_before_batch = client.get("/api/v1/documents/jobs?page=1&page_size=50", headers=headers)
+            assert jobs_before_batch.status_code == 200
+            jobs_before_ids = {item["job_id"] for item in _extract_data(jobs_before_batch.json())["items"]}
+
+            enqueue_calls = {"count": 0}
+            submitted_runner_job_ids: list[str] = []
+
+            async def _fail_on_second_enqueue_task(name: str, payload: dict):
+                enqueue_calls["count"] += 1
+                if enqueue_calls["count"] == 2:
+                    # Keep a real race window open: vulnerable code could let item-1 finish here.
+                    await asyncio.sleep(0.1)
+                    raise RuntimeError("enqueue failed on second")
+                return await original_enqueue_task(name=name, payload=payload)
+
+            def _track_enqueue_runner(job_id: str, runner):
+                submitted_runner_job_ids.append(job_id)
+                return original_enqueue_runner(job_id, runner)
+
+            monkeypatch.setattr(documents_api, "_enqueue_document_task", _fail_on_second_enqueue_task)
+            monkeypatch.setattr(documents_api, "_enqueue_document_runner", _track_enqueue_runner)
+
+            batch_response = client.post(
+                "/api/v1/documents/batch-build",
+                headers=headers,
+                json={"document_ids": [first_document_id, second_document_id], "chunk_strategy": "qa"},
+            )
+            assert batch_response.status_code == 500
+            assert batch_response.json()["code"] == "INTERNAL_ERROR"
+            assert enqueue_calls["count"] == 2
+            assert submitted_runner_job_ids == []
+
+            first_doc_after = _get_document_item(client, headers=headers, document_id=first_document_id)
+            second_doc_after = _get_document_item(client, headers=headers, document_id=second_document_id)
+            assert first_doc_after["status"] == first_doc_before["status"]
+            assert first_doc_after["chunk_strategy"] == first_doc_before["chunk_strategy"]
+            assert second_doc_after["status"] == second_doc_before["status"]
+            assert second_doc_after["chunk_strategy"] == second_doc_before["chunk_strategy"]
+            assert _get_chunk_snapshot(client, headers=headers, document_id=first_document_id) == first_chunks_before
+            assert _get_chunk_snapshot(client, headers=headers, document_id=second_document_id) == second_chunks_before
+
+            jobs_response = client.get("/api/v1/documents/jobs?page=1&page_size=50", headers=headers)
+            assert jobs_response.status_code == 200
+            jobs_items = _extract_data(jobs_response.json())["items"]
+            target_docs = {first_document_id, second_document_id}
+            created_batch_jobs = [
+                item for item in jobs_items if item["job_id"] not in jobs_before_ids and item["document_id"] in target_docs
+            ]
+
+            assert len(created_batch_jobs) == 2
+            assert not any(item["status"] in {"queued", "running"} for item in created_batch_jobs)
+            assert not any(item["status"] == "succeeded" for item in created_batch_jobs)
+            assert all(
+                item["status"] in {"failed", "canceled"} and item["message"] == "failed to enqueue document build"
+                for item in created_batch_jobs
+            )
+    finally:
+        settings.admin_invite_code = original_code
+        app.dependency_overrides.clear()
+        asyncio.run(db_engine.dispose())
+        os.remove(db_path)
 
 
 def test_documents_requires_admin_role() -> None:
-    db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-auth-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
 
     async def _init_db() -> None:
@@ -255,3 +582,4 @@ def test_documents_requires_admin_role() -> None:
     finally:
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
+        os.remove(db_path)
