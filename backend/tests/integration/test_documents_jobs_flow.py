@@ -200,6 +200,13 @@ def test_documents_and_jobs_flow() -> None:
             batch_job_poll_data = _poll_job_until_terminal(client, headers=headers, job_id=batch_job_id)
             assert batch_job_poll_data["status"] == "succeeded"
 
+            invalid_batch_strategy_response = client.post(
+                "/api/v1/documents/batch-build",
+                headers=headers,
+                json={"document_ids": [document_id], "chunk_strategy": "outline"},
+            )
+            assert invalid_batch_strategy_response.status_code == 422
+
             cancel_completed_job_response = client.post(
                 f"/api/v1/documents/jobs/{job_id}/cancel",
                 headers=headers,
@@ -259,6 +266,123 @@ def test_documents_and_jobs_flow() -> None:
             assert post_delete_docs.status_code == 200
             post_delete_data = _extract_data(post_delete_docs.json())
             assert post_delete_data["items"] == []
+    finally:
+        settings.admin_invite_code = original_code
+        app.dependency_overrides.clear()
+        asyncio.run(db_engine.dispose())
+        os.remove(db_path)
+
+
+def test_documents_enqueue_failure_compensation(monkeypatch) -> None:
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-enqueue-fail-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_init_db())
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    fake_redis = _InMemoryRedis()
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+
+    from app.api.v1 import documents as documents_api
+    from app.common.config import get_settings
+
+    original_enqueue = documents_api._enqueue_document_build
+    fail_mode = {"enabled": True}
+
+    async def _maybe_fail_enqueue(*args, **kwargs):
+        if fail_mode["enabled"]:
+            raise RuntimeError("enqueue failed")
+        return await original_enqueue(*args, **kwargs)
+
+    monkeypatch.setattr(documents_api, "_enqueue_document_build", _maybe_fail_enqueue)
+
+    settings = get_settings()
+    original_code = settings.admin_invite_code
+    settings.admin_invite_code = "test-admin-code"
+
+    try:
+        with TestClient(app) as client:
+            token = asyncio.run(_create_admin_token(client))
+            headers = _admin_headers(token)
+
+            failed_upload = client.post(
+                "/api/v1/documents/upload",
+                headers=headers,
+                files={"file": ("retry.txt", b"content", "text/plain")},
+            )
+            assert failed_upload.status_code == 500
+            assert failed_upload.json()["code"] == "INTERNAL_ERROR"
+
+            empty_docs = client.get("/api/v1/documents?page=1&page_size=20", headers=headers)
+            assert empty_docs.status_code == 200
+            assert _extract_data(empty_docs.json())["items"] == []
+
+            fail_mode["enabled"] = False
+            successful_upload = client.post(
+                "/api/v1/documents/upload",
+                headers=headers,
+                files={"file": ("retry.txt", b"content", "text/plain")},
+            )
+            assert successful_upload.status_code == 200
+            upload_data = _extract_data(successful_upload.json())
+            document_id = upload_data["document_id"]
+            upload_job_id = upload_data["job_id"]
+            assert _poll_job_until_terminal(client, headers=headers, job_id=upload_job_id)["status"] == "succeeded"
+
+            fail_mode["enabled"] = True
+            failed_build = client.post(
+                f"/api/v1/documents/{document_id}/build",
+                headers=headers,
+                json={"chunk_strategy": "paper"},
+            )
+            assert failed_build.status_code == 500
+            assert failed_build.json()["code"] == "INTERNAL_ERROR"
+
+            docs_after_build_fail = client.get("/api/v1/documents?page=1&page_size=20", headers=headers)
+            assert docs_after_build_fail.status_code == 200
+            doc_item = next(item for item in _extract_data(docs_after_build_fail.json())["items"] if item["document_id"] == document_id)
+            assert doc_item["status"] == "ready"
+
+            jobs_after_build_fail = client.get("/api/v1/documents/jobs?page=1&page_size=20", headers=headers)
+            assert jobs_after_build_fail.status_code == 200
+            build_failed_job = next(
+                item
+                for item in _extract_data(jobs_after_build_fail.json())["items"]
+                if item["document_id"] == document_id and item["status"] == "failed"
+            )
+            assert build_failed_job["stage"] == "failed"
+
+            failed_batch_build = client.post(
+                "/api/v1/documents/batch-build",
+                headers=headers,
+                json={"document_ids": [document_id], "chunk_strategy": "qa"},
+            )
+            assert failed_batch_build.status_code == 500
+            assert failed_batch_build.json()["code"] == "INTERNAL_ERROR"
+
+            docs_after_batch_fail = client.get("/api/v1/documents?page=1&page_size=20", headers=headers)
+            assert docs_after_batch_fail.status_code == 200
+            doc_item = next(item for item in _extract_data(docs_after_batch_fail.json())["items"] if item["document_id"] == document_id)
+            assert doc_item["status"] == "ready"
+
+            jobs_after_batch_fail = client.get("/api/v1/documents/jobs?page=1&page_size=20", headers=headers)
+            assert jobs_after_batch_fail.status_code == 200
+            failed_jobs = [
+                item
+                for item in _extract_data(jobs_after_batch_fail.json())["items"]
+                if item["document_id"] == document_id and item["status"] == "failed"
+            ]
+            assert len(failed_jobs) >= 2
     finally:
         settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
