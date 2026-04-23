@@ -143,6 +143,47 @@ async def _enqueue_document_task(name: str, payload: dict) -> str:
     return await backend.enqueue(name=name, payload=payload)
 
 
+def _build_document_runner(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    document_id: str,
+    job_id: str,
+    content: bytes | None = None,
+    gate: threading.Event | None = None,
+) -> Awaitable[None]:
+    async def _runner() -> None:
+        if gate is not None:
+            while not gate.is_set():
+                await asyncio.sleep(0.005)
+
+        async with session_factory() as background_session:
+            service = DocumentBuildService(background_session)
+            await service.process_job(document_id=document_id, job_id=job_id, content=content)
+
+    return _runner()
+
+
+def _close_runner(runner: Awaitable[None]) -> None:
+    close = getattr(runner, "close", None)
+    if callable(close):
+        close()
+
+
+def _enqueue_document_runner(job_id: str, runner: Awaitable[None]) -> None:
+    try:
+        _dispatcher_loop.submit(_job_dispatcher.enqueue(job_id, runner))
+    except Exception:
+        _close_runner(runner)
+        raise
+
+
+def _require_session_factory(session: AsyncSession) -> async_sessionmaker[AsyncSession]:
+    bind = session.bind
+    if bind is None:
+        raise AppError(status_code=500, code="INTERNAL_ERROR", message="database binding unavailable")
+    return async_sessionmaker(bind=bind, class_=AsyncSession, expire_on_commit=False)
+
+
 async def _enqueue_document_build(
     session: AsyncSession,
     *,
@@ -150,24 +191,16 @@ async def _enqueue_document_build(
     job_id: str,
     content: bytes | None = None,
 ) -> None:
-    bind = session.bind
-    if bind is None:
-        raise AppError(status_code=500, code="INTERNAL_ERROR", message="database binding unavailable")
-
-    session_factory = async_sessionmaker(bind=bind, class_=AsyncSession, expire_on_commit=False)
-
-    async def _runner() -> None:
-        async with session_factory() as background_session:
-            service = DocumentBuildService(background_session)
-            await service.process_job(document_id=document_id, job_id=job_id, content=content)
+    session_factory = _require_session_factory(session)
 
     await _enqueue_document_task("build_document", {"document_id": document_id, "job_id": job_id})
-    runner = _runner()
-    try:
-        _dispatcher_loop.submit(_job_dispatcher.enqueue(job_id, runner))
-    except Exception:
-        runner.close()
-        raise
+    runner = _build_document_runner(
+        session_factory=session_factory,
+        document_id=document_id,
+        job_id=job_id,
+        content=content,
+    )
+    _enqueue_document_runner(job_id, runner)
 
 
 async def _best_effort_cancel_enqueued(job_id: str) -> None:
@@ -234,15 +267,14 @@ async def _compensate_batch_enqueue_failure(
 
         job_result = await session.execute(select(DocumentJob).where(DocumentJob.id == job_id))
         job = job_result.scalar_one_or_none()
-        if job is not None and job.status in {"queued", "running"}:
-            job.status = "failed"
+        if job is not None:
+            if job.status != "canceled":
+                job.status = "failed"
             job.stage = "failed"
             job.progress = min(job.progress, 99)
             job.message = "failed to enqueue document build"
 
     await session.commit()
-    for _, job_id, _, _ in targets:
-        await _best_effort_cancel_enqueued(job_id)
 
 
 @router.get("")
@@ -387,13 +419,43 @@ async def batch_build_documents(
         queued_jobs.append((document.id, job.id, previous_status, previous_strategy))
 
     await session.commit()
-    for document_id, job_id, _, _ in queued_jobs:
-        try:
-            await _enqueue_document_build(session, document_id=document_id, job_id=job_id)
-        except Exception as exc:
+    gate = threading.Event()
+    session_factory = _require_session_factory(session)
+    enqueued_job_ids: list[str] = []
+    runner_plans: list[tuple[str, Awaitable[None]]] = []
+    submitted_runner_count = 0
+    try:
+        for document_id, job_id, _, _ in queued_jobs:
+            await _enqueue_document_task("build_document", {"document_id": document_id, "job_id": job_id})
+            enqueued_job_ids.append(job_id)
+
+            runner_plans.append(
+                (
+                    job_id,
+                    _build_document_runner(
+                        session_factory=session_factory,
+                        document_id=document_id,
+                        job_id=job_id,
+                        gate=gate,
+                    ),
+                )
+            )
+
+        for job_id, runner in runner_plans:
+            _enqueue_document_runner(job_id, runner)
+            submitted_runner_count += 1
+    except Exception as exc:
+        for _, pending_runner in runner_plans[submitted_runner_count:]:
             with suppress(Exception):
-                await _compensate_batch_enqueue_failure(session, targets=queued_jobs)
-            raise _enqueue_failed_error() from exc
+                _close_runner(pending_runner)
+        with suppress(Exception):
+            for enqueued_job_id in enqueued_job_ids:
+                await _best_effort_cancel_enqueued(enqueued_job_id)
+        with suppress(Exception):
+            await _compensate_batch_enqueue_failure(session, targets=queued_jobs)
+        raise _enqueue_failed_error() from exc
+
+    gate.set()
     return _ok({"items": items})
 
 
