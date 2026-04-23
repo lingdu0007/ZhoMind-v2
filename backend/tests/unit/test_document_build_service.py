@@ -96,3 +96,42 @@ async def test_dispatcher_enqueue_accepts_generic_contract() -> None:
     assert calls == ["ran"]
 
     assert await dispatcher.cancel("job-1") is False
+
+
+async def test_dispatcher_duplicate_enqueue_does_not_close_or_run_new_awaitable() -> None:
+    dispatcher = DocumentJobDispatcher()
+    first_started = asyncio.Event()
+    first_release = asyncio.Event()
+    first_done = asyncio.Event()
+
+    async def _first_job() -> None:
+        first_started.set()
+        await first_release.wait()
+        first_done.set()
+
+    class _TrackedAwaitable:
+        def __init__(self) -> None:
+            self.closed = False
+            self.awaited = False
+
+        def __await__(self):
+            self.awaited = True
+            if False:
+                yield None
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+    tracked = _TrackedAwaitable()
+
+    assert await dispatcher.enqueue("job-dup", _first_job()) == "job-dup"
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+
+    assert await dispatcher.enqueue("job-dup", tracked) == "job-dup"
+    assert tracked.closed is False
+    assert tracked.awaited is False
+
+    first_release.set()
+    await asyncio.wait_for(first_done.wait(), timeout=1)
+    await asyncio.sleep(0)

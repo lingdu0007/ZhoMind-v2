@@ -14,7 +14,6 @@ class DocumentJobDispatcher:
         async with self._lock:
             task = self._tasks.get(job_id)
             if task is not None and not task.done():
-                self._close_coro(coro)
                 return job_id
 
             self._tasks[job_id] = asyncio.create_task(
@@ -43,9 +42,3 @@ class DocumentJobDispatcher:
                 task = self._tasks.get(job_id)
                 if task is asyncio.current_task():
                     self._tasks.pop(job_id, None)
-
-    @staticmethod
-    def _close_coro(coro: Awaitable[None]) -> None:
-        close = getattr(coro, "close", None)
-        if callable(close):
-            close()
