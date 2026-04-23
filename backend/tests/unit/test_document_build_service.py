@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 from types import MethodType
+import warnings
 
 from app.documents.build_service import DocumentBuildService
 from app.documents.job_dispatcher import DocumentJobDispatcher
@@ -131,6 +133,47 @@ async def test_dispatcher_duplicate_enqueue_does_not_close_or_run_new_awaitable(
     assert await dispatcher.enqueue("job-dup", tracked) == "job-dup"
     assert tracked.closed is False
     assert tracked.awaited is False
+
+    first_release.set()
+    await asyncio.wait_for(first_done.wait(), timeout=1)
+    await asyncio.sleep(0)
+
+
+async def test_dispatcher_duplicate_enqueue_plain_coroutine_avoids_unconsumed_warning() -> None:
+    dispatcher = DocumentJobDispatcher()
+    first_started = asyncio.Event()
+    first_release = asyncio.Event()
+    first_done = asyncio.Event()
+
+    async def _first_job() -> None:
+        first_started.set()
+        await first_release.wait()
+        first_done.set()
+
+    async def _duplicate_job() -> None:
+        await asyncio.sleep(0)
+
+    first_coro = _first_job()
+    assert await dispatcher.enqueue("job-dup-coro", first_coro) == "job-dup-coro"
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        duplicate_coro = _duplicate_job()
+        assert await dispatcher.enqueue("job-dup-coro", duplicate_coro) == "job-dup-coro"
+
+        del duplicate_coro
+        gc.collect()
+        await asyncio.sleep(0)
+
+    never_awaited = [
+        item
+        for item in captured
+        if issubclass(item.category, RuntimeWarning) and "was never awaited" in str(item.message)
+    ]
+    assert never_awaited == []
+
+    assert await dispatcher.enqueue("job-dup-coro", first_coro) == "job-dup-coro"
 
     first_release.set()
     await asyncio.wait_for(first_done.wait(), timeout=1)
