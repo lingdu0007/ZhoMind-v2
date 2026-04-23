@@ -47,11 +47,11 @@ class Settings(BaseSettings):
 
     bm25_state_path: str = Field("", alias="BM25_STATE_PATH")
     document_allowed_extensions_raw: str = Field(
-        ".txt,.md,.pdf,.doc,.docx,.xls,.xlsx",
+        "txt,md,pdf",
         alias="DOCUMENT_ALLOWED_EXTENSIONS",
     )
-    doc_worker_enabled: bool = Field(False, alias="DOC_WORKER_ENABLED")
-    doc_worker_max_concurrency: int = Field(2, alias="DOC_WORKER_MAX_CONCURRENCY")
+    doc_worker_enabled: bool = Field(True, alias="DOC_WORKER_ENABLED")
+    doc_worker_max_concurrency: int = Field(1, alias="DOC_WORKER_MAX_CONCURRENCY")
 
     rag_graph_alias: str = Field("default_v1", alias="RAG_GRAPH_ALIAS")
     rag_enable_tools: bool = Field(False, alias="RAG_ENABLE_TOOLS")
