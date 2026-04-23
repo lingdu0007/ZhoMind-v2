@@ -35,7 +35,7 @@ class DocumentBuildService:
         job.message = "parsing document"
 
         try:
-            parsed = self._parser(document.filename, content or self._default_content(document))
+            parsed = self._parser(document.filename, self._resolve_content(document, content))
 
             job.stage = "chunking"
             job.progress = 60
@@ -95,5 +95,14 @@ class DocumentBuildService:
             raise AppError(status_code=404, code="RESOURCE_NOT_FOUND", message="job not found")
         return job
 
-    def _default_content(self, document: Document) -> bytes:
-        return f"{document.filename}\n{document.chunk_strategy}".encode("utf-8")
+    def _resolve_content(self, document: Document, content: bytes | None) -> bytes:
+        if content is not None:
+            return content
+        if document.source_content is not None:
+            return document.source_content
+        raise AppError(
+            status_code=409,
+            code="DOC_SOURCE_CONTENT_MISSING",
+            message="document source content is missing",
+            detail={"document_id": document.id},
+        )

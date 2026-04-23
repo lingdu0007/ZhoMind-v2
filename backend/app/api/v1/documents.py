@@ -341,6 +341,7 @@ async def upload_document(
         filename=filename,
         file_type=file_type,
         file_size=len(content),
+        source_content=content,
         status="pending",
         chunk_strategy="general",
     )

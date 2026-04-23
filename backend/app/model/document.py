@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text
+from sqlalchemy import JSON, DateTime, Integer, LargeBinary, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.model.base import Base
@@ -18,6 +18,7 @@ class Document(Base):
     filename: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
     file_type: Mapped[str] = mapped_column(String(32), nullable=False)
     file_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_content: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     chunk_strategy: Mapped[str] = mapped_column(String(32), nullable=False, default="general")
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

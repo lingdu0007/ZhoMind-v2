@@ -177,6 +177,8 @@ def test_documents_and_jobs_flow() -> None:
             chunks_data = _extract_data(chunk_response.json())
             assert chunks_data["items"]
             assert "metadata" in chunks_data["items"][0]
+            upload_chunks = _get_chunk_snapshot(client, headers=headers, document_id=document_id)
+            assert any("line 1" in content and "line 3" in content for _, content, _ in upload_chunks)
 
             build_response = client.post(
                 f"/api/v1/documents/{document_id}/build",
@@ -210,6 +212,9 @@ def test_documents_and_jobs_flow() -> None:
             chunks_data = _extract_data(chunk_response.json())
             assert chunks_data["items"]
             assert "metadata" in chunks_data["items"][0]
+            rebuilt_chunks = _get_chunk_snapshot(client, headers=headers, document_id=document_id)
+            assert any("line 1" in content and "line 3" in content for _, content, _ in rebuilt_chunks)
+            assert all("demo.txt\npaper" not in content for _, content, _ in rebuilt_chunks)
 
             batch_build_response = client.post(
                 "/api/v1/documents/batch-build",
@@ -224,6 +229,9 @@ def test_documents_and_jobs_flow() -> None:
 
             batch_job_poll_data = _poll_job_until_terminal(client, headers=headers, job_id=batch_job_id)
             assert batch_job_poll_data["status"] == "succeeded"
+            batch_chunks = _get_chunk_snapshot(client, headers=headers, document_id=document_id)
+            assert any("line 1" in content and "line 3" in content for _, content, _ in batch_chunks)
+            assert all("demo.txt\nqa" not in content for _, content, _ in batch_chunks)
 
             invalid_batch_strategy_response = client.post(
                 "/api/v1/documents/batch-build",
