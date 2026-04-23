@@ -8,8 +8,9 @@ from typing import TypeVar
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from sqlalchemy import delete, func, select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.common.config import get_settings
 from app.common.deps import require_admin
 from app.common.exceptions import AppError
 from app.common.request_id import get_request_id
@@ -109,6 +110,17 @@ def _serialize_chunk(chunk: DocumentChunk) -> dict:
     }
 
 
+def _validate_supported_upload_file_type(file_type: str) -> None:
+    allowed = set(get_settings().document_allowed_extensions)
+    if file_type not in allowed:
+        raise AppError(
+            status_code=415,
+            code="DOC_FILE_TYPE_NOT_SUPPORTED",
+            message="document file type not supported",
+            detail={"file_type": file_type},
+        )
+
+
 async def _get_document_or_404(session: AsyncSession, document_id: str) -> Document:
     result = await session.execute(select(Document).where(Document.id == document_id))
     document = result.scalar_one_or_none()
@@ -145,7 +157,7 @@ async def _enqueue_document_task(name: str, payload: dict) -> str:
 
 def _build_document_runner(
     *,
-    session_factory: async_sessionmaker[AsyncSession],
+    bind_url: str,
     document_id: str,
     job_id: str,
     content: bytes | None = None,
@@ -156,9 +168,14 @@ def _build_document_runner(
             while not gate.is_set():
                 await asyncio.sleep(0.005)
 
-        async with session_factory() as background_session:
-            service = DocumentBuildService(background_session)
-            await service.process_job(document_id=document_id, job_id=job_id, content=content)
+        engine = create_async_engine(bind_url)
+        session_factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+        try:
+            async with session_factory() as background_session:
+                service = DocumentBuildService(background_session)
+                await service.process_job(document_id=document_id, job_id=job_id, content=content)
+        finally:
+            await engine.dispose()
 
     return _runner()
 
@@ -177,11 +194,11 @@ def _enqueue_document_runner(job_id: str, runner: Awaitable[None]) -> None:
         raise
 
 
-def _require_session_factory(session: AsyncSession) -> async_sessionmaker[AsyncSession]:
+def _require_bind_url(session: AsyncSession) -> str:
     bind = session.bind
     if bind is None:
         raise AppError(status_code=500, code="INTERNAL_ERROR", message="database binding unavailable")
-    return async_sessionmaker(bind=bind, class_=AsyncSession, expire_on_commit=False)
+    return bind.url.render_as_string(hide_password=False)
 
 
 async def _enqueue_document_build(
@@ -191,11 +208,11 @@ async def _enqueue_document_build(
     job_id: str,
     content: bytes | None = None,
 ) -> None:
-    session_factory = _require_session_factory(session)
+    bind_url = _require_bind_url(session)
 
     await _enqueue_document_task("build_document", {"document_id": document_id, "job_id": job_id})
     runner = _build_document_runner(
-        session_factory=session_factory,
+        bind_url=bind_url,
         document_id=document_id,
         job_id=job_id,
         content=content,
@@ -317,8 +334,9 @@ async def upload_document(
     if existing.scalar_one_or_none() is not None:
         raise AppError(status_code=409, code="RESOURCE_CONFLICT", message="filename already exists")
 
-    content = await file.read()
     file_type = Path(filename).suffix.lower().lstrip(".") or "unknown"
+    _validate_supported_upload_file_type(file_type)
+    content = await file.read()
     document = Document(
         filename=filename,
         file_type=file_type,
@@ -420,7 +438,7 @@ async def batch_build_documents(
 
     await session.commit()
     gate = threading.Event()
-    session_factory = _require_session_factory(session)
+    bind_url = _require_bind_url(session)
     enqueued_job_ids: list[str] = []
     runner_plans: list[tuple[str, Awaitable[None]]] = []
     submitted_runner_count = 0
@@ -433,7 +451,7 @@ async def batch_build_documents(
                 (
                     job_id,
                     _build_document_runner(
-                        session_factory=session_factory,
+                        bind_url=bind_url,
                         document_id=document_id,
                         job_id=job_id,
                         gate=gate,

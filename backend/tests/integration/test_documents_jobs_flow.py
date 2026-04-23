@@ -120,6 +120,14 @@ def test_documents_and_jobs_flow() -> None:
             token = asyncio.run(_create_admin_token(client))
             headers = _admin_headers(token)
 
+            unsupported_upload_response = client.post(
+                "/api/v1/documents/upload",
+                headers=headers,
+                files={"file": ("demo.docx", b"binary", "application/octet-stream")},
+            )
+            assert unsupported_upload_response.status_code == 415
+            assert unsupported_upload_response.json()["code"] == "DOC_FILE_TYPE_NOT_SUPPORTED"
+
             upload_response = client.post(
                 "/api/v1/documents/upload",
                 headers=headers,
