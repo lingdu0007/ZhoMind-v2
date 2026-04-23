@@ -52,7 +52,11 @@ def test_settings_rag_fields_from_env_aliases() -> None:
 
 
 def test_document_pipeline_settings_aliases() -> None:
-    settings = Settings()
+    settings = Settings(
+        DOCUMENT_ALLOWED_EXTENSIONS="txt,md,pdf",
+        DOC_WORKER_ENABLED=True,
+        DOC_WORKER_MAX_CONCURRENCY=1,
+    )
     assert settings.document_allowed_extensions_raw == "txt,md,pdf"
     assert settings.doc_worker_enabled is True
     assert settings.doc_worker_max_concurrency == 1

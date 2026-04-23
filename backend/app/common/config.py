@@ -46,10 +46,7 @@ class Settings(BaseSettings):
     minio_secure: bool = Field(False, alias="MINIO_SECURE")
 
     bm25_state_path: str = Field("", alias="BM25_STATE_PATH")
-    document_allowed_extensions_raw: str = Field(
-        "txt,md,pdf",
-        alias="DOCUMENT_ALLOWED_EXTENSIONS",
-    )
+    document_allowed_extensions_raw: str = Field("txt,md,pdf", alias="DOCUMENT_ALLOWED_EXTENSIONS")
     doc_worker_enabled: bool = Field(True, alias="DOC_WORKER_ENABLED")
     doc_worker_max_concurrency: int = Field(1, alias="DOC_WORKER_MAX_CONCURRENCY")
 
