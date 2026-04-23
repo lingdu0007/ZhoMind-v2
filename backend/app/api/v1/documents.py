@@ -1,19 +1,62 @@
+import asyncio
+from collections.abc import Awaitable
+from concurrent.futures import Future
 from pathlib import Path
+import threading
+from typing import TypeVar
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from sqlalchemy import delete, func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.common.deps import require_admin
 from app.common.exceptions import AppError
 from app.common.request_id import get_request_id
 from app.common.responses import ok_response
+from app.documents.build_service import DocumentBuildService
+from app.documents.job_dispatcher import DocumentJobDispatcher
 from app.documents.schemas import BatchBuildRequest, BatchDeleteRequest, BuildDocumentRequest
 from app.extensions.registry import get_task_backend
 from app.infra.db import get_db_session
 from app.model.document import Document, DocumentChunk, DocumentJob
 
 router = APIRouter(prefix="/documents", tags=["documents"])
+_job_dispatcher = DocumentJobDispatcher()
+_T = TypeVar("_T")
+
+
+class _DispatcherLoop:
+    def __init__(self) -> None:
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._ready = threading.Event()
+        self._lock = threading.Lock()
+
+    def _run(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._loop = loop
+        self._ready.set()
+        loop.run_forever()
+
+    def _ensure_running(self) -> asyncio.AbstractEventLoop:
+        with self._lock:
+            if self._thread is None or not self._thread.is_alive():
+                self._ready.clear()
+                self._thread = threading.Thread(target=self._run, name="document-job-loop", daemon=True)
+                self._thread.start()
+        self._ready.wait(timeout=2)
+        if self._loop is None:
+            raise RuntimeError("document job loop unavailable")
+        return self._loop
+
+    def submit(self, coro: Awaitable[_T]) -> _T:
+        loop = self._ensure_running()
+        future: Future[_T] = asyncio.run_coroutine_threadsafe(coro, loop)
+        return future.result()
+
+
+_dispatcher_loop = _DispatcherLoop()
 
 
 def _ok(data: dict) -> dict:
@@ -65,44 +108,12 @@ def _serialize_chunk(chunk: DocumentChunk) -> dict:
     }
 
 
-def _mock_chunks(seed_text: str) -> list[dict]:
-    lines = [line.strip() for line in seed_text.splitlines() if line.strip()]
-    if not lines:
-        lines = [seed_text.strip() or "empty document"]
-    chunks = lines[:3]
-    return [
-        {
-            "chunk_index": idx,
-            "content": item[:280],
-            "keywords": [],
-            "generated_questions": [],
-            "metadata": {"source": "phase2-mock", "length": len(item[:280])},
-        }
-        for idx, item in enumerate(chunks)
-    ]
-
-
 async def _get_document_or_404(session: AsyncSession, document_id: str) -> Document:
     result = await session.execute(select(Document).where(Document.id == document_id))
     document = result.scalar_one_or_none()
     if document is None:
         raise AppError(status_code=404, code="RESOURCE_NOT_FOUND", message="document not found")
     return document
-
-
-async def _replace_document_chunks(session: AsyncSession, document_id: str, chunks: list[dict]) -> None:
-    await session.execute(delete(DocumentChunk).where(DocumentChunk.document_id == document_id))
-    for chunk in chunks:
-        session.add(
-            DocumentChunk(
-                document_id=document_id,
-                chunk_index=chunk["chunk_index"],
-                content=chunk["content"],
-                keywords=chunk["keywords"],
-                generated_questions=chunk["generated_questions"],
-                chunk_metadata=chunk["metadata"],
-            )
-        )
 
 
 async def _create_job(
@@ -131,33 +142,31 @@ async def _enqueue_document_task(name: str, payload: dict) -> str:
     return await backend.enqueue(name=name, payload=payload)
 
 
-async def _sync_job_if_ready(session: AsyncSession, job: DocumentJob) -> None:
-    if job.status != "queued":
-        return
+async def _enqueue_document_build(
+    session: AsyncSession,
+    *,
+    document_id: str,
+    job_id: str,
+    content: bytes | None = None,
+) -> None:
+    bind = session.bind
+    if bind is None:
+        raise AppError(status_code=500, code="INTERNAL_ERROR", message="database binding unavailable")
 
-    backend = get_task_backend("inmemory")
-    status = await backend.get_status(job.id)
-    if status.get("status") != "queued":
-        return
+    session_factory = async_sessionmaker(bind=bind, class_=AsyncSession, expire_on_commit=False)
 
-    document = await _get_document_or_404(session, job.document_id)
-    chunks = _mock_chunks(f"{document.filename}\n{document.chunk_strategy}")
-    await _replace_document_chunks(session=session, document_id=document.id, chunks=chunks)
-    document.chunk_count = len(chunks)
-    document.status = "ready"
+    async def _runner() -> None:
+        async with session_factory() as background_session:
+            service = DocumentBuildService(background_session)
+            await service.process_job(document_id=document_id, job_id=job_id, content=content)
 
-    job.status = "succeeded"
-    job.stage = "completed"
-    job.progress = 100
-    if not job.message:
-        job.message = "document build completed"
-
-    await backend.cancel(job.id)
-
-
-async def _sync_jobs_page(session: AsyncSession, jobs: list[DocumentJob]) -> None:
-    for item in jobs:
-        await _sync_job_if_ready(session, item)
+    await _enqueue_document_task("build_document", {"document_id": document_id, "job_id": job_id})
+    runner = _runner()
+    try:
+        _dispatcher_loop.submit(_job_dispatcher.enqueue(job_id, runner))
+    except Exception:
+        runner.close()
+        raise
 
 
 @router.get("")
@@ -206,25 +215,22 @@ async def upload_document(
         filename=filename,
         file_type=file_type,
         file_size=len(content),
-        status="ready",
+        status="pending",
         chunk_strategy="general",
     )
     session.add(document)
     await session.flush()
 
-    chunks = _mock_chunks(content.decode("utf-8", errors="ignore") or filename)
-    await _replace_document_chunks(session=session, document_id=document.id, chunks=chunks)
-    document.chunk_count = len(chunks)
-
     job = await _create_job(
         session,
         document_id=document.id,
-        status="succeeded",
-        stage="completed",
-        progress=100,
-        message="upload parsed and indexed",
+        status="queued",
+        stage="queued",
+        progress=0,
+        message="queued for build",
     )
     await session.commit()
+    await _enqueue_document_build(session, document_id=document.id, job_id=job.id, content=content)
 
     return _ok({
         "document_id": document.id,
@@ -240,7 +246,7 @@ async def build_document(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     document = await _get_document_or_404(session, document_id)
-    document.status = "processing"
+    document.status = "pending"
     document.chunk_strategy = payload.chunk_strategy
 
     job = await _create_job(
@@ -251,8 +257,8 @@ async def build_document(
         progress=0,
         message="queued for rebuild",
     )
-    await _enqueue_document_task("build_document", {"document_id": document.id, "job_id": job.id})
     await session.commit()
+    await _enqueue_document_build(session, document_id=document.id, job_id=job.id)
     return _ok(_serialize_job(job))
 
 
@@ -267,9 +273,10 @@ async def batch_build_documents(
         raise AppError(status_code=400, code="VALIDATION_ERROR", message="document_ids is required")
 
     items: list[dict] = []
+    queued_jobs: list[tuple[str, str]] = []
     for document_id in document_ids:
         document = await _get_document_or_404(session, document_id)
-        document.status = "processing"
+        document.status = "pending"
         document.chunk_strategy = payload.chunk_strategy
 
         job = await _create_job(
@@ -280,10 +287,12 @@ async def batch_build_documents(
             progress=0,
             message="queued for rebuild",
         )
-        await _enqueue_document_task("build_document", {"document_id": document.id, "job_id": job.id})
         items.append(_serialize_job(job))
+        queued_jobs.append((document.id, job.id))
 
     await session.commit()
+    for document_id, job_id in queued_jobs:
+        await _enqueue_document_build(session, document_id=document_id, job_id=job_id)
     return _ok({"items": items})
 
 
@@ -389,8 +398,6 @@ async def list_jobs(
         select(DocumentJob).order_by(DocumentJob.updated_at.desc()).offset((page - 1) * page_size).limit(page_size)
     )
     jobs = result.scalars().all()
-    await _sync_jobs_page(session, jobs)
-    await session.commit()
     items = [_serialize_job(item) for item in jobs]
     return _ok(
         {
@@ -415,8 +422,6 @@ async def get_job(
     if job is None:
         raise AppError(status_code=404, code="RESOURCE_NOT_FOUND", message="job not found")
 
-    await _sync_job_if_ready(session, job)
-    await session.commit()
     return _ok(_serialize_job(job))
 
 
@@ -432,6 +437,8 @@ async def cancel_job(
         raise AppError(status_code=404, code="RESOURCE_NOT_FOUND", message="job not found")
 
     if job.status in {"queued", "running"}:
+        document = await _get_document_or_404(session, job.document_id)
+        document.status = "pending"
         job.status = "canceled"
         job.stage = "failed"
         job.progress = min(job.progress, 99)
@@ -440,6 +447,7 @@ async def cancel_job(
 
     backend = get_task_backend("inmemory")
     await backend.cancel(job.id)
+    _dispatcher_loop.submit(_job_dispatcher.cancel(job.id))
     await session.commit()
 
     return _ok(_serialize_job(job))
