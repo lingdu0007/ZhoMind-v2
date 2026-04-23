@@ -1,5 +1,8 @@
 import asyncio
 
+import pytest
+from pydantic import ValidationError
+
 from app.common.config import Settings, get_settings
 from app.common.responses import ok_response
 from app.extensions.langchain_chat_providers import OpenAICompatibleChatProvider
@@ -53,14 +56,28 @@ def test_settings_rag_fields_from_env_aliases() -> None:
 
 def test_document_pipeline_settings_aliases() -> None:
     settings = Settings(
-        DOCUMENT_ALLOWED_EXTENSIONS="txt,md,pdf",
+        DOCUMENT_ALLOWED_EXTENSIONS=" .TXT , md , .Pdf ",
         DOC_WORKER_ENABLED=True,
         DOC_WORKER_MAX_CONCURRENCY=1,
     )
-    assert settings.document_allowed_extensions_raw == "txt,md,pdf"
+    assert settings.document_allowed_extensions_raw == " .TXT , md , .Pdf "
     assert settings.doc_worker_enabled is True
     assert settings.doc_worker_max_concurrency == 1
     assert settings.document_allowed_extensions == ["txt", "md", "pdf"]
+
+
+def test_document_pipeline_settings_invalid_concurrency() -> None:
+    with pytest.raises(ValidationError):
+        Settings(DOC_WORKER_MAX_CONCURRENCY=0)
+
+
+@pytest.mark.parametrize(
+    "raw_extensions",
+    ["", " , ", " . , .. , ... "],
+)
+def test_document_pipeline_settings_invalid_extensions(raw_extensions: str) -> None:
+    with pytest.raises(ValidationError):
+        Settings(DOCUMENT_ALLOWED_EXTENSIONS=raw_extensions)
 
 
 def test_infra_dependency_getters_delegate_to_cached_providers(monkeypatch) -> None:
