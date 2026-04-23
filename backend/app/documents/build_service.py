@@ -44,7 +44,6 @@ class DocumentBuildService:
             chunker = self._chunker or (lambda parsed_document: chunk_document(parsed_document, strategy=document.chunk_strategy))
             chunks = chunker(parsed)
 
-            job.stage = "indexing"
             job.progress = 90
             job.message = "replacing document chunks"
 
