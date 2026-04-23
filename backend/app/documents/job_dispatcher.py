@@ -5,6 +5,8 @@ from collections.abc import Awaitable
 from contextlib import suppress
 import inspect
 
+from app.common.exceptions import AppError
+
 
 class DocumentJobDispatcher:
     def __init__(self) -> None:
@@ -43,6 +45,11 @@ class DocumentJobDispatcher:
     async def _run(self, *, job_id: str, coro: Awaitable[None]) -> None:
         try:
             await coro
+        except asyncio.CancelledError:
+            raise
+        except AppError:
+            # The build service already persisted terminal job/document state.
+            return
         finally:
             async with self._lock:
                 current = self._tasks.get(job_id)

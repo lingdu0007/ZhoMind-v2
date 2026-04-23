@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import undefer
 
 from app.common.exceptions import AppError
 from app.documents.chunker import chunk_document
@@ -35,7 +36,7 @@ class DocumentBuildService:
         job.message = "parsing document"
 
         try:
-            parsed = self._parser(document.filename, content or self._default_content(document))
+            parsed = self._parser(document.filename, self._resolve_content(document, content))
 
             job.stage = "chunking"
             job.progress = 60
@@ -57,6 +58,14 @@ class DocumentBuildService:
             job.progress = 100
             job.message = "document build completed"
             await self.session.commit()
+        except AppError as exc:
+            document.status = "failed"
+            job.status = "failed"
+            job.stage = "failed"
+            job.progress = min(job.progress, 99)
+            job.message = self._format_app_error(exc)
+            await self.session.commit()
+            raise
         except Exception as exc:
             document.status = "failed"
             job.status = "failed"
@@ -82,7 +91,9 @@ class DocumentBuildService:
             )
 
     async def _get_document(self, document_id: str) -> Document:
-        result = await self.session.execute(select(Document).where(Document.id == document_id))
+        result = await self.session.execute(
+            select(Document).options(undefer(Document.source_content)).where(Document.id == document_id)
+        )
         document = result.scalar_one_or_none()
         if document is None:
             raise AppError(status_code=404, code="RESOURCE_NOT_FOUND", message="document not found")
@@ -95,5 +106,20 @@ class DocumentBuildService:
             raise AppError(status_code=404, code="RESOURCE_NOT_FOUND", message="job not found")
         return job
 
-    def _default_content(self, document: Document) -> bytes:
-        return f"{document.filename}\n{document.chunk_strategy}".encode("utf-8")
+    def _resolve_content(self, document: Document, content: bytes | None) -> bytes:
+        if content is not None:
+            return content
+        if document.source_content is not None:
+            return document.source_content
+        raise AppError(
+            status_code=409,
+            code="DOC_SOURCE_CONTENT_MISSING",
+            message="document source content is missing",
+            detail={"document_id": document.id},
+        )
+
+    @staticmethod
+    def _format_app_error(exc: AppError) -> str:
+        if exc.code and exc.message:
+            return f"{exc.code}: {exc.message}"
+        return exc.message or exc.code or "document build failed"

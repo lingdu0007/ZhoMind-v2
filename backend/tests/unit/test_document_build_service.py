@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import os
+import tempfile
 from types import MethodType
 import warnings
 
+import pytest
+from sqlalchemy import inspect, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from app.common.exceptions import AppError
 from app.documents.build_service import DocumentBuildService
 from app.documents.job_dispatcher import DocumentJobDispatcher
 from app.documents.types import ChunkRecord
+from app.model.base import Base
 from app.model.document import Document, DocumentJob
 
 
@@ -77,6 +85,91 @@ async def test_process_job_success_updates_document_and_job_status() -> None:
 
     assert [chunk.chunk_index for chunk in replaced] == [0, 1]
     assert session.commit_calls == 1
+
+
+async def test_process_job_missing_source_persists_app_error_message() -> None:
+    session = _SessionSpy()
+    service = DocumentBuildService(session)  # type: ignore[arg-type]
+
+    document = Document(
+        filename="legacy.txt",
+        file_type="txt",
+        file_size=12,
+        source_content=None,
+        status="pending",
+        chunk_strategy="general",
+    )
+    document.id = "doc-missing"
+
+    job = DocumentJob(
+        document_id=document.id,
+        status="queued",
+        stage="queued",
+        progress=0,
+        message="queued for rebuild",
+    )
+    job.id = "job-missing"
+
+    async def _fake_get_document(self: DocumentBuildService, document_id: str) -> Document:
+        assert document_id == document.id
+        return document
+
+    async def _fake_get_job(self: DocumentBuildService, job_id: str) -> DocumentJob:
+        assert job_id == job.id
+        return job
+
+    service._get_document = MethodType(_fake_get_document, service)
+    service._get_job = MethodType(_fake_get_job, service)
+
+    with pytest.raises(AppError) as exc_info:
+        await service.process_job(document_id=document.id, job_id=job.id)
+
+    assert exc_info.value.code == "DOC_SOURCE_CONTENT_MISSING"
+    assert document.status == "failed"
+    assert job.status == "failed"
+    assert job.stage == "failed"
+    assert job.progress == 10
+    assert "DOC_SOURCE_CONTENT_MISSING" in job.message
+    assert "document source content is missing" in job.message
+    assert session.commit_calls == 1
+
+
+async def test_get_document_defers_source_content_outside_build_load() -> None:
+    db_fd, db_path = tempfile.mkstemp(prefix="build-service-", suffix=".db")
+    os.close(db_fd)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async with session_factory() as session:
+            document = Document(
+                filename="deferred.txt",
+                file_type="txt",
+                file_size=5,
+                source_content=b"hello",
+                status="ready",
+                chunk_strategy="general",
+            )
+            session.add(document)
+            await session.commit()
+
+        async with session_factory() as session:
+            ordinary_result = await session.execute(select(Document).where(Document.filename == "deferred.txt"))
+            ordinary_document = ordinary_result.scalar_one()
+            assert "source_content" in inspect(ordinary_document).unloaded
+
+            service = DocumentBuildService(session)
+            build_document = await service._get_document(ordinary_document.id)
+
+            assert build_document.id == ordinary_document.id
+            assert "source_content" not in inspect(build_document).unloaded
+            assert build_document.source_content == b"hello"
+    finally:
+        await engine.dispose()
+        os.remove(db_path)
 
 
 async def test_dispatcher_enqueue_accepts_generic_contract() -> None:
@@ -178,3 +271,45 @@ async def test_dispatcher_duplicate_enqueue_plain_coroutine_avoids_unconsumed_wa
     first_release.set()
     await asyncio.wait_for(first_done.wait(), timeout=1)
     await asyncio.sleep(0)
+
+
+async def test_dispatcher_expected_app_error_does_not_escape_as_unretrieved_task_exception() -> None:
+    dispatcher = DocumentJobDispatcher()
+    loop = asyncio.get_running_loop()
+    captured: list[dict[str, object]] = []
+    original_handler = loop.get_exception_handler()
+
+    def _capture_exception(_loop: asyncio.AbstractEventLoop, context: dict[str, object]) -> None:
+        captured.append(context)
+
+    finished = asyncio.Event()
+
+    async def _failing_job() -> None:
+        try:
+            raise AppError(
+                status_code=409,
+                code="DOC_SOURCE_CONTENT_MISSING",
+                message="document source content is missing",
+            )
+        finally:
+            finished.set()
+
+    loop.set_exception_handler(_capture_exception)
+    try:
+        assert await dispatcher.enqueue("job-fail", _failing_job()) == "job-fail"
+        await asyncio.wait_for(finished.wait(), timeout=1)
+        await asyncio.sleep(0)
+        assert await dispatcher.cancel("job-fail") is False
+
+        for _ in range(3):
+            gc.collect()
+            await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(original_handler)
+
+    unretrieved = [
+        item
+        for item in captured
+        if item.get("message") == "Task exception was never retrieved"
+    ]
+    assert unretrieved == []
