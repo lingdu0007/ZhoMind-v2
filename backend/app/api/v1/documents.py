@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import Awaitable
 from concurrent.futures import Future
 from pathlib import Path
+from contextlib import suppress
 import threading
 from typing import TypeVar
 
@@ -169,6 +170,81 @@ async def _enqueue_document_build(
         raise
 
 
+async def _best_effort_cancel_enqueued(job_id: str) -> None:
+    with suppress(Exception):
+        await get_task_backend("inmemory").cancel(job_id)
+    with suppress(Exception):
+        _dispatcher_loop.submit(_job_dispatcher.cancel(job_id))
+
+
+def _enqueue_failed_error() -> AppError:
+    return AppError(status_code=500, code="INTERNAL_ERROR", message="failed to enqueue document build")
+
+
+async def _compensate_upload_enqueue_failure(session: AsyncSession, *, document_id: str, job_id: str) -> None:
+    await session.rollback()
+    await session.execute(delete(DocumentChunk).where(DocumentChunk.document_id == document_id))
+    await session.execute(delete(DocumentJob).where(DocumentJob.id == job_id))
+    await session.execute(delete(Document).where(Document.id == document_id))
+    await session.commit()
+    await _best_effort_cancel_enqueued(job_id)
+
+
+async def _compensate_rebuild_enqueue_failure(
+    session: AsyncSession,
+    *,
+    document_id: str,
+    job_id: str,
+    previous_status: str,
+    previous_strategy: str,
+) -> None:
+    await session.rollback()
+
+    document_result = await session.execute(select(Document).where(Document.id == document_id))
+    document = document_result.scalar_one_or_none()
+    if document is not None:
+        document.status = previous_status
+        document.chunk_strategy = previous_strategy
+
+    job_result = await session.execute(select(DocumentJob).where(DocumentJob.id == job_id))
+    job = job_result.scalar_one_or_none()
+    if job is not None and job.status in {"queued", "running"}:
+        job.status = "failed"
+        job.stage = "failed"
+        job.progress = min(job.progress, 99)
+        job.message = "failed to enqueue document build"
+
+    await session.commit()
+    await _best_effort_cancel_enqueued(job_id)
+
+
+async def _compensate_batch_enqueue_failure(
+    session: AsyncSession,
+    *,
+    targets: list[tuple[str, str, str, str]],
+) -> None:
+    await session.rollback()
+
+    for document_id, job_id, previous_status, previous_strategy in targets:
+        document_result = await session.execute(select(Document).where(Document.id == document_id))
+        document = document_result.scalar_one_or_none()
+        if document is not None:
+            document.status = previous_status
+            document.chunk_strategy = previous_strategy
+
+        job_result = await session.execute(select(DocumentJob).where(DocumentJob.id == job_id))
+        job = job_result.scalar_one_or_none()
+        if job is not None and job.status in {"queued", "running"}:
+            job.status = "failed"
+            job.stage = "failed"
+            job.progress = min(job.progress, 99)
+            job.message = "failed to enqueue document build"
+
+    await session.commit()
+    for _, job_id, _, _ in targets:
+        await _best_effort_cancel_enqueued(job_id)
+
+
 @router.get("")
 async def list_documents(
     page: int = Query(1),
@@ -230,7 +306,12 @@ async def upload_document(
         message="queued for build",
     )
     await session.commit()
-    await _enqueue_document_build(session, document_id=document.id, job_id=job.id, content=content)
+    try:
+        await _enqueue_document_build(session, document_id=document.id, job_id=job.id, content=content)
+    except Exception as exc:
+        with suppress(Exception):
+            await _compensate_upload_enqueue_failure(session, document_id=document.id, job_id=job.id)
+        raise _enqueue_failed_error() from exc
 
     return _ok({
         "document_id": document.id,
@@ -246,6 +327,8 @@ async def build_document(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     document = await _get_document_or_404(session, document_id)
+    previous_status = document.status
+    previous_strategy = document.chunk_strategy
     document.status = "pending"
     document.chunk_strategy = payload.chunk_strategy
 
@@ -258,7 +341,18 @@ async def build_document(
         message="queued for rebuild",
     )
     await session.commit()
-    await _enqueue_document_build(session, document_id=document.id, job_id=job.id)
+    try:
+        await _enqueue_document_build(session, document_id=document.id, job_id=job.id)
+    except Exception as exc:
+        with suppress(Exception):
+            await _compensate_rebuild_enqueue_failure(
+                session,
+                document_id=document.id,
+                job_id=job.id,
+                previous_status=previous_status,
+                previous_strategy=previous_strategy,
+            )
+        raise _enqueue_failed_error() from exc
     return _ok(_serialize_job(job))
 
 
@@ -273,9 +367,11 @@ async def batch_build_documents(
         raise AppError(status_code=400, code="VALIDATION_ERROR", message="document_ids is required")
 
     items: list[dict] = []
-    queued_jobs: list[tuple[str, str]] = []
+    queued_jobs: list[tuple[str, str, str, str]] = []
     for document_id in document_ids:
         document = await _get_document_or_404(session, document_id)
+        previous_status = document.status
+        previous_strategy = document.chunk_strategy
         document.status = "pending"
         document.chunk_strategy = payload.chunk_strategy
 
@@ -288,11 +384,16 @@ async def batch_build_documents(
             message="queued for rebuild",
         )
         items.append(_serialize_job(job))
-        queued_jobs.append((document.id, job.id))
+        queued_jobs.append((document.id, job.id, previous_status, previous_strategy))
 
     await session.commit()
-    for document_id, job_id in queued_jobs:
-        await _enqueue_document_build(session, document_id=document_id, job_id=job_id)
+    for index, (document_id, job_id, _, _) in enumerate(queued_jobs):
+        try:
+            await _enqueue_document_build(session, document_id=document_id, job_id=job_id)
+        except Exception as exc:
+            with suppress(Exception):
+                await _compensate_batch_enqueue_failure(session, targets=queued_jobs[index:])
+            raise _enqueue_failed_error() from exc
     return _ok({"items": items})
 
 

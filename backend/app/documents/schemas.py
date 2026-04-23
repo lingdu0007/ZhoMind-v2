@@ -11,7 +11,7 @@ class BuildDocumentRequest(BaseModel):
 
 class BatchBuildRequest(BaseModel):
     document_ids: list[str] = Field(default_factory=list)
-    chunk_strategy: str = "general"
+    chunk_strategy: ChunkStrategy = "general"
 
 
 class BatchDeleteRequest(BaseModel):
