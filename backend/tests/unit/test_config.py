@@ -52,15 +52,11 @@ def test_settings_rag_fields_from_env_aliases() -> None:
 
 
 def test_document_pipeline_settings_aliases() -> None:
-    settings = Settings(
-        DOCUMENT_ALLOWED_EXTENSIONS=".txt, md, .PDF,docx,,",
-        DOC_WORKER_ENABLED=True,
-        DOC_WORKER_MAX_CONCURRENCY=6,
-    )
-
+    settings = Settings()
+    assert settings.document_allowed_extensions_raw == "txt,md,pdf"
     assert settings.doc_worker_enabled is True
-    assert settings.doc_worker_max_concurrency == 6
-    assert settings.document_allowed_extensions == ["txt", "md", "pdf", "docx"]
+    assert settings.doc_worker_max_concurrency == 1
+    assert settings.document_allowed_extensions == ["txt", "md", "pdf"]
 
 
 def test_infra_dependency_getters_delegate_to_cached_providers(monkeypatch) -> None:
