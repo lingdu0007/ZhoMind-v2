@@ -51,6 +51,18 @@ def test_settings_rag_fields_from_env_aliases() -> None:
     assert settings.rag_default_llm_provider == "provider-x"
 
 
+def test_document_pipeline_settings_aliases() -> None:
+    settings = Settings(
+        DOCUMENT_ALLOWED_EXTENSIONS=".txt, md, .PDF,docx,,",
+        DOC_WORKER_ENABLED=True,
+        DOC_WORKER_MAX_CONCURRENCY=6,
+    )
+
+    assert settings.doc_worker_enabled is True
+    assert settings.doc_worker_max_concurrency == 6
+    assert settings.document_allowed_extensions == ["txt", "md", "pdf", "docx"]
+
+
 def test_infra_dependency_getters_delegate_to_cached_providers(monkeypatch) -> None:
     get_redis_provider.cache_clear()
     get_milvus_provider.cache_clear()
