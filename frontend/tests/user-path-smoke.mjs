@@ -105,6 +105,23 @@ const run = async () => {
   const adminToken = loginAdmin.data?.access_token;
   assert.ok(adminToken, 'missing admin access_token');
 
+  const uploadUnsupportedForm = new FormData();
+  uploadUnsupportedForm.append(
+    'file',
+    new Blob(['docx content'], {
+      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    }),
+    `smoke-unsupported-${stamp}.docx`
+  );
+  const uploadUnsupported = await request({
+    method: 'POST',
+    path: '/documents/upload',
+    token: adminToken,
+    body: uploadUnsupportedForm,
+    isForm: true
+  });
+  assert.equal(uploadUnsupported.status, 415, 'docx upload should be unsupported');
+
   const uploadOkForm = new FormData();
   uploadOkForm.append('file', new Blob(['line1\nline2\nline3'], { type: 'text/plain' }), `smoke-ok-${stamp}.txt`);
   const uploadOk = await request({
