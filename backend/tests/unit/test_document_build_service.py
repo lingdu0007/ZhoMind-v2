@@ -271,3 +271,45 @@ async def test_dispatcher_duplicate_enqueue_plain_coroutine_avoids_unconsumed_wa
     first_release.set()
     await asyncio.wait_for(first_done.wait(), timeout=1)
     await asyncio.sleep(0)
+
+
+async def test_dispatcher_expected_app_error_does_not_escape_as_unretrieved_task_exception() -> None:
+    dispatcher = DocumentJobDispatcher()
+    loop = asyncio.get_running_loop()
+    captured: list[dict[str, object]] = []
+    original_handler = loop.get_exception_handler()
+
+    def _capture_exception(_loop: asyncio.AbstractEventLoop, context: dict[str, object]) -> None:
+        captured.append(context)
+
+    finished = asyncio.Event()
+
+    async def _failing_job() -> None:
+        try:
+            raise AppError(
+                status_code=409,
+                code="DOC_SOURCE_CONTENT_MISSING",
+                message="document source content is missing",
+            )
+        finally:
+            finished.set()
+
+    loop.set_exception_handler(_capture_exception)
+    try:
+        assert await dispatcher.enqueue("job-fail", _failing_job()) == "job-fail"
+        await asyncio.wait_for(finished.wait(), timeout=1)
+        await asyncio.sleep(0)
+        assert await dispatcher.cancel("job-fail") is False
+
+        for _ in range(3):
+            gc.collect()
+            await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(original_handler)
+
+    unretrieved = [
+        item
+        for item in captured
+        if item.get("message") == "Task exception was never retrieved"
+    ]
+    assert unretrieved == []
