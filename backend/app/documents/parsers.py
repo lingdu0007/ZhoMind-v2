@@ -25,7 +25,15 @@ def parse_document(filename: str, content: bytes) -> ParsedDocument:
         )
 
     if file_type in {"txt", "md"}:
-        text = content.decode("utf-8", errors="ignore")
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise AppError(
+                status_code=400,
+                code="DOC_TEXT_ENCODING_INVALID",
+                message="text document must be valid UTF-8",
+                detail={"file_type": file_type},
+            ) from exc
     else:
         if PdfReader is None:
             raise AppError(
@@ -33,7 +41,15 @@ def parse_document(filename: str, content: bytes) -> ParsedDocument:
                 code="DOC_PARSER_DEPENDENCY_MISSING",
                 message="pdf parser dependency is not installed",
             )
-        reader = PdfReader(BytesIO(content))
-        text = "\n".join((page.extract_text() or "") for page in reader.pages)
+        try:
+            reader = PdfReader(BytesIO(content))
+            text = "\n".join((page.extract_text() or "") for page in reader.pages)
+        except Exception as exc:
+            raise AppError(
+                status_code=400,
+                code="DOC_PDF_INVALID",
+                message="invalid or corrupt pdf document",
+                detail={"file_type": file_type},
+            ) from exc
 
     return ParsedDocument(source_file=filename, file_type=file_type, text=text)

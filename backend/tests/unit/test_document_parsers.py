@@ -27,6 +27,15 @@ def test_parse_md_document_success() -> None:
     assert parsed.text == "# Title\n\nBody"
 
 
+@pytest.mark.parametrize("filename", ["notes.txt", "README.md"])
+def test_parse_text_document_rejects_invalid_utf8(filename: str) -> None:
+    with pytest.raises(AppError) as exc_info:
+        parse_document(filename, b"line 1\xffline 2")
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.code == "DOC_TEXT_ENCODING_INVALID"
+
+
 def test_parse_pdf_document_success(monkeypatch: pytest.MonkeyPatch) -> None:
     class _FakePage:
         def __init__(self, text: str | None) -> None:
@@ -46,6 +55,20 @@ def test_parse_pdf_document_success(monkeypatch: pytest.MonkeyPatch) -> None:
     assert parsed.source_file == "paper.pdf"
     assert parsed.file_type == "pdf"
     assert parsed.text == "page one\n\npage three"
+
+
+def test_parse_pdf_document_rejects_invalid_or_corrupt_pdf(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _BrokenPdfReader:
+        def __init__(self, _: object) -> None:
+            raise ValueError("malformed pdf")
+
+    monkeypatch.setattr("app.documents.parsers.PdfReader", _BrokenPdfReader)
+
+    with pytest.raises(AppError) as exc_info:
+        parse_document("broken.pdf", b"definitely-not-a-real-pdf")
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.code == "DOC_PDF_INVALID"
 
 
 def test_parse_document_rejects_unsupported_extension() -> None:

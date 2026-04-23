@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import is_dataclass
 
+import pytest
+
 from app.documents.chunker import CHUNK_STRATEGY_PRESETS, chunk_document
 from app.documents.types import ChunkRecord, ParsedDocument
 
@@ -43,3 +45,18 @@ def test_chunk_index_is_stable_for_same_input() -> None:
 
     assert [chunk.chunk_index for chunk in first] == [chunk.chunk_index for chunk in second]
     assert [chunk.content for chunk in first] == [chunk.content for chunk in second]
+
+
+def test_chunk_document_preserves_whitespace_at_boundaries(monkeypatch: pytest.MonkeyPatch) -> None:
+    strategy = "whitespace_fidelity"
+    monkeypatch.setitem(CHUNK_STRATEGY_PRESETS, strategy, {"chunk_size": 5, "chunk_overlap": 2})
+
+    parsed = ParsedDocument(
+        source_file="spaces.txt",
+        file_type="txt",
+        text="abc  def",
+    )
+
+    chunks = chunk_document(parsed, strategy=strategy)
+
+    assert [chunk.content for chunk in chunks] == ["abc  ", "  def", "ef"]
