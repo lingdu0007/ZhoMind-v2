@@ -261,11 +261,10 @@ const jobStatusMap = {
 };
 
 const jobStageMap = {
+  queued: '排队中',
   uploaded: '已上传',
   parsing: '解析中',
   chunking: '分块中',
-  embedding: '向量化中',
-  indexing: '建索引中',
   completed: '已完成',
   failed: '失败'
 };
@@ -439,7 +438,7 @@ const enqueueJob = (item, fallbackDocumentId = '') => {
     job_id: jobId,
     document_id: item?.document_id || fallbackDocumentId,
     status: item?.status || 'queued',
-    stage: item?.stage || 'uploaded',
+    stage: item?.stage || 'queued',
     progress: item?.progress || 0,
     message: item?.message || '',
     updated_at: item?.updated_at || new Date().toISOString()
@@ -531,7 +530,7 @@ const handleUploaded = async (payload) => {
       job_id: payload.job_id,
       document_id: payload.document_id,
       status: 'queued',
-      stage: 'uploaded',
+      stage: 'queued',
       progress: 0
     },
     payload?.document_id

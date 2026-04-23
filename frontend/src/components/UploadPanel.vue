@@ -8,13 +8,13 @@
       :on-remove="handleFileRemove"
       :limit="1"
       :show-file-list="true"
-      accept=".txt,.md,.pdf,.doc,.docx,.xls,.xlsx"
+      accept=".txt,.md,.pdf"
       class="upload-drop"
     >
       <el-icon><upload-filled /></el-icon>
       <div class="el-upload__text">拖拽文件到这里，或 <em>点击选择</em></div>
       <template #tip>
-        <div class="el-upload__tip">支持 txt / md / pdf / doc / docx / xls / xlsx</div>
+        <div class="el-upload__tip">仅支持 txt / md / pdf 格式</div>
       </template>
     </el-upload>
 
