@@ -70,6 +70,23 @@ def _poll_job_until_terminal(
     raise AssertionError(f"job {job_id} did not reach terminal state, last={last_data}")
 
 
+def _get_document_item(client: TestClient, *, headers: dict[str, str], document_id: str) -> dict:
+    response = client.get("/api/v1/documents?page=1&page_size=50", headers=headers)
+    assert response.status_code == 200
+    items = _extract_data(response.json())["items"]
+    return next(item for item in items if item["document_id"] == document_id)
+
+
+def _get_chunk_snapshot(client: TestClient, *, headers: dict[str, str], document_id: str) -> list[tuple[int, str, dict]]:
+    response = client.get(
+        f"/api/v1/documents/{document_id}/chunks?page=1&page_size=50",
+        headers=headers,
+    )
+    assert response.status_code == 200
+    items = _extract_data(response.json())["items"]
+    return [(item["chunk_index"], item["content"], item["metadata"]) for item in items]
+
+
 def test_documents_and_jobs_flow() -> None:
     db_fd, db_path = tempfile.mkstemp(prefix="documents-flow-", suffix=".db")
     os.close(db_fd)
@@ -296,15 +313,15 @@ def test_documents_enqueue_failure_compensation(monkeypatch) -> None:
     from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
 
-    original_enqueue = documents_api._enqueue_document_build
+    original_enqueue_task = documents_api._enqueue_document_task
     fail_mode = {"enabled": True}
 
-    async def _maybe_fail_enqueue(*args, **kwargs):
+    async def _maybe_fail_enqueue_task(name: str, payload: dict):
         if fail_mode["enabled"]:
             raise RuntimeError("enqueue failed")
-        return await original_enqueue(*args, **kwargs)
+        return await original_enqueue_task(name=name, payload=payload)
 
-    monkeypatch.setattr(documents_api, "_enqueue_document_build", _maybe_fail_enqueue)
+    monkeypatch.setattr(documents_api, "_enqueue_document_task", _maybe_fail_enqueue_task)
 
     settings = get_settings()
     original_code = settings.admin_invite_code
@@ -374,6 +391,13 @@ def test_documents_enqueue_failure_compensation(monkeypatch) -> None:
             assert docs_after_batch_fail.status_code == 200
             doc_item = next(item for item in _extract_data(docs_after_batch_fail.json())["items"] if item["document_id"] == document_id)
             assert doc_item["status"] == "ready"
+            assert doc_item["chunk_strategy"] == "general"
+
+            chunks_after_batch_fail = client.get(
+                f"/api/v1/documents/{document_id}/chunks?page=1&page_size=5",
+                headers=headers,
+            )
+            assert chunks_after_batch_fail.status_code == 200
 
             jobs_after_batch_fail = client.get("/api/v1/documents/jobs?page=1&page_size=20", headers=headers)
             assert jobs_after_batch_fail.status_code == 200
@@ -413,6 +437,8 @@ def test_documents_batch_enqueue_failure_compensates_all_items(monkeypatch) -> N
     from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
 
+    original_enqueue_task = documents_api._enqueue_document_task
+    original_enqueue_runner = documents_api._enqueue_document_runner
     settings = get_settings()
     original_code = settings.admin_invite_code
     settings.admin_invite_code = "test-admin-code"
@@ -442,15 +468,32 @@ def test_documents_batch_enqueue_failure_compensates_all_items(monkeypatch) -> N
             second_document_id = second_data["document_id"]
             assert _poll_job_until_terminal(client, headers=headers, job_id=second_data["job_id"])["status"] == "succeeded"
 
-            enqueue_calls = {"count": 0}
+            first_doc_before = _get_document_item(client, headers=headers, document_id=first_document_id)
+            second_doc_before = _get_document_item(client, headers=headers, document_id=second_document_id)
+            first_chunks_before = _get_chunk_snapshot(client, headers=headers, document_id=first_document_id)
+            second_chunks_before = _get_chunk_snapshot(client, headers=headers, document_id=second_document_id)
 
-            async def _fail_on_second_enqueue(*args, **kwargs):
+            jobs_before_batch = client.get("/api/v1/documents/jobs?page=1&page_size=50", headers=headers)
+            assert jobs_before_batch.status_code == 200
+            jobs_before_ids = {item["job_id"] for item in _extract_data(jobs_before_batch.json())["items"]}
+
+            enqueue_calls = {"count": 0}
+            submitted_runner_job_ids: list[str] = []
+
+            async def _fail_on_second_enqueue_task(name: str, payload: dict):
                 enqueue_calls["count"] += 1
                 if enqueue_calls["count"] == 2:
+                    # Keep a real race window open: vulnerable code could let item-1 finish here.
+                    await asyncio.sleep(0.1)
                     raise RuntimeError("enqueue failed on second")
-                return None
+                return await original_enqueue_task(name=name, payload=payload)
 
-            monkeypatch.setattr(documents_api, "_enqueue_document_build", _fail_on_second_enqueue)
+            def _track_enqueue_runner(job_id: str, runner):
+                submitted_runner_job_ids.append(job_id)
+                return original_enqueue_runner(job_id, runner)
+
+            monkeypatch.setattr(documents_api, "_enqueue_document_task", _fail_on_second_enqueue_task)
+            monkeypatch.setattr(documents_api, "_enqueue_document_runner", _track_enqueue_runner)
 
             batch_response = client.post(
                 "/api/v1/documents/batch-build",
@@ -459,31 +502,33 @@ def test_documents_batch_enqueue_failure_compensates_all_items(monkeypatch) -> N
             )
             assert batch_response.status_code == 500
             assert batch_response.json()["code"] == "INTERNAL_ERROR"
+            assert enqueue_calls["count"] == 2
+            assert submitted_runner_job_ids == []
 
-            docs_response = client.get("/api/v1/documents?page=1&page_size=20", headers=headers)
-            assert docs_response.status_code == 200
-            docs_items = _extract_data(docs_response.json())["items"]
-            docs_by_id = {item["document_id"]: item for item in docs_items}
-            assert docs_by_id[first_document_id]["status"] == "ready"
-            assert docs_by_id[second_document_id]["status"] == "ready"
+            first_doc_after = _get_document_item(client, headers=headers, document_id=first_document_id)
+            second_doc_after = _get_document_item(client, headers=headers, document_id=second_document_id)
+            assert first_doc_after["status"] == first_doc_before["status"]
+            assert first_doc_after["chunk_strategy"] == first_doc_before["chunk_strategy"]
+            assert second_doc_after["status"] == second_doc_before["status"]
+            assert second_doc_after["chunk_strategy"] == second_doc_before["chunk_strategy"]
+            assert _get_chunk_snapshot(client, headers=headers, document_id=first_document_id) == first_chunks_before
+            assert _get_chunk_snapshot(client, headers=headers, document_id=second_document_id) == second_chunks_before
 
             jobs_response = client.get("/api/v1/documents/jobs?page=1&page_size=50", headers=headers)
             assert jobs_response.status_code == 200
             jobs_items = _extract_data(jobs_response.json())["items"]
             target_docs = {first_document_id, second_document_id}
-
-            assert not any(
-                item["document_id"] in target_docs and item["status"] in {"queued", "running"}
-                for item in jobs_items
-            )
-            failed_items = [
-                item
-                for item in jobs_items
-                if item["document_id"] in target_docs
-                and item["status"] == "failed"
-                and item["message"] == "failed to enqueue document build"
+            created_batch_jobs = [
+                item for item in jobs_items if item["job_id"] not in jobs_before_ids and item["document_id"] in target_docs
             ]
-            assert len(failed_items) == 2
+
+            assert len(created_batch_jobs) == 2
+            assert not any(item["status"] in {"queued", "running"} for item in created_batch_jobs)
+            assert not any(item["status"] == "succeeded" for item in created_batch_jobs)
+            assert all(
+                item["status"] in {"failed", "canceled"} and item["message"] == "failed to enqueue document build"
+                for item in created_batch_jobs
+            )
     finally:
         settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
