@@ -18,7 +18,7 @@ def _iter_chunks(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
     start = 0
     text_length = len(text)
     while start < text_length:
-        chunk = text[start : start + chunk_size].strip()
+        chunk = text[start : start + chunk_size]
         if chunk:
             chunks.append(chunk)
         start += step
