@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     minio_secure: bool = Field(False, alias="MINIO_SECURE")
 
     bm25_state_path: str = Field("", alias="BM25_STATE_PATH")
+    document_allowed_extensions_raw: str = Field(
+        ".txt,.md,.pdf,.doc,.docx,.xls,.xlsx",
+        alias="DOCUMENT_ALLOWED_EXTENSIONS",
+    )
+    doc_worker_enabled: bool = Field(False, alias="DOC_WORKER_ENABLED")
+    doc_worker_max_concurrency: int = Field(2, alias="DOC_WORKER_MAX_CONCURRENCY")
 
     rag_graph_alias: str = Field("default_v1", alias="RAG_GRAPH_ALIAS")
     rag_enable_tools: bool = Field(False, alias="RAG_ENABLE_TOOLS")
@@ -64,6 +70,11 @@ class Settings(BaseSettings):
 
     anthropic_api_key: str = Field("", alias="ANTHROPIC_API_KEY")
     anthropic_model: str = Field("claude-sonnet-4-6", alias="ANTHROPIC_MODEL")
+
+    @property
+    def document_allowed_extensions(self) -> list[str]:
+        parts = [item.strip().lower().lstrip(".") for item in self.document_allowed_extensions_raw.split(",")]
+        return [item for item in parts if item]
 
     @property
     def rag_llm_fallback_providers(self) -> list[str]:
