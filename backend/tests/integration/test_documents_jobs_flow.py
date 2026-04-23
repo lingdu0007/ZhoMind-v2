@@ -390,6 +390,107 @@ def test_documents_enqueue_failure_compensation(monkeypatch) -> None:
         os.remove(db_path)
 
 
+def test_documents_batch_enqueue_failure_compensates_all_items(monkeypatch) -> None:
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-batch-enqueue-fail-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_init_db())
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    fake_redis = _InMemoryRedis()
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+
+    from app.api.v1 import documents as documents_api
+    from app.common.config import get_settings
+
+    settings = get_settings()
+    original_code = settings.admin_invite_code
+    settings.admin_invite_code = "test-admin-code"
+
+    try:
+        with TestClient(app) as client:
+            token = asyncio.run(_create_admin_token(client))
+            headers = _admin_headers(token)
+
+            first_upload = client.post(
+                "/api/v1/documents/upload",
+                headers=headers,
+                files={"file": ("batch-a.txt", b"alpha", "text/plain")},
+            )
+            assert first_upload.status_code == 200
+            first_data = _extract_data(first_upload.json())
+            first_document_id = first_data["document_id"]
+            assert _poll_job_until_terminal(client, headers=headers, job_id=first_data["job_id"])["status"] == "succeeded"
+
+            second_upload = client.post(
+                "/api/v1/documents/upload",
+                headers=headers,
+                files={"file": ("batch-b.txt", b"beta", "text/plain")},
+            )
+            assert second_upload.status_code == 200
+            second_data = _extract_data(second_upload.json())
+            second_document_id = second_data["document_id"]
+            assert _poll_job_until_terminal(client, headers=headers, job_id=second_data["job_id"])["status"] == "succeeded"
+
+            enqueue_calls = {"count": 0}
+
+            async def _fail_on_second_enqueue(*args, **kwargs):
+                enqueue_calls["count"] += 1
+                if enqueue_calls["count"] == 2:
+                    raise RuntimeError("enqueue failed on second")
+                return None
+
+            monkeypatch.setattr(documents_api, "_enqueue_document_build", _fail_on_second_enqueue)
+
+            batch_response = client.post(
+                "/api/v1/documents/batch-build",
+                headers=headers,
+                json={"document_ids": [first_document_id, second_document_id], "chunk_strategy": "qa"},
+            )
+            assert batch_response.status_code == 500
+            assert batch_response.json()["code"] == "INTERNAL_ERROR"
+
+            docs_response = client.get("/api/v1/documents?page=1&page_size=20", headers=headers)
+            assert docs_response.status_code == 200
+            docs_items = _extract_data(docs_response.json())["items"]
+            docs_by_id = {item["document_id"]: item for item in docs_items}
+            assert docs_by_id[first_document_id]["status"] == "ready"
+            assert docs_by_id[second_document_id]["status"] == "ready"
+
+            jobs_response = client.get("/api/v1/documents/jobs?page=1&page_size=50", headers=headers)
+            assert jobs_response.status_code == 200
+            jobs_items = _extract_data(jobs_response.json())["items"]
+            target_docs = {first_document_id, second_document_id}
+
+            assert not any(
+                item["document_id"] in target_docs and item["status"] in {"queued", "running"}
+                for item in jobs_items
+            )
+            failed_items = [
+                item
+                for item in jobs_items
+                if item["document_id"] in target_docs
+                and item["status"] == "failed"
+                and item["message"] == "failed to enqueue document build"
+            ]
+            assert len(failed_items) == 2
+    finally:
+        settings.admin_invite_code = original_code
+        app.dependency_overrides.clear()
+        asyncio.run(db_engine.dispose())
+        os.remove(db_path)
+
+
 def test_documents_requires_admin_role() -> None:
     db_fd, db_path = tempfile.mkstemp(prefix="documents-auth-", suffix=".db")
     os.close(db_fd)
