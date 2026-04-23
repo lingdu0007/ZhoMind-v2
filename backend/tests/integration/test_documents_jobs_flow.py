@@ -11,6 +11,7 @@ from app.infra.db import get_db_session
 from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
+from app.model.document import Document
 
 
 class _InMemoryRedis:
@@ -177,6 +178,8 @@ def test_documents_and_jobs_flow() -> None:
             chunks_data = _extract_data(chunk_response.json())
             assert chunks_data["items"]
             assert "metadata" in chunks_data["items"][0]
+            upload_chunks = _get_chunk_snapshot(client, headers=headers, document_id=document_id)
+            assert any("line 1" in content and "line 3" in content for _, content, _ in upload_chunks)
 
             build_response = client.post(
                 f"/api/v1/documents/{document_id}/build",
@@ -210,6 +213,9 @@ def test_documents_and_jobs_flow() -> None:
             chunks_data = _extract_data(chunk_response.json())
             assert chunks_data["items"]
             assert "metadata" in chunks_data["items"][0]
+            rebuilt_chunks = _get_chunk_snapshot(client, headers=headers, document_id=document_id)
+            assert any("line 1" in content and "line 3" in content for _, content, _ in rebuilt_chunks)
+            assert all("demo.txt\npaper" not in content for _, content, _ in rebuilt_chunks)
 
             batch_build_response = client.post(
                 "/api/v1/documents/batch-build",
@@ -224,6 +230,9 @@ def test_documents_and_jobs_flow() -> None:
 
             batch_job_poll_data = _poll_job_until_terminal(client, headers=headers, job_id=batch_job_id)
             assert batch_job_poll_data["status"] == "succeeded"
+            batch_chunks = _get_chunk_snapshot(client, headers=headers, document_id=document_id)
+            assert any("line 1" in content and "line 3" in content for _, content, _ in batch_chunks)
+            assert all("demo.txt\nqa" not in content for _, content, _ in batch_chunks)
 
             invalid_batch_strategy_response = client.post(
                 "/api/v1/documents/batch-build",
@@ -278,14 +287,49 @@ def test_documents_and_jobs_flow() -> None:
             assert any(item["job_id"] == rebuilt_job_id for item in jobs_data["items"])
             assert any(item["job_id"] == cancel_target_job_id for item in jobs_data["items"])
 
+            async def _insert_legacy_document() -> str:
+                async with session_factory() as session:
+                    legacy_document = Document(
+                        filename="legacy.txt",
+                        file_type="txt",
+                        file_size=18,
+                        source_content=None,
+                        status="ready",
+                        chunk_strategy="general",
+                    )
+                    session.add(legacy_document)
+                    await session.commit()
+                    return legacy_document.id
+
+            legacy_document_id = asyncio.run(_insert_legacy_document())
+
+            legacy_build_response = client.post(
+                f"/api/v1/documents/{legacy_document_id}/build",
+                headers=headers,
+                json={"chunk_strategy": "paper"},
+            )
+            assert legacy_build_response.status_code == 200
+            legacy_build_job = _extract_data(legacy_build_response.json())
+            legacy_build_job_id = legacy_build_job["job_id"]
+
+            legacy_job_poll = _poll_job_until_terminal(client, headers=headers, job_id=legacy_build_job_id)
+            assert legacy_job_poll["status"] == "failed"
+            assert legacy_job_poll["stage"] == "failed"
+            assert "DOC_SOURCE_CONTENT_MISSING" in legacy_job_poll["message"]
+            assert "document source content is missing" in legacy_job_poll["message"]
+
+            legacy_document_item = _get_document_item(client, headers=headers, document_id=legacy_document_id)
+            assert legacy_document_item["status"] == "failed"
+
             batch_delete_response = client.post(
                 "/api/v1/documents/batch-delete",
                 headers=headers,
-                json={"document_ids": [document_id]},
+                json={"document_ids": [document_id, legacy_document_id]},
             )
             assert batch_delete_response.status_code == 200
             batch_delete_data = _extract_data(batch_delete_response.json())
             assert document_id in batch_delete_data["success_ids"]
+            assert legacy_document_id in batch_delete_data["success_ids"]
 
             post_delete_docs = client.get("/api/v1/documents?page=1&page_size=20", headers=headers)
             assert post_delete_docs.status_code == 200
