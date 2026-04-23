@@ -1,5 +1,8 @@
 import asyncio
 from collections.abc import Generator
+import os
+import tempfile
+import time
 
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -47,8 +50,30 @@ def _extract_data(payload: dict) -> dict:
     return payload.get("data") or payload
 
 
+def _poll_job_until_terminal(
+    client: TestClient,
+    *,
+    headers: dict[str, str],
+    job_id: str,
+    timeout_seconds: float = 2.0,
+) -> dict:
+    deadline = time.monotonic() + timeout_seconds
+    last_data: dict | None = None
+    while time.monotonic() < deadline:
+        response = client.get(f"/api/v1/documents/jobs/{job_id}", headers=headers)
+        assert response.status_code == 200
+        data = _extract_data(response.json())
+        last_data = data
+        if data["status"] in {"succeeded", "failed", "canceled"}:
+            return data
+        time.sleep(0.02)
+    raise AssertionError(f"job {job_id} did not reach terminal state, last={last_data}")
+
+
 def test_documents_and_jobs_flow() -> None:
-    db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-flow-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
 
     async def _init_db() -> None:
@@ -87,6 +112,17 @@ def test_documents_and_jobs_flow() -> None:
             upload_data = _extract_data(upload_response.json())
             document_id = upload_data["document_id"]
             job_id = upload_data["job_id"]
+
+            upload_chunk_not_ready = client.get(
+                f"/api/v1/documents/{document_id}/chunks?page=1&page_size=5",
+                headers=headers,
+            )
+            assert upload_chunk_not_ready.status_code == 409
+            assert upload_chunk_not_ready.json()["code"] == "DOC_CHUNK_RESULT_NOT_READY"
+
+            upload_job_poll = _poll_job_until_terminal(client, headers=headers, job_id=job_id)
+            assert upload_job_poll["status"] == "succeeded"
+            assert upload_job_poll["stage"] == "completed"
 
             list_docs_response = client.get("/api/v1/documents?page=1&page_size=20", headers=headers)
             assert list_docs_response.status_code == 200
@@ -136,9 +172,7 @@ def test_documents_and_jobs_flow() -> None:
             assert not_ready_chunk_response.status_code == 409
             assert not_ready_chunk_response.json()["code"] == "DOC_CHUNK_RESULT_NOT_READY"
 
-            rebuilt_job_poll_response = client.get(f"/api/v1/documents/jobs/{rebuilt_job_id}", headers=headers)
-            assert rebuilt_job_poll_response.status_code == 200
-            rebuilt_job_data = _extract_data(rebuilt_job_poll_response.json())
+            rebuilt_job_data = _poll_job_until_terminal(client, headers=headers, job_id=rebuilt_job_id)
             assert rebuilt_job_data["status"] == "succeeded"
             assert rebuilt_job_data["stage"] == "completed"
             assert rebuilt_job_data["progress"] == 100
@@ -163,9 +197,8 @@ def test_documents_and_jobs_flow() -> None:
             batch_job_id = batch_build_data["items"][0]["job_id"]
             assert batch_build_data["items"][0]["status"] == "queued"
 
-            batch_job_poll_response = client.get(f"/api/v1/documents/jobs/{batch_job_id}", headers=headers)
-            assert batch_job_poll_response.status_code == 200
-            assert _extract_data(batch_job_poll_response.json())["status"] == "succeeded"
+            batch_job_poll_data = _poll_job_until_terminal(client, headers=headers, job_id=batch_job_id)
+            assert batch_job_poll_data["status"] == "succeeded"
 
             cancel_completed_job_response = client.post(
                 f"/api/v1/documents/jobs/{job_id}/cancel",
@@ -177,7 +210,7 @@ def test_documents_and_jobs_flow() -> None:
             cancel_target_build_response = client.post(
                 f"/api/v1/documents/{document_id}/build",
                 headers=headers,
-                json={"chunk_strategy": "outline"},
+                json={"chunk_strategy": "paper"},
             )
             assert cancel_target_build_response.status_code == 200
             cancel_target_job = _extract_data(cancel_target_build_response.json())
@@ -192,6 +225,19 @@ def test_documents_and_jobs_flow() -> None:
             cancel_data = _extract_data(cancel_response.json())
             assert cancel_data["status"] == "canceled"
             assert cancel_data["stage"] == "failed"
+
+            canceled_docs_response = client.get("/api/v1/documents?page=1&page_size=20", headers=headers)
+            assert canceled_docs_response.status_code == 200
+            canceled_docs_data = _extract_data(canceled_docs_response.json())
+            canceled_doc = next(item for item in canceled_docs_data["items"] if item["document_id"] == document_id)
+            assert canceled_doc["status"] == "pending"
+
+            canceled_chunk_response = client.get(
+                f"/api/v1/documents/{document_id}/chunks?page=1&page_size=5",
+                headers=headers,
+            )
+            assert canceled_chunk_response.status_code == 409
+            assert canceled_chunk_response.json()["code"] == "DOC_CHUNK_RESULT_NOT_READY"
 
             list_jobs_response = client.get("/api/v1/documents/jobs?page=1&page_size=20", headers=headers)
             assert list_jobs_response.status_code == 200
@@ -217,10 +263,13 @@ def test_documents_and_jobs_flow() -> None:
         settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
+        os.remove(db_path)
 
 
 def test_documents_requires_admin_role() -> None:
-    db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-auth-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
 
     async def _init_db() -> None:
@@ -255,3 +304,4 @@ def test_documents_requires_admin_role() -> None:
     finally:
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
+        os.remove(db_path)
