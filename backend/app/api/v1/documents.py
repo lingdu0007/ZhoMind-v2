@@ -387,12 +387,12 @@ async def batch_build_documents(
         queued_jobs.append((document.id, job.id, previous_status, previous_strategy))
 
     await session.commit()
-    for index, (document_id, job_id, _, _) in enumerate(queued_jobs):
+    for document_id, job_id, _, _ in queued_jobs:
         try:
             await _enqueue_document_build(session, document_id=document_id, job_id=job_id)
         except Exception as exc:
             with suppress(Exception):
-                await _compensate_batch_enqueue_failure(session, targets=queued_jobs[index:])
+                await _compensate_batch_enqueue_failure(session, targets=queued_jobs)
             raise _enqueue_failed_error() from exc
     return _ok({"items": items})
 
