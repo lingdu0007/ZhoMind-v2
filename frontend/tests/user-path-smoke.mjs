@@ -35,6 +35,16 @@ const request = async ({ method, path, token, body, isForm }) => {
   };
 };
 
+const formatErrorDetails = (resp) => {
+  const details = [];
+  if (resp?.status) details.push(`status=${resp.status}`);
+  if (resp?.body && typeof resp.body === 'object' && !Array.isArray(resp.body)) {
+    if (resp.body.code) details.push(`code=${resp.body.code}`);
+    if (resp.body.message) details.push(`message=${resp.body.message}`);
+  }
+  return details.join(', ');
+};
+
 const waitJobTerminal = async (token, jobId, timeoutMs = 30000) => {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -84,7 +94,12 @@ const run = async () => {
   assert.equal(userUpload.status, 403, 'user upload should be forbidden');
 
   const adminUsername = `smoke_admin_${stamp}`;
-  const adminCode = process.env.SMOKE_ADMIN_CODE;
+  const adminCode = process.env.SMOKE_ADMIN_CODE?.trim();
+  if (!adminCode) {
+    console.warn(
+      '[warn] SMOKE_ADMIN_CODE is not set. Smoke will continue, but admin registration now depends on backend/.env ADMIN_INVITE_CODE.'
+    );
+  }
   const adminRegisterBody = adminCode
     ? { username: adminUsername, password, role: 'admin', admin_code: adminCode }
     : { username: adminUsername, password, role: 'admin' };
@@ -94,7 +109,15 @@ const run = async () => {
     path: '/auth/register',
     body: adminRegisterBody
   });
-  assert.equal(registerAdmin.status, 200, 'admin register failed');
+  if (registerAdmin.status !== 200) {
+    const detail = formatErrorDetails(registerAdmin);
+    const adminCodeHint = adminCode
+      ? 'SMOKE_ADMIN_CODE is set, so it likely does not match backend/.env ADMIN_INVITE_CODE.'
+      : 'SMOKE_ADMIN_CODE is missing, so the request cannot match backend/.env ADMIN_INVITE_CODE unless the backend value is empty.';
+    throw new Error(
+      `admin register failed. Check backend/.env ADMIN_INVITE_CODE and ensure SMOKE_ADMIN_CODE matches it. ${adminCodeHint}${detail ? ` Backend response: ${detail}.` : ''}`
+    );
+  }
 
   const loginAdmin = await request({
     method: 'POST',
