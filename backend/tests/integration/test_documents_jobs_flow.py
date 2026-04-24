@@ -13,7 +13,8 @@ from app.infra.db import get_db_session
 from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
-from app.model.document import Document
+from app.model.document import Document, DocumentChunk
+from app.service.chat_service import ChatService
 
 
 class _InMemoryRedis:
@@ -464,6 +465,118 @@ def test_documents_and_jobs_flow_tombstone_visibility_after_delete() -> None:
     finally:
         settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
+        asyncio.run(db_engine.dispose())
+        os.remove(db_path)
+
+
+def test_chat_lexical_retrieval_reads_only_published_generation_on_live_documents() -> None:
+    db_fd, db_path = tempfile.mkstemp(prefix="chat-lexical-live-published-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    async def _seed_documents() -> None:
+        async with session_factory() as session:
+            session.add_all(
+                [
+                    Document(
+                        id="doc-live",
+                        filename="live.txt",
+                        file_type="txt",
+                        file_size=11,
+                        status="pending",
+                        chunk_strategy="general",
+                        chunk_count=1,
+                        published_generation=2,
+                        next_generation=4,
+                        latest_requested_generation=3,
+                    ),
+                    Document(
+                        id="doc-zero",
+                        filename="zero.txt",
+                        file_type="txt",
+                        file_size=11,
+                        status="ready",
+                        chunk_strategy="general",
+                        chunk_count=0,
+                        published_generation=0,
+                        next_generation=2,
+                        latest_requested_generation=1,
+                    ),
+                    Document(
+                        id="doc-deleted",
+                        filename="deleted.txt",
+                        file_type="txt",
+                        file_size=11,
+                        status="ready",
+                        chunk_strategy="general",
+                        chunk_count=1,
+                        published_generation=1,
+                        next_generation=2,
+                        latest_requested_generation=1,
+                        deleted_at=datetime.now(timezone.utc),
+                    ),
+                ]
+            )
+            session.add_all(
+                [
+                    DocumentChunk(
+                        id="chunk-live-old",
+                        document_id="doc-live",
+                        generation=1,
+                        chunk_index=0,
+                        content="retrieval sentinel old generation should stay hidden",
+                    ),
+                    DocumentChunk(
+                        id="chunk-live-published",
+                        document_id="doc-live",
+                        generation=2,
+                        chunk_index=0,
+                        content="retrieval sentinel published generation stays visible",
+                    ),
+                    DocumentChunk(
+                        id="chunk-live-candidate",
+                        document_id="doc-live",
+                        generation=3,
+                        chunk_index=0,
+                        content="retrieval sentinel candidate generation must stay hidden",
+                    ),
+                    DocumentChunk(
+                        id="chunk-zero-published",
+                        document_id="doc-zero",
+                        generation=1,
+                        chunk_index=0,
+                        content="retrieval sentinel zero published generation must stay hidden",
+                    ),
+                    DocumentChunk(
+                        id="chunk-deleted",
+                        document_id="doc-deleted",
+                        generation=1,
+                        chunk_index=0,
+                        content="retrieval sentinel tombstoned document must stay hidden",
+                    ),
+                ]
+            )
+            await session.commit()
+
+    async def _retrieve_chunks() -> list[dict]:
+        async with session_factory() as session:
+            service = ChatService(session)
+            return await service._default_retrieve_chunks("retrieval sentinel", top_k=10)
+
+    asyncio.run(_init_db())
+
+    try:
+        asyncio.run(_seed_documents())
+        retrieved = asyncio.run(_retrieve_chunks())
+        assert [item["chunk_id"] for item in retrieved] == ["chunk-live-published"]
+        assert retrieved[0]["document_id"] == "doc-live"
+        assert "published generation stays visible" in retrieved[0]["content_preview"]
+    finally:
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
 
