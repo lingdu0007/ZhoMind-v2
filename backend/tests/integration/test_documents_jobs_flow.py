@@ -19,7 +19,7 @@ from app.service.chat_service import ChatService
 
 class _InMemoryRedis:
     def __init__(self) -> None:
-        self._store: dict[str, dict[str, str]] = {}
+        self._store: dict[str, object] = {}
 
     async def hset(self, key: str, mapping: dict[str, str]) -> int:
         self._store[key] = dict(mapping)
@@ -30,6 +30,20 @@ class _InMemoryRedis:
 
     async def exists(self, key: str) -> int:
         return 1 if key in self._store else 0
+
+    async def get(self, key: str) -> str | None:
+        value = self._store.get(key)
+        return value if isinstance(value, str) else None
+
+    async def set(self, key: str, value: str) -> bool:
+        self._store[key] = value
+        return True
+
+    async def delete(self, *keys: str) -> int:
+        removed = 0
+        for key in keys:
+            removed += 1 if self._store.pop(key, None) is not None else 0
+        return removed
 
 
 async def _create_admin_token(client: TestClient, username: str = "admin") -> str:
@@ -462,6 +476,78 @@ def test_documents_and_jobs_flow_tombstone_visibility_after_delete() -> None:
             tombstoned_document = asyncio.run(_load_document_record(session_factory, document_id=document_id))
             assert tombstoned_document is not None
             assert tombstoned_document.deleted_at is not None
+    finally:
+        settings.admin_invite_code = original_code
+        app.dependency_overrides.clear()
+        asyncio.run(db_engine.dispose())
+        os.remove(db_path)
+
+
+def test_documents_migration_drain_status_and_resume(monkeypatch) -> None:
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-drain-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_init_db())
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    fake_redis = _InMemoryRedis()
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+
+    from app.api.v1 import documents as documents_api
+    from app.common.config import get_settings
+
+    settings = get_settings()
+    original_code = settings.admin_invite_code
+    settings.admin_invite_code = "test-admin-code"
+    monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 1)
+
+    try:
+        with TestClient(app) as client:
+            token = asyncio.run(_create_admin_token(client))
+            headers = _admin_headers(token)
+
+            drain_response = client.post("/api/v1/documents/ops/migration-drain", headers=headers)
+            assert drain_response.status_code == 200
+            drain_data = _extract_data(drain_response.json())
+            assert drain_data["drain_enabled"] is True
+            assert drain_data["active_dispatcher_tasks"] == 1
+            assert drain_data["ready_for_migration"] is False
+
+            blocked_upload = client.post(
+                "/api/v1/documents/upload",
+                headers=headers,
+                files={"file": ("blocked.txt", b"body", "text/plain")},
+            )
+            assert blocked_upload.status_code == 503
+            assert blocked_upload.json()["code"] == "DOC_MIGRATION_DRAIN_ACTIVE"
+
+            monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
+            status_response = client.get("/api/v1/documents/ops/migration-status", headers=headers)
+            assert status_response.status_code == 200
+            status_data = _extract_data(status_response.json())
+            assert status_data["drain_enabled"] is True
+
+            resume_response = client.post("/api/v1/documents/ops/migration-resume", headers=headers)
+            assert resume_response.status_code == 200
+            resume_data = _extract_data(resume_response.json())
+            assert resume_data["drain_enabled"] is False
+
+            unblocked_upload = client.post(
+                "/api/v1/documents/upload",
+                headers=headers,
+                files={"file": ("after-resume.txt", b"body", "text/plain")},
+            )
+            assert unblocked_upload.status_code == 200
     finally:
         settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
