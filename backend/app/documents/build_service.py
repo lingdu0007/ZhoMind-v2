@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from datetime import datetime, timezone
 
@@ -14,6 +15,7 @@ from app.documents.types import ChunkRecord, ParsedDocument
 from app.model.document import Document, DocumentChunk, DocumentJob
 
 _TERMINAL_JOB_STATUSES = {"succeeded", "failed", "canceled"}
+_CLAIM_RETRY_DELAY_SECONDS = 0.01
 
 
 class DocumentBuildService:
@@ -40,9 +42,8 @@ class DocumentBuildService:
             await self._terminalize_non_owner(document=document, job=job)
             return
 
-        claimed = await self._claim_generation(document=document, job=job)
+        claimed = await self._wait_for_claim(document=document, job=job)
         if not claimed:
-            await self._terminalize_non_owner(document=document, job=job)
             return
 
         document.status = "processing"
@@ -112,6 +113,36 @@ class DocumentBuildService:
         await self.session.refresh(document)
         await self.session.refresh(job)
         return claim_result.rowcount == 1 and document.active_build_generation == generation and document.active_build_job_id == job.id
+
+    async def _wait_for_claim(self, *, document: Document, job: DocumentJob) -> bool:
+        while True:
+            claimed = await self._claim_generation(document=document, job=job)
+            if claimed:
+                return True
+            if await self._should_retry_claim(document=document, job=job):
+                await self._sleep_before_claim_retry()
+                continue
+            await self._terminalize_non_owner(document=document, job=job)
+            return False
+
+    async def _should_retry_claim(self, *, document: Document, job: DocumentJob) -> bool:
+        await self.session.refresh(document)
+        await self.session.refresh(job)
+        generation = job.build_generation
+        if generation is None:
+            return False
+        if document.deleted_at is not None or job.status in _TERMINAL_JOB_STATUSES:
+            return False
+        if document.latest_requested_generation != generation:
+            return False
+        if document.active_build_job_id == job.id:
+            return True
+        if document.active_build_generation is None:
+            return True
+        return document.active_build_generation < generation
+
+    async def _sleep_before_claim_retry(self) -> None:
+        await asyncio.sleep(_CLAIM_RETRY_DELAY_SECONDS)
 
     async def _refresh_and_verify_owner(self, *, document: Document, job: DocumentJob) -> bool:
         await self.session.refresh(document)
