@@ -399,6 +399,29 @@ async def migration_status(
     )
 
 
+@router.post("/ops/migration-reconcile")
+async def migration_reconcile(
+    _: object = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+    redis: Redis = Depends(get_redis_client),
+) -> dict:
+    operator_service = DocumentsOperatorService(redis=redis)
+
+    async def _cancel_dispatcher_job(job_id: str) -> None:
+        _dispatcher_loop.submit(_job_dispatcher.cancel(job_id))
+
+    reconciled_job_ids = await operator_service.reconcile_queued_jobs(
+        session=session,
+        cancel_dispatcher_job=_cancel_dispatcher_job,
+    )
+    status = await operator_service.collect_status(
+        session=session,
+        active_dispatcher_tasks=_get_active_dispatcher_tasks(),
+    )
+    status["reconciled_job_ids"] = reconciled_job_ids
+    return _ok(status)
+
+
 @router.post("/ops/migration-resume")
 async def migration_resume(
     _: object = Depends(require_admin),
