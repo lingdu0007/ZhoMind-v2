@@ -92,6 +92,29 @@ class _LeaseAwareClaimSessionSpy(_SessionSpy):
         return _ResultSpy(rowcount=1)
 
 
+class _CancelCleanupSessionSpy(_SessionSpy):
+    def __init__(self, *, document: Document, job: DocumentJob) -> None:
+        super().__init__()
+        self.document = document
+        self.job = job
+        self.deleted_generations: list[tuple[str, int | None]] = []
+
+    async def execute(self, statement) -> _ResultSpy:
+        compiled = statement.compile()
+        params = compiled.params
+        document_id = None
+        generation = None
+
+        for key, value in params.items():
+            if key.startswith("document_id_"):
+                document_id = value
+            if key.startswith("generation_"):
+                generation = value
+
+        self.deleted_generations.append((document_id or "", generation))
+        return _ResultSpy(rowcount=1)
+
+
 def _load_publication_lifecycle_migration_module():
     module_path = (
         Path(__file__).resolve().parents[2]
@@ -535,6 +558,99 @@ def test_process_job_missing_source_persists_app_error_message_for_unpublished_d
         assert job.progress == 10
         assert "DOC_SOURCE_CONTENT_MISSING" in job.message
         assert "document source content is missing" in job.message
+
+    asyncio.run(_run())
+
+
+def test_process_job_cleans_up_claimed_owner_when_canceled_mid_flight() -> None:
+    async def _run() -> None:
+        document = Document(
+            filename="cancel.txt",
+            file_type="txt",
+            file_size=1600,
+            source_content=("A" * 1600).encode("utf-8"),
+            status="processing",
+            chunk_strategy="general",
+            chunk_count=3,
+            published_generation=1,
+            latest_requested_generation=2,
+            active_build_generation=2,
+            active_build_job_id="job-cancel",
+        )
+        document.id = "doc-cancel"
+
+        job = DocumentJob(
+            document_id=document.id,
+            build_generation=2,
+            requested_chunk_strategy="paper",
+            status="running",
+            stage="chunking",
+            progress=90,
+            message="writing candidate document chunks",
+        )
+        job.id = "job-cancel"
+
+        session = _CancelCleanupSessionSpy(document=document, job=job)
+        service = DocumentBuildService(session)  # type: ignore[arg-type]
+
+        async def _fake_get_document(self: DocumentBuildService, document_id: str) -> Document:
+            assert document_id == document.id
+            return document
+
+        async def _fake_get_job(self: DocumentBuildService, job_id: str) -> DocumentJob:
+            assert job_id == job.id
+            return job
+
+        async def _fake_claim_generation(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
+            return True
+
+        async def _fake_refresh_and_verify_owner(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
+            return document.active_build_generation == job.build_generation and document.active_build_job_id == job.id
+
+        async def _fake_refresh_heartbeat_if_owned(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+        ) -> bool:
+            return True
+
+        async def _cancel_during_candidate_write(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            generation: int,
+            chunks: list[ChunkRecord],
+        ) -> None:
+            assert generation == 2
+            document.status = "pending"
+            document.latest_requested_generation = document.published_generation
+            job.status = "canceled"
+            job.stage = "failed"
+            job.message = "job canceled by user"
+            raise asyncio.CancelledError
+
+        service._get_document = MethodType(_fake_get_document, service)
+        service._get_job = MethodType(_fake_get_job, service)
+        service._claim_generation = MethodType(_fake_claim_generation, service)
+        service._refresh_and_verify_owner = MethodType(_fake_refresh_and_verify_owner, service)
+        service._refresh_heartbeat_if_owned = MethodType(_fake_refresh_heartbeat_if_owned, service)
+        service._write_candidate_chunks = MethodType(_cancel_during_candidate_write, service)
+
+        with pytest.raises(asyncio.CancelledError):
+            await service.process_job(document_id=document.id, job_id=job.id)
+
+        assert session.rollback_calls == 1
+        assert session.deleted_generations == [(document.id, 2)]
+        assert document.status == "pending"
+        assert document.chunk_strategy == "general"
+        assert document.chunk_count == 3
+        assert document.published_generation == 1
+        assert document.active_build_generation is None
+        assert document.active_build_job_id is None
+        assert job.status == "canceled"
+        assert job.stage == "failed"
+        assert job.message == "job canceled by user"
 
     asyncio.run(_run())
 

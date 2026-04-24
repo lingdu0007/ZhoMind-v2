@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, delete, or_, select, update
@@ -91,6 +92,9 @@ class DocumentBuildService:
                 await self._terminalize_non_owner(document=document, job=job)
                 return
             await self._publish_generation(document=document, job=job, generation=generation, chunks=chunks)
+        except asyncio.CancelledError:
+            await self._cancel_claimed_job(document=document, job=job)
+            raise
         except AppError as exc:
             await self._fail_claimed_job(document=document, job=job, message=self._format_app_error(exc))
             raise
@@ -286,6 +290,11 @@ class DocumentBuildService:
             document.status = self._derive_non_publish_status(document)
 
         await self.session.commit()
+
+    async def _cancel_claimed_job(self, *, document: Document, job: DocumentJob) -> None:
+        with suppress(Exception):
+            await self.session.rollback()
+        await self._terminalize_non_owner(document=document, job=job)
 
     async def _fail_claimed_job(self, *, document: Document, job: DocumentJob, message: str) -> None:
         if not await self._refresh_and_verify_owner(document=document, job=job):
