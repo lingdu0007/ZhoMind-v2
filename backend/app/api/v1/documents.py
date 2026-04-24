@@ -770,7 +770,9 @@ async def cancel_job(
     job_id: str,
     _: object = Depends(require_admin),
     session: AsyncSession = Depends(get_db_session),
+    redis: Redis = Depends(get_redis_client),
 ) -> dict:
+    await _ensure_document_mutations_allowed(redis)
     result = await session.execute(select(DocumentJob).where(DocumentJob.id == job_id))
     job = result.scalar_one_or_none()
     if job is None:

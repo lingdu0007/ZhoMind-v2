@@ -560,6 +560,91 @@ def test_documents_migration_drain_status_and_resume(monkeypatch) -> None:
         os.remove(db_path)
 
 
+def test_documents_migration_drain_blocks_cancel_job(monkeypatch) -> None:
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-drain-cancel-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_init_db())
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    fake_redis = _InMemoryRedis()
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+
+    from app.api.v1 import documents as documents_api
+    from app.common.config import get_settings
+
+    settings = get_settings()
+    original_code = settings.admin_invite_code
+    settings.admin_invite_code = "test-admin-code"
+    monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
+
+    async def _seed_cancel_target() -> None:
+        async with session_factory() as session:
+            session.add(
+                Document(
+                    id="doc-drain-cancel",
+                    filename="drain-cancel.txt",
+                    file_type="txt",
+                    file_size=12,
+                    source_content=b"hello world",
+                    status="pending",
+                    chunk_strategy="general",
+                    chunk_count=0,
+                    published_generation=0,
+                    next_generation=2,
+                    latest_requested_generation=1,
+                    active_build_generation=1,
+                    active_build_job_id="job-drain-cancel",
+                )
+            )
+            session.add(
+                DocumentJob(
+                    id="job-drain-cancel",
+                    document_id="doc-drain-cancel",
+                    build_generation=1,
+                    requested_chunk_strategy="general",
+                    status="queued",
+                    stage="queued",
+                    progress=0,
+                    message="queued",
+                )
+            )
+            await session.commit()
+
+    asyncio.run(_seed_cancel_target())
+
+    try:
+        with TestClient(app) as client:
+            token = asyncio.run(_create_admin_token(client))
+            headers = _admin_headers(token)
+
+            drain_response = client.post("/api/v1/documents/ops/migration-drain", headers=headers)
+            assert drain_response.status_code == 200
+
+            cancel_response = client.post("/api/v1/documents/jobs/job-drain-cancel/cancel", headers=headers)
+            assert cancel_response.status_code == 503
+            assert cancel_response.json()["code"] == "DOC_MIGRATION_DRAIN_ACTIVE"
+
+            persisted_job = asyncio.run(_load_document_job_record(session_factory, job_id="job-drain-cancel"))
+            assert persisted_job is not None
+            assert persisted_job.status == "queued"
+    finally:
+        settings.admin_invite_code = original_code
+        app.dependency_overrides.clear()
+        asyncio.run(db_engine.dispose())
+        os.remove(db_path)
+
+
 def test_documents_migration_reconcile_only_cancels_queued_jobs(monkeypatch) -> None:
     db_fd, db_path = tempfile.mkstemp(prefix="documents-reconcile-", suffix=".db")
     os.close(db_fd)
