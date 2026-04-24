@@ -180,6 +180,78 @@ class _CandidateWriteOwnershipSessionSpy(_SessionSpy):
         raise AssertionError(f"unexpected SQL during candidate write race test: {sql}")
 
 
+class _PostClaimCancelSessionSpy(_SessionSpy):
+    def __init__(self, *, document: Document, job: DocumentJob) -> None:
+        super().__init__()
+        self.document = document
+        self.job = job
+        self.start_sql: list[str] = []
+        self.deleted_generations: list[tuple[str, int | None]] = []
+        self.persisted_document = {
+            "status": "pending",
+            "latest_requested_generation": document.published_generation,
+            "active_build_generation": None,
+            "active_build_job_id": None,
+            "active_build_heartbeat_at": None,
+            "published_generation": document.published_generation,
+            "chunk_strategy": document.chunk_strategy,
+            "chunk_count": document.chunk_count,
+            "deleted_at": None,
+        }
+        self.persisted_job = {
+            "status": "canceled",
+            "stage": "failed",
+            "progress": min(job.progress, 99),
+            "message": "job canceled by user",
+        }
+
+    async def execute(self, statement) -> _ResultSpy:
+        compiled = statement.compile()
+        sql = str(compiled)
+        params = compiled.params
+
+        if sql.startswith("UPDATE documents SET status"):
+            self.start_sql.append(sql)
+            assert "latest_requested_generation" in sql
+            assert "active_build_generation" in sql
+            assert "active_build_job_id" in sql
+            return _ResultSpy(rowcount=0)
+
+        if sql.startswith("DELETE FROM document_chunks"):
+            document_id = None
+            generation = None
+            for key, value in params.items():
+                if key.startswith("document_id_"):
+                    document_id = value
+                if key.startswith("generation_"):
+                    generation = value
+            self.deleted_generations.append((document_id or "", generation))
+            return _ResultSpy(rowcount=1)
+
+        raise AssertionError(f"unexpected SQL during post-claim cancel race test: {sql}")
+
+    async def refresh(self, instance) -> None:
+        self.refresh_calls += 1
+        if isinstance(instance, Document):
+            instance.status = self.persisted_document["status"]
+            instance.latest_requested_generation = self.persisted_document["latest_requested_generation"]
+            instance.active_build_generation = self.persisted_document["active_build_generation"]
+            instance.active_build_job_id = self.persisted_document["active_build_job_id"]
+            instance.active_build_heartbeat_at = self.persisted_document["active_build_heartbeat_at"]
+            instance.published_generation = self.persisted_document["published_generation"]
+            instance.chunk_strategy = self.persisted_document["chunk_strategy"]
+            instance.chunk_count = self.persisted_document["chunk_count"]
+            instance.deleted_at = self.persisted_document["deleted_at"]
+            return
+        if isinstance(instance, DocumentJob):
+            instance.status = self.persisted_job["status"]
+            instance.stage = self.persisted_job["stage"]
+            instance.progress = self.persisted_job["progress"]
+            instance.message = self.persisted_job["message"]
+            return
+        raise AssertionError(f"unexpected instance refresh: {type(instance)!r}")
+
+
 def _load_publication_lifecycle_migration_module():
     module_path = (
         Path(__file__).resolve().parents[2]
@@ -368,6 +440,19 @@ def test_process_job_success_publishes_requested_generation_chunks() -> None:
             document.active_build_job_id = job.id
             return True
 
+        async def _fake_start_claimed_job(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+        ) -> bool:
+            document.status = "processing"
+            job.status = "running"
+            job.stage = "parsing"
+            job.progress = 10
+            job.message = "parsing document"
+            return True
+
         async def _fake_refresh_and_verify_owner(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
             return document.active_build_generation == job.build_generation and document.active_build_job_id == job.id
 
@@ -420,6 +505,7 @@ def test_process_job_success_publishes_requested_generation_chunks() -> None:
         service._get_document = MethodType(_fake_get_document, service)
         service._get_job = MethodType(_fake_get_job, service)
         service._claim_generation = MethodType(_fake_claim_generation, service)
+        service._start_claimed_job = MethodType(_fake_start_claimed_job, service)
         service._refresh_and_verify_owner = MethodType(_fake_refresh_and_verify_owner, service)
         service._write_candidate_chunks = MethodType(_fake_write_candidate_chunks, service)
         service._refresh_heartbeat_if_owned = MethodType(_fake_refresh_heartbeat_if_owned, service)
@@ -495,6 +581,19 @@ def test_process_job_retries_latest_generation_when_blocked_by_older_owner() -> 
             retry_waits.append("slept")
             document.active_build_heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=5)
 
+        async def _fake_start_claimed_job(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+        ) -> bool:
+            document.status = "processing"
+            job.status = "running"
+            job.stage = "parsing"
+            job.progress = 10
+            job.message = "parsing document"
+            return True
+
         async def _unexpected_terminalize(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> None:
             raise AssertionError("latest generation should retry instead of terminalizing")
 
@@ -541,6 +640,7 @@ def test_process_job_retries_latest_generation_when_blocked_by_older_owner() -> 
         service._get_document = MethodType(_fake_get_document, service)
         service._get_job = MethodType(_fake_get_job, service)
         service._sleep_before_claim_retry = MethodType(_fake_sleep_before_claim_retry, service)
+        service._start_claimed_job = MethodType(_fake_start_claimed_job, service)
         service._terminalize_non_owner = MethodType(_unexpected_terminalize, service)
         service._refresh_heartbeat_if_owned = MethodType(_fake_refresh_heartbeat_if_owned, service)
         service._write_candidate_chunks = MethodType(_fake_write_candidate_chunks, service)
@@ -612,6 +712,19 @@ def test_process_job_rolls_back_candidate_write_when_claim_is_lost_before_commit
             document.active_build_job_id = job.id
             return True
 
+        async def _fake_start_claimed_job(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+        ) -> bool:
+            document.status = "processing"
+            job.status = "running"
+            job.stage = "parsing"
+            job.progress = 10
+            job.message = "parsing document"
+            return True
+
         async def _fake_refresh_and_verify_owner(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
             return (
                 document.deleted_at is None
@@ -641,6 +754,7 @@ def test_process_job_rolls_back_candidate_write_when_claim_is_lost_before_commit
         service._get_document = MethodType(_fake_get_document, service)
         service._get_job = MethodType(_fake_get_job, service)
         service._claim_generation = MethodType(_fake_claim_generation, service)
+        service._start_claimed_job = MethodType(_fake_start_claimed_job, service)
         service._refresh_and_verify_owner = MethodType(_fake_refresh_and_verify_owner, service)
         service._refresh_heartbeat_if_owned = MethodType(_fake_refresh_heartbeat_if_owned, service)
         service._publish_generation = MethodType(_unexpected_publish_generation, service)
@@ -662,6 +776,75 @@ def test_process_job_rolls_back_candidate_write_when_claim_is_lost_before_commit
         assert job.status == "canceled"
         assert job.stage == "failed"
         assert job.message == "job superseded by newer build request"
+
+    asyncio.run(_run())
+
+
+def test_process_job_preserves_explicit_cancel_that_lands_after_claim() -> None:
+    async def _run() -> None:
+        document = Document(
+            filename="post-claim-cancel.txt",
+            file_type="txt",
+            file_size=1600,
+            source_content=("A" * 1600).encode("utf-8"),
+            status="pending",
+            chunk_strategy="general",
+            chunk_count=2,
+            published_generation=1,
+            latest_requested_generation=2,
+            active_build_generation=2,
+            active_build_job_id="job-race",
+        )
+        document.id = "doc-race"
+
+        job = DocumentJob(
+            document_id=document.id,
+            build_generation=2,
+            requested_chunk_strategy="paper",
+            status="queued",
+            stage="queued",
+            progress=0,
+            message="queued for rebuild",
+        )
+        job.id = "job-race"
+
+        session = _PostClaimCancelSessionSpy(document=document, job=job)
+        parser_calls: list[str] = []
+
+        def _unexpected_parser(_filename: str, _content: bytes) -> dict:
+            parser_calls.append("called")
+            raise AssertionError("parsing must not start after explicit cancel wins the post-claim race")
+
+        service = DocumentBuildService(session, parser=_unexpected_parser)  # type: ignore[arg-type]
+
+        async def _fake_get_document(self: DocumentBuildService, document_id: str) -> Document:
+            assert document_id == document.id
+            return document
+
+        async def _fake_get_job(self: DocumentBuildService, job_id: str) -> DocumentJob:
+            assert job_id == job.id
+            return job
+
+        async def _fake_wait_for_claim(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
+            return True
+
+        service._get_document = MethodType(_fake_get_document, service)
+        service._get_job = MethodType(_fake_get_job, service)
+        service._wait_for_claim = MethodType(_fake_wait_for_claim, service)
+
+        await service.process_job(document_id=document.id, job_id=job.id)
+
+        assert parser_calls == []
+        assert session.start_sql and all("active_build_job_id" in sql for sql in session.start_sql)
+        assert session.deleted_generations == [(document.id, 2)]
+        assert document.status == "pending"
+        assert document.latest_requested_generation == 1
+        assert document.published_generation == 1
+        assert document.active_build_generation is None
+        assert document.active_build_job_id is None
+        assert job.status == "canceled"
+        assert job.stage == "failed"
+        assert job.message == "job canceled by user"
 
     asyncio.run(_run())
 
@@ -707,6 +890,19 @@ def test_process_job_missing_source_persists_app_error_message_for_unpublished_d
         async def _fake_claim_generation(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
             return True
 
+        async def _fake_start_claimed_job(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+        ) -> bool:
+            document.status = "processing"
+            job.status = "running"
+            job.stage = "parsing"
+            job.progress = 10
+            job.message = "parsing document"
+            return True
+
         async def _fake_refresh_and_verify_owner(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
             return True
 
@@ -720,6 +916,7 @@ def test_process_job_missing_source_persists_app_error_message_for_unpublished_d
         service._get_document = MethodType(_fake_get_document, service)
         service._get_job = MethodType(_fake_get_job, service)
         service._claim_generation = MethodType(_fake_claim_generation, service)
+        service._start_claimed_job = MethodType(_fake_start_claimed_job, service)
         service._refresh_and_verify_owner = MethodType(_fake_refresh_and_verify_owner, service)
         service._fail_claimed_job = MethodType(_fake_fail_claimed_job, service)
 
@@ -780,6 +977,19 @@ def test_process_job_cleans_up_claimed_owner_when_canceled_mid_flight() -> None:
         async def _fake_claim_generation(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
             return True
 
+        async def _fake_start_claimed_job(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+        ) -> bool:
+            document.status = "processing"
+            job.status = "running"
+            job.stage = "parsing"
+            job.progress = 10
+            job.message = "parsing document"
+            return True
+
         async def _fake_refresh_and_verify_owner(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
             return document.active_build_generation == job.build_generation and document.active_build_job_id == job.id
 
@@ -811,6 +1021,7 @@ def test_process_job_cleans_up_claimed_owner_when_canceled_mid_flight() -> None:
         service._get_document = MethodType(_fake_get_document, service)
         service._get_job = MethodType(_fake_get_job, service)
         service._claim_generation = MethodType(_fake_claim_generation, service)
+        service._start_claimed_job = MethodType(_fake_start_claimed_job, service)
         service._refresh_and_verify_owner = MethodType(_fake_refresh_and_verify_owner, service)
         service._refresh_heartbeat_if_owned = MethodType(_fake_refresh_heartbeat_if_owned, service)
         service._write_candidate_chunks = MethodType(_cancel_during_candidate_write, service)
