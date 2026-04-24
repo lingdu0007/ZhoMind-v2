@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.config import get_settings
 from app.extensions.provider_router import ProviderRouter
 from app.extensions.registry import get_extension_registry
-from app.model.document import DocumentChunk
+from app.model.document import Document, DocumentChunk
 from app.rag.interfaces import RelevanceJudge, Reranker, Retriever
 from app.rag.runtime.graph_runner import RagGraphRunner
 from app.repository.chat_repository import ChatRepository
@@ -90,7 +90,16 @@ class ChatService:
         if not query:
             return []
 
-        result = await self.session.execute(select(DocumentChunk).limit(200))
+        result = await self.session.execute(
+            select(DocumentChunk)
+            .join(Document, DocumentChunk.document_id == Document.id)
+            .where(
+                Document.deleted_at.is_(None),
+                Document.published_generation > 0,
+                DocumentChunk.generation == Document.published_generation,
+            )
+            .limit(200)
+        )
         candidates = list(result.scalars().all())
 
         ranked: list[dict] = []

@@ -1,7 +1,9 @@
 import asyncio
 from collections.abc import Generator
+from datetime import datetime, timezone
 import os
 import tempfile
+import threading
 import time
 
 from fastapi.testclient import TestClient
@@ -11,7 +13,8 @@ from app.infra.db import get_db_session
 from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
-from app.model.document import Document
+from app.model.document import Document, DocumentChunk
+from app.service.chat_service import ChatService
 
 
 class _InMemoryRedis:
@@ -88,7 +91,22 @@ def _get_chunk_snapshot(client: TestClient, *, headers: dict[str, str], document
     return [(item["chunk_index"], item["content"], item["metadata"]) for item in items]
 
 
-def test_documents_and_jobs_flow() -> None:
+async def _load_document_record(session_factory, *, document_id: str) -> Document | None:
+    async with session_factory() as session:
+        return await session.get(Document, document_id)
+
+
+async def _tombstone_document_record(session_factory, *, document_id: str) -> None:
+    async with session_factory() as session:
+        document = await session.get(Document, document_id)
+        assert document is not None
+        document.deleted_at = datetime.now(timezone.utc)
+        document.status = "pending"
+        document.latest_requested_generation = document.published_generation
+        await session.commit()
+
+
+def test_documents_and_jobs_flow(monkeypatch) -> None:
     db_fd, db_path = tempfile.mkstemp(prefix="documents-flow-", suffix=".db")
     os.close(db_fd)
     db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
@@ -110,7 +128,26 @@ def test_documents_and_jobs_flow() -> None:
 
     previous_admin_code = app.state.__dict__.get("_test_admin_invite_code", None)
 
+    from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
+
+    original_build_document_runner = documents_api._build_document_runner
+    delayed_rebuild_gate = threading.Event()
+    delay_next_build = {"enabled": False}
+
+    def _build_document_runner_with_gate(*, bind_url: str, document_id: str, job_id: str, content=None, gate=None):
+        if delay_next_build["enabled"] and gate is None:
+            delay_next_build["enabled"] = False
+            gate = delayed_rebuild_gate
+        return original_build_document_runner(
+            bind_url=bind_url,
+            document_id=document_id,
+            job_id=job_id,
+            content=content,
+            gate=gate,
+        )
+
+    monkeypatch.setattr(documents_api, "_build_document_runner", _build_document_runner_with_gate)
 
     settings = get_settings()
     original_code = settings.admin_invite_code
@@ -157,7 +194,9 @@ def test_documents_and_jobs_flow() -> None:
             first_doc = docs_data["items"][0]
             assert first_doc["document_id"] == document_id
             assert first_doc["status"] == "ready"
+            assert first_doc["chunk_strategy"] == "general"
             assert first_doc["chunk_count"] > 0
+            upload_chunk_count = first_doc["chunk_count"]
 
             get_job_response = client.get(f"/api/v1/documents/jobs/{job_id}", headers=headers)
             assert get_job_response.status_code == 200
@@ -181,6 +220,7 @@ def test_documents_and_jobs_flow() -> None:
             upload_chunks = _get_chunk_snapshot(client, headers=headers, document_id=document_id)
             assert any("line 1" in content and "line 3" in content for _, content, _ in upload_chunks)
 
+            delay_next_build["enabled"] = True
             build_response = client.post(
                 f"/api/v1/documents/{document_id}/build",
                 headers=headers,
@@ -193,12 +233,28 @@ def test_documents_and_jobs_flow() -> None:
             assert rebuilt_job["stage"] == "queued"
             assert rebuilt_job["document_id"] == document_id
 
-            not_ready_chunk_response = client.get(
-                f"/api/v1/documents/{document_id}/chunks?page=1&page_size=5",
-                headers=headers,
-            )
-            assert not_ready_chunk_response.status_code == 409
-            assert not_ready_chunk_response.json()["code"] == "DOC_CHUNK_RESULT_NOT_READY"
+            pending_summary_error: AssertionError | None = None
+            try:
+                rebuilt_doc_during_pending = _get_document_item(client, headers=headers, document_id=document_id)
+                assert rebuilt_doc_during_pending["status"] == "pending"
+                assert rebuilt_doc_during_pending["chunk_strategy"] == "general"
+                assert rebuilt_doc_during_pending["chunk_count"] == upload_chunk_count
+
+                not_ready_chunk_response = client.get(
+                    f"/api/v1/documents/{document_id}/chunks?page=1&page_size=5",
+                    headers=headers,
+                )
+                assert not_ready_chunk_response.status_code == 409
+                assert not_ready_chunk_response.json()["code"] == "DOC_CHUNK_RESULT_NOT_READY"
+            except AssertionError as exc:
+                pending_summary_error = exc
+            finally:
+                delayed_rebuild_gate.set()
+                if pending_summary_error is not None:
+                    _poll_job_until_terminal(client, headers=headers, job_id=rebuilt_job_id)
+
+            if pending_summary_error is not None:
+                raise pending_summary_error
 
             rebuilt_job_data = _poll_job_until_terminal(client, headers=headers, job_id=rebuilt_job_id)
             assert rebuilt_job_data["status"] == "succeeded"
@@ -342,6 +398,189 @@ def test_documents_and_jobs_flow() -> None:
         os.remove(db_path)
 
 
+def test_documents_and_jobs_flow_tombstone_visibility_after_delete() -> None:
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-delete-visibility-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_init_db())
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    fake_redis = _InMemoryRedis()
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+
+    from app.common.config import get_settings
+
+    settings = get_settings()
+    original_code = settings.admin_invite_code
+    settings.admin_invite_code = "test-admin-code"
+
+    try:
+        with TestClient(app) as client:
+            token = asyncio.run(_create_admin_token(client))
+            headers = _admin_headers(token)
+
+            upload_response = client.post(
+                "/api/v1/documents/upload",
+                headers=headers,
+                files={"file": ("demo.txt", b"line 1\nline 2\nline 3", "text/plain")},
+            )
+            assert upload_response.status_code == 200
+            upload_data = _extract_data(upload_response.json())
+            document_id = upload_data["document_id"]
+            assert _poll_job_until_terminal(client, headers=headers, job_id=upload_data["job_id"])["status"] == "succeeded"
+
+            delete_response = client.delete("/api/v1/documents/demo.txt", headers=headers)
+            assert delete_response.status_code == 200
+            delete_data = _extract_data(delete_response.json())
+            assert delete_data["success_ids"] == [document_id]
+            assert delete_data["failed_items"] == []
+
+            hidden_docs = client.get("/api/v1/documents?page=1&page_size=20", headers=headers)
+            assert hidden_docs.status_code == 200
+            hidden_docs_data = _extract_data(hidden_docs.json())
+            hidden_docs_items = hidden_docs_data["items"]
+            assert hidden_docs_data["pagination"]["total"] == 0
+            assert all(item["document_id"] != document_id for item in hidden_docs_items)
+
+            hidden_chunks = client.get(
+                f"/api/v1/documents/{document_id}/chunks?page=1&page_size=5",
+                headers=headers,
+            )
+            assert hidden_chunks.status_code == 404
+            assert hidden_chunks.json()["code"] == "RESOURCE_NOT_FOUND"
+
+            tombstoned_document = asyncio.run(_load_document_record(session_factory, document_id=document_id))
+            assert tombstoned_document is not None
+            assert tombstoned_document.deleted_at is not None
+    finally:
+        settings.admin_invite_code = original_code
+        app.dependency_overrides.clear()
+        asyncio.run(db_engine.dispose())
+        os.remove(db_path)
+
+
+def test_chat_lexical_retrieval_reads_only_published_generation_on_live_documents() -> None:
+    db_fd, db_path = tempfile.mkstemp(prefix="chat-lexical-live-published-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    async def _seed_documents() -> None:
+        async with session_factory() as session:
+            session.add_all(
+                [
+                    Document(
+                        id="doc-live",
+                        filename="live.txt",
+                        file_type="txt",
+                        file_size=11,
+                        status="pending",
+                        chunk_strategy="general",
+                        chunk_count=1,
+                        published_generation=2,
+                        next_generation=4,
+                        latest_requested_generation=3,
+                    ),
+                    Document(
+                        id="doc-zero",
+                        filename="zero.txt",
+                        file_type="txt",
+                        file_size=11,
+                        status="ready",
+                        chunk_strategy="general",
+                        chunk_count=0,
+                        published_generation=0,
+                        next_generation=2,
+                        latest_requested_generation=1,
+                    ),
+                    Document(
+                        id="doc-deleted",
+                        filename="deleted.txt",
+                        file_type="txt",
+                        file_size=11,
+                        status="ready",
+                        chunk_strategy="general",
+                        chunk_count=1,
+                        published_generation=1,
+                        next_generation=2,
+                        latest_requested_generation=1,
+                        deleted_at=datetime.now(timezone.utc),
+                    ),
+                ]
+            )
+            session.add_all(
+                [
+                    DocumentChunk(
+                        id="chunk-live-old",
+                        document_id="doc-live",
+                        generation=1,
+                        chunk_index=0,
+                        content="retrieval sentinel old generation should stay hidden",
+                    ),
+                    DocumentChunk(
+                        id="chunk-live-published",
+                        document_id="doc-live",
+                        generation=2,
+                        chunk_index=0,
+                        content="retrieval sentinel published generation stays visible",
+                    ),
+                    DocumentChunk(
+                        id="chunk-live-candidate",
+                        document_id="doc-live",
+                        generation=3,
+                        chunk_index=0,
+                        content="retrieval sentinel candidate generation must stay hidden",
+                    ),
+                    DocumentChunk(
+                        id="chunk-zero-published",
+                        document_id="doc-zero",
+                        generation=1,
+                        chunk_index=0,
+                        content="retrieval sentinel zero published generation must stay hidden",
+                    ),
+                    DocumentChunk(
+                        id="chunk-deleted",
+                        document_id="doc-deleted",
+                        generation=1,
+                        chunk_index=0,
+                        content="retrieval sentinel tombstoned document must stay hidden",
+                    ),
+                ]
+            )
+            await session.commit()
+
+    async def _retrieve_chunks() -> list[dict]:
+        async with session_factory() as session:
+            service = ChatService(session)
+            return await service._default_retrieve_chunks("retrieval sentinel", top_k=10)
+
+    asyncio.run(_init_db())
+
+    try:
+        asyncio.run(_seed_documents())
+        retrieved = asyncio.run(_retrieve_chunks())
+        assert [item["chunk_id"] for item in retrieved] == ["chunk-live-published"]
+        assert retrieved[0]["document_id"] == "doc-live"
+        assert "published generation stays visible" in retrieved[0]["content_preview"]
+    finally:
+        asyncio.run(db_engine.dispose())
+        os.remove(db_path)
+
+
 def test_documents_enqueue_failure_compensation(monkeypatch) -> None:
     db_fd, db_path = tempfile.mkstemp(prefix="documents-enqueue-fail-", suffix=".db")
     os.close(db_fd)
@@ -459,6 +698,26 @@ def test_documents_enqueue_failure_compensation(monkeypatch) -> None:
                 if item["document_id"] == document_id and item["status"] == "failed"
             ]
             assert len(failed_jobs) >= 2
+
+            fail_mode["enabled"] = False
+            tombstone_upload = client.post(
+                "/api/v1/documents/upload",
+                headers=headers,
+                files={"file": ("demo.txt", b"initial body", "text/plain")},
+            )
+            assert tombstone_upload.status_code == 200
+            tombstone_upload_data = _extract_data(tombstone_upload.json())
+            tombstone_document_id = tombstone_upload_data["document_id"]
+            assert _poll_job_until_terminal(client, headers=headers, job_id=tombstone_upload_data["job_id"])["status"] == "succeeded"
+
+            asyncio.run(_tombstone_document_record(session_factory, document_id=tombstone_document_id))
+
+            reupload_after_tombstone = client.post(
+                "/api/v1/documents/upload",
+                headers=headers,
+                files={"file": ("demo.txt", b"replacement body", "text/plain")},
+            )
+            assert reupload_after_tombstone.status_code == 200
     finally:
         settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
