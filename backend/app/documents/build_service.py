@@ -83,7 +83,15 @@ class DocumentBuildService:
                 await self._terminalize_non_owner(document=document, job=job)
                 return
 
-            await self._write_candidate_chunks(document=document, generation=generation, chunks=chunks)
+            wrote_candidates = await self._write_candidate_chunks(
+                document=document,
+                job=job,
+                generation=generation,
+                chunks=chunks,
+            )
+            if not wrote_candidates:
+                await self._terminalize_non_owner(document=document, job=job)
+                return
             if not await self._refresh_and_verify_owner(document=document, job=job):
                 await self._terminalize_non_owner(document=document, job=job)
                 return
@@ -163,23 +171,7 @@ class DocumentBuildService:
         await asyncio.sleep(_CLAIM_RETRY_DELAY_SECONDS)
 
     async def _refresh_heartbeat_if_owned(self, *, document: Document, job: DocumentJob) -> bool:
-        generation = job.build_generation
-        if generation is None:
-            return False
-
-        now = datetime.now(timezone.utc)
-        heartbeat_result = await self.session.execute(
-            update(Document)
-            .where(
-                Document.id == document.id,
-                Document.deleted_at.is_(None),
-                Document.latest_requested_generation == generation,
-                Document.active_build_generation == generation,
-                Document.active_build_job_id == job.id,
-            )
-            .values(active_build_heartbeat_at=now)
-        )
-        if heartbeat_result.rowcount != 1:
+        if not await self._touch_heartbeat_if_owned(document=document, job=job):
             await self.session.rollback()
             await self.session.refresh(document)
             await self.session.refresh(job)
@@ -189,6 +181,24 @@ class DocumentBuildService:
         await self.session.refresh(document)
         await self.session.refresh(job)
         return True
+
+    async def _touch_heartbeat_if_owned(self, *, document: Document, job: DocumentJob) -> bool:
+        generation = job.build_generation
+        if generation is None:
+            return False
+
+        heartbeat_result = await self.session.execute(
+            update(Document)
+            .where(
+                Document.id == document.id,
+                Document.deleted_at.is_(None),
+                Document.latest_requested_generation == generation,
+                Document.active_build_generation == generation,
+                Document.active_build_job_id == job.id,
+            )
+            .values(active_build_heartbeat_at=datetime.now(timezone.utc))
+        )
+        return heartbeat_result.rowcount == 1
 
     async def _refresh_and_verify_owner(self, *, document: Document, job: DocumentJob) -> bool:
         await self.session.refresh(document)
@@ -204,7 +214,14 @@ class DocumentBuildService:
             and document.active_build_job_id == job.id
         )
 
-    async def _write_candidate_chunks(self, *, document: Document, generation: int, chunks: list[ChunkRecord]) -> None:
+    async def _write_candidate_chunks(
+        self,
+        *,
+        document: Document,
+        job: DocumentJob,
+        generation: int,
+        chunks: list[ChunkRecord],
+    ) -> bool:
         await self.session.execute(
             delete(DocumentChunk).where(
                 DocumentChunk.document_id == document.id,
@@ -223,8 +240,16 @@ class DocumentBuildService:
                     chunk_metadata=chunk.metadata,
                 )
             )
-        document.active_build_heartbeat_at = datetime.now(timezone.utc)
+        await self.session.flush()
+        if not await self._touch_heartbeat_if_owned(document=document, job=job):
+            await self.session.rollback()
+            await self.session.refresh(document)
+            await self.session.refresh(job)
+            return False
         await self.session.commit()
+        await self.session.refresh(document)
+        await self.session.refresh(job)
+        return True
 
     async def _publish_generation(
         self,

@@ -115,6 +115,71 @@ class _CancelCleanupSessionSpy(_SessionSpy):
         return _ResultSpy(rowcount=1)
 
 
+class _CandidateWriteOwnershipSessionSpy(_SessionSpy):
+    def __init__(self, *, document: Document, job: DocumentJob) -> None:
+        super().__init__()
+        self.document = document
+        self.job = job
+        self.deleted_generations: list[tuple[str, int | None]] = []
+        self.guard_sql: list[str] = []
+        self.flush_calls = 0
+        self.staged_chunks: list[tuple[str, int, int, str]] = []
+        self.committed_chunks: list[tuple[str, int, int, str]] = []
+
+    def add(self, instance: DocumentChunk) -> None:
+        self.staged_chunks.append(
+            (
+                instance.document_id,
+                instance.generation,
+                instance.chunk_index,
+                instance.content,
+            )
+        )
+
+    async def flush(self) -> None:
+        self.flush_calls += 1
+
+    async def commit(self) -> None:
+        self.commit_calls += 1
+        self.committed_chunks.extend(self.staged_chunks)
+        self.staged_chunks.clear()
+
+    async def rollback(self) -> None:
+        self.rollback_calls += 1
+        self.staged_chunks.clear()
+
+    async def execute(self, statement) -> _ResultSpy:
+        compiled = statement.compile()
+        sql = str(compiled)
+        params = compiled.params
+
+        if sql.startswith("DELETE FROM document_chunks"):
+            document_id = None
+            generation = None
+            for key, value in params.items():
+                if key.startswith("document_id_"):
+                    document_id = value
+                if key.startswith("generation_"):
+                    generation = value
+            self.deleted_generations.append((document_id or "", generation))
+            return _ResultSpy(rowcount=1)
+
+        if sql.startswith("UPDATE documents SET active_build_heartbeat_at"):
+            self.guard_sql.append(sql)
+            assert "deleted_at IS NULL" in sql
+            assert "latest_requested_generation" in sql
+            assert "active_build_generation" in sql
+            assert "active_build_job_id" in sql
+
+            self.document.latest_requested_generation = 3
+            self.document.active_build_generation = 3
+            self.document.active_build_job_id = "job-other"
+            self.document.active_build_heartbeat_at = datetime.now(timezone.utc)
+            return _ResultSpy(rowcount=0)
+
+        raise AssertionError(f"unexpected SQL during candidate write race test: {sql}")
+
+
 def _load_publication_lifecycle_migration_module():
     module_path = (
         Path(__file__).resolve().parents[2]
@@ -310,13 +375,16 @@ def test_process_job_success_publishes_requested_generation_chunks() -> None:
             self: DocumentBuildService,
             *,
             document: Document,
+            job: DocumentJob,
             generation: int,
             chunks: list[ChunkRecord],
-        ) -> None:
+        ) -> bool:
             assert document.chunk_strategy == "general"
+            assert job.id == "job-1"
             assert generation == 2
             assert all(chunk.metadata["strategy"] == "paper" for chunk in chunks)
             candidate_writes.append((generation, chunks))
+            return True
 
         async def _fake_refresh_heartbeat_if_owned(
             self: DocumentBuildService,
@@ -442,11 +510,14 @@ def test_process_job_retries_latest_generation_when_blocked_by_older_owner() -> 
             self: DocumentBuildService,
             *,
             document: Document,
+            job: DocumentJob,
             generation: int,
             chunks: list[ChunkRecord],
-        ) -> None:
+        ) -> bool:
+            assert job.id == "job-new"
             assert generation == 2
             assert all(chunk.metadata["strategy"] == "paper" for chunk in chunks)
+            return True
 
         async def _fake_publish_generation(
             self: DocumentBuildService,
@@ -486,6 +557,111 @@ def test_process_job_retries_latest_generation_when_blocked_by_older_owner() -> 
         assert document.active_build_job_id is None
         assert job.status == "succeeded"
         assert job.stage == "completed"
+
+    asyncio.run(_run())
+
+
+def test_process_job_rolls_back_candidate_write_when_claim_is_lost_before_commit() -> None:
+    async def _run() -> None:
+        document = Document(
+            filename="write-race.txt",
+            file_type="txt",
+            file_size=1600,
+            source_content=("A" * 1600).encode("utf-8"),
+            status="pending",
+            chunk_strategy="general",
+            chunk_count=2,
+            published_generation=1,
+            latest_requested_generation=2,
+            active_build_generation=2,
+            active_build_job_id="job-write",
+        )
+        document.id = "doc-write"
+
+        job = DocumentJob(
+            document_id=document.id,
+            build_generation=2,
+            requested_chunk_strategy="paper",
+            status="queued",
+            stage="queued",
+            progress=0,
+            message="queued for rebuild",
+        )
+        job.id = "job-write"
+
+        session = _CandidateWriteOwnershipSessionSpy(document=document, job=job)
+        service = DocumentBuildService(
+            session,  # type: ignore[arg-type]
+            parser=lambda _filename, _content: {"content": "parsed"},
+            chunker=lambda _parsed: [
+                ChunkRecord(chunk_index=0, content="first", metadata={"strategy": "paper"}),
+                ChunkRecord(chunk_index=1, content="second", metadata={"strategy": "paper"}),
+            ],
+        )
+
+        async def _fake_get_document(self: DocumentBuildService, document_id: str) -> Document:
+            assert document_id == document.id
+            return document
+
+        async def _fake_get_job(self: DocumentBuildService, job_id: str) -> DocumentJob:
+            assert job_id == job.id
+            return job
+
+        async def _fake_claim_generation(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
+            document.active_build_generation = 2
+            document.active_build_job_id = job.id
+            return True
+
+        async def _fake_refresh_and_verify_owner(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
+            return (
+                document.deleted_at is None
+                and document.latest_requested_generation == job.build_generation
+                and document.active_build_generation == job.build_generation
+                and document.active_build_job_id == job.id
+            )
+
+        async def _fake_refresh_heartbeat_if_owned(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+        ) -> bool:
+            return True
+
+        async def _unexpected_publish_generation(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+            generation: int,
+            chunks: list[ChunkRecord],
+        ) -> None:
+            raise AssertionError("candidate write ownership loss must stop before publish")
+
+        service._get_document = MethodType(_fake_get_document, service)
+        service._get_job = MethodType(_fake_get_job, service)
+        service._claim_generation = MethodType(_fake_claim_generation, service)
+        service._refresh_and_verify_owner = MethodType(_fake_refresh_and_verify_owner, service)
+        service._refresh_heartbeat_if_owned = MethodType(_fake_refresh_heartbeat_if_owned, service)
+        service._publish_generation = MethodType(_unexpected_publish_generation, service)
+
+        await service.process_job(document_id=document.id, job_id=job.id)
+
+        assert session.flush_calls == 1
+        assert session.rollback_calls == 1
+        assert session.guard_sql and all("active_build_job_id" in sql for sql in session.guard_sql)
+        assert session.committed_chunks == []
+        assert session.staged_chunks == []
+        assert session.deleted_generations == [(document.id, 2), (document.id, 2)]
+        assert document.status == "pending"
+        assert document.published_generation == 1
+        assert document.chunk_strategy == "general"
+        assert document.chunk_count == 2
+        assert document.active_build_generation == 3
+        assert document.active_build_job_id == "job-other"
+        assert job.status == "canceled"
+        assert job.stage == "failed"
+        assert job.message == "job superseded by newer build request"
 
     asyncio.run(_run())
 
@@ -619,9 +795,11 @@ def test_process_job_cleans_up_claimed_owner_when_canceled_mid_flight() -> None:
             self: DocumentBuildService,
             *,
             document: Document,
+            job: DocumentJob,
             generation: int,
             chunks: list[ChunkRecord],
         ) -> None:
+            assert job.id == "job-cancel"
             assert generation == 2
             document.status = "pending"
             document.latest_requested_generation = document.published_generation
