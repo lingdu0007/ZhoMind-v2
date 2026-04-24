@@ -1,8 +1,9 @@
 import asyncio
 from collections.abc import Awaitable
 from concurrent.futures import Future
-from pathlib import Path
 from contextlib import suppress
+from datetime import datetime, timezone
+from pathlib import Path
 import threading
 from typing import TypeVar
 
@@ -122,7 +123,12 @@ def _validate_supported_upload_file_type(file_type: str) -> None:
 
 
 async def _get_document_or_404(session: AsyncSession, document_id: str) -> Document:
-    result = await session.execute(select(Document).where(Document.id == document_id))
+    result = await session.execute(
+        select(Document).where(
+            Document.id == document_id,
+            Document.deleted_at.is_(None),
+        )
+    )
     document = result.scalar_one_or_none()
     if document is None:
         raise AppError(status_code=404, code="RESOURCE_NOT_FOUND", message="document not found")
@@ -137,9 +143,13 @@ async def _create_job(
     stage: str,
     progress: int,
     message: str,
+    build_generation: int | None = None,
+    requested_chunk_strategy: str | None = None,
 ) -> DocumentJob:
     job = DocumentJob(
         document_id=document_id,
+        build_generation=build_generation,
+        requested_chunk_strategy=requested_chunk_strategy,
         status=status,
         stage=stage,
         progress=progress,
@@ -246,7 +256,6 @@ async def _compensate_rebuild_enqueue_failure(
     document_id: str,
     job_id: str,
     previous_status: str,
-    previous_strategy: str,
 ) -> None:
     await session.rollback()
 
@@ -254,7 +263,6 @@ async def _compensate_rebuild_enqueue_failure(
     document = document_result.scalar_one_or_none()
     if document is not None:
         document.status = previous_status
-        document.chunk_strategy = previous_strategy
 
     job_result = await session.execute(select(DocumentJob).where(DocumentJob.id == job_id))
     job = job_result.scalar_one_or_none()
@@ -271,16 +279,15 @@ async def _compensate_rebuild_enqueue_failure(
 async def _compensate_batch_enqueue_failure(
     session: AsyncSession,
     *,
-    targets: list[tuple[str, str, str, str]],
+    targets: list[tuple[str, str, str]],
 ) -> None:
     await session.rollback()
 
-    for document_id, job_id, previous_status, previous_strategy in targets:
+    for document_id, job_id, previous_status in targets:
         document_result = await session.execute(select(Document).where(Document.id == document_id))
         document = document_result.scalar_one_or_none()
         if document is not None:
             document.status = previous_status
-            document.chunk_strategy = previous_strategy
 
         job_result = await session.execute(select(DocumentJob).where(DocumentJob.id == job_id))
         job = job_result.scalar_one_or_none()
@@ -294,6 +301,23 @@ async def _compensate_batch_enqueue_failure(
     await session.commit()
 
 
+async def _tombstone_document(session: AsyncSession, *, document: Document) -> None:
+    document.deleted_at = datetime.now(timezone.utc)
+    document.status = "pending"
+    document.latest_requested_generation = document.published_generation
+    document.active_build_generation = None
+    document.active_build_job_id = None
+    document.active_build_heartbeat_at = None
+
+    jobs_result = await session.execute(select(DocumentJob).where(DocumentJob.document_id == document.id))
+    for job in jobs_result.scalars().all():
+        if job.status in {"queued", "running"}:
+            job.status = "canceled"
+            job.stage = "failed"
+            job.progress = min(job.progress, 99)
+            job.message = "job canceled because document was deleted"
+
+
 @router.get("")
 async def list_documents(
     page: int = Query(1),
@@ -303,9 +327,15 @@ async def list_documents(
 ) -> dict:
     page, page_size = _validate_pagination(page, page_size)
 
-    total = await session.scalar(select(func.count()).select_from(Document))
+    total = await session.scalar(
+        select(func.count()).select_from(Document).where(Document.deleted_at.is_(None))
+    )
     result = await session.execute(
-        select(Document).order_by(Document.uploaded_at.desc()).offset((page - 1) * page_size).limit(page_size)
+        select(Document)
+        .where(Document.deleted_at.is_(None))
+        .order_by(Document.uploaded_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
     )
     items = [_serialize_document(doc) for doc in result.scalars().all()]
     return _ok(
@@ -330,7 +360,12 @@ async def upload_document(
     if not filename:
         raise AppError(status_code=400, code="VALIDATION_ERROR", message="file is required")
 
-    existing = await session.execute(select(Document).where(Document.filename == filename))
+    existing = await session.execute(
+        select(Document).where(
+            Document.filename == filename,
+            Document.deleted_at.is_(None),
+        )
+    )
     if existing.scalar_one_or_none() is not None:
         raise AppError(status_code=409, code="RESOURCE_CONFLICT", message="filename already exists")
 
@@ -351,11 +386,15 @@ async def upload_document(
     job = await _create_job(
         session,
         document_id=document.id,
+        build_generation=document.next_generation,
+        requested_chunk_strategy="general",
         status="queued",
         stage="queued",
         progress=0,
         message="queued for build",
     )
+    document.latest_requested_generation = document.next_generation
+    document.next_generation += 1
     await session.commit()
     try:
         await _enqueue_document_build(session, document_id=document.id, job_id=job.id, content=content)
@@ -379,18 +418,21 @@ async def build_document(
 ) -> dict:
     document = await _get_document_or_404(session, document_id)
     previous_status = document.status
-    previous_strategy = document.chunk_strategy
     document.status = "pending"
-    document.chunk_strategy = payload.chunk_strategy
+    build_generation = document.next_generation
 
     job = await _create_job(
         session,
         document_id=document.id,
+        build_generation=build_generation,
+        requested_chunk_strategy=payload.chunk_strategy,
         status="queued",
         stage="queued",
         progress=0,
         message="queued for rebuild",
     )
+    document.latest_requested_generation = build_generation
+    document.next_generation += 1
     await session.commit()
     try:
         await _enqueue_document_build(session, document_id=document.id, job_id=job.id)
@@ -401,7 +443,6 @@ async def build_document(
                 document_id=document.id,
                 job_id=job.id,
                 previous_status=previous_status,
-                previous_strategy=previous_strategy,
             )
         raise _enqueue_failed_error() from exc
     return _ok(_serialize_job(job))
@@ -418,24 +459,27 @@ async def batch_build_documents(
         raise AppError(status_code=400, code="VALIDATION_ERROR", message="document_ids is required")
 
     items: list[dict] = []
-    queued_jobs: list[tuple[str, str, str, str]] = []
+    queued_jobs: list[tuple[str, str, str]] = []
     for document_id in document_ids:
         document = await _get_document_or_404(session, document_id)
         previous_status = document.status
-        previous_strategy = document.chunk_strategy
         document.status = "pending"
-        document.chunk_strategy = payload.chunk_strategy
+        build_generation = document.next_generation
 
         job = await _create_job(
             session,
             document_id=document.id,
+            build_generation=build_generation,
+            requested_chunk_strategy=payload.chunk_strategy,
             status="queued",
             stage="queued",
             progress=0,
             message="queued for rebuild",
         )
+        document.latest_requested_generation = build_generation
+        document.next_generation += 1
         items.append(_serialize_job(job))
-        queued_jobs.append((document.id, job.id, previous_status, previous_strategy))
+        queued_jobs.append((document.id, job.id, previous_status))
 
     await session.commit()
     gate = threading.Event()
@@ -444,7 +488,7 @@ async def batch_build_documents(
     runner_plans: list[tuple[str, Awaitable[None]]] = []
     submitted_runner_count = 0
     try:
-        for document_id, job_id, _, _ in queued_jobs:
+        for document_id, job_id, _ in queued_jobs:
             await _enqueue_document_task("build_document", {"document_id": document_id, "job_id": job_id})
             enqueued_job_ids.append(job_id)
 
@@ -492,15 +536,18 @@ async def batch_delete_documents(
     failed_items: list[dict] = []
 
     for document_id in document_ids:
-        result = await session.execute(select(Document).where(Document.id == document_id))
+        result = await session.execute(
+            select(Document).where(
+                Document.id == document_id,
+                Document.deleted_at.is_(None),
+            )
+        )
         document = result.scalar_one_or_none()
         if document is None:
             failed_items.append({"document_id": document_id, "message": "document not found"})
             continue
 
-        await session.execute(delete(DocumentChunk).where(DocumentChunk.document_id == document_id))
-        await session.execute(delete(DocumentJob).where(DocumentJob.document_id == document_id))
-        await session.delete(document)
+        await _tombstone_document(session, document=document)
         success_ids.append(document_id)
 
     await session.commit()
@@ -518,7 +565,7 @@ async def get_document_chunks(
     page, page_size = _validate_pagination(page, page_size)
 
     document = await _get_document_or_404(session, document_id)
-    if document.status != "ready":
+    if document.status != "ready" or document.published_generation == 0:
         raise AppError(
             status_code=409,
             code="DOC_CHUNK_RESULT_NOT_READY",
@@ -526,10 +573,20 @@ async def get_document_chunks(
             detail={"document_id": document_id, "status": document.status},
         )
 
-    total = await session.scalar(select(func.count()).select_from(DocumentChunk).where(DocumentChunk.document_id == document_id))
+    total = await session.scalar(
+        select(func.count())
+        .select_from(DocumentChunk)
+        .where(
+            DocumentChunk.document_id == document_id,
+            DocumentChunk.generation == document.published_generation,
+        )
+    )
     result = await session.execute(
         select(DocumentChunk)
-        .where(DocumentChunk.document_id == document_id)
+        .where(
+            DocumentChunk.document_id == document_id,
+            DocumentChunk.generation == document.published_generation,
+        )
         .order_by(DocumentChunk.chunk_index.asc())
         .offset((page - 1) * page_size)
         .limit(page_size)
@@ -553,14 +610,17 @@ async def delete_document(
     _: object = Depends(require_admin),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    result = await session.execute(select(Document).where(Document.filename == filename))
+    result = await session.execute(
+        select(Document).where(
+            Document.filename == filename,
+            Document.deleted_at.is_(None),
+        )
+    )
     document = result.scalar_one_or_none()
     if document is None:
         raise AppError(status_code=404, code="RESOURCE_NOT_FOUND", message="document not found")
 
-    await session.execute(delete(DocumentChunk).where(DocumentChunk.document_id == document.id))
-    await session.execute(delete(DocumentJob).where(DocumentJob.document_id == document.id))
-    await session.delete(document)
+    await _tombstone_document(session, document=document)
     await session.commit()
 
     return _ok({"success_ids": [document.id], "failed_items": []})
@@ -619,17 +679,31 @@ async def cancel_job(
         raise AppError(status_code=404, code="RESOURCE_NOT_FOUND", message="job not found")
 
     if job.status in {"queued", "running"}:
-        document = await _get_document_or_404(session, job.document_id)
-        document.status = "pending"
+        document_result = await session.execute(select(Document).where(Document.id == job.document_id))
+        document = document_result.scalar_one_or_none()
+        if document is not None and document.deleted_at is None:
+            document.status = "pending"
+            if job.build_generation is not None and document.latest_requested_generation == job.build_generation:
+                document.latest_requested_generation = document.published_generation
+            if (
+                job.build_generation is not None
+                and document.active_build_generation == job.build_generation
+                and document.active_build_job_id == job.id
+            ):
+                document.active_build_generation = None
+                document.active_build_job_id = None
+                document.active_build_heartbeat_at = None
         job.status = "canceled"
         job.stage = "failed"
         job.progress = min(job.progress, 99)
         if not job.message:
             job.message = "job canceled by user"
 
-    backend = get_task_backend("inmemory")
-    await backend.cancel(job.id)
-    _dispatcher_loop.submit(_job_dispatcher.cancel(job.id))
     await session.commit()
+    backend = get_task_backend("inmemory")
+    with suppress(Exception):
+        await backend.cancel(job.id)
+    with suppress(Exception):
+        _dispatcher_loop.submit(_job_dispatcher.cancel(job.id))
 
     return _ok(_serialize_job(job))
