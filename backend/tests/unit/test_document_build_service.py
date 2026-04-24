@@ -282,6 +282,114 @@ def test_process_job_success_publishes_requested_generation_chunks() -> None:
     asyncio.run(_run())
 
 
+def test_process_job_retries_latest_generation_when_blocked_by_older_owner() -> None:
+    async def _run() -> None:
+        session = _SessionSpy()
+        service = DocumentBuildService(session)  # type: ignore[arg-type]
+
+        document = Document(
+            filename="overlap.txt",
+            file_type="txt",
+            file_size=1600,
+            source_content=("A" * 1600).encode("utf-8"),
+            status="pending",
+            chunk_strategy="general",
+            chunk_count=1,
+            published_generation=1,
+            latest_requested_generation=2,
+            active_build_generation=1,
+            active_build_job_id="job-old",
+        )
+        document.id = "doc-overlap"
+
+        job = DocumentJob(
+            document_id=document.id,
+            build_generation=2,
+            requested_chunk_strategy="paper",
+            status="queued",
+            stage="queued",
+            progress=0,
+            message="queued for rebuild",
+        )
+        job.id = "job-new"
+
+        claim_attempts: list[int] = []
+        retry_waits: list[str] = []
+
+        async def _fake_get_document(self: DocumentBuildService, document_id: str) -> Document:
+            assert document_id == document.id
+            return document
+
+        async def _fake_get_job(self: DocumentBuildService, job_id: str) -> DocumentJob:
+            assert job_id == job.id
+            return job
+
+        async def _fake_claim_generation(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
+            claim_attempts.append(job.build_generation or -1)
+            if len(claim_attempts) == 1:
+                document.active_build_generation = 1
+                document.active_build_job_id = "job-old"
+                return False
+
+            document.active_build_generation = 2
+            document.active_build_job_id = job.id
+            return True
+
+        async def _fake_sleep_before_claim_retry(self: DocumentBuildService) -> None:
+            retry_waits.append("slept")
+
+        async def _unexpected_terminalize(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> None:
+            raise AssertionError("latest generation should retry instead of terminalizing")
+
+        async def _fake_write_candidate_chunks(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            generation: int,
+            chunks: list[ChunkRecord],
+        ) -> None:
+            assert generation == 2
+            assert all(chunk.metadata["strategy"] == "paper" for chunk in chunks)
+
+        async def _fake_publish_generation(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+            generation: int,
+            chunks: list[ChunkRecord],
+        ) -> None:
+            document.published_generation = generation
+            document.chunk_strategy = job.requested_chunk_strategy or document.chunk_strategy
+            document.chunk_count = len(chunks)
+            document.status = "ready"
+            document.active_build_generation = None
+            document.active_build_job_id = None
+            job.status = "succeeded"
+            job.stage = "completed"
+            job.progress = 100
+            job.message = "document build completed"
+
+        service._get_document = MethodType(_fake_get_document, service)
+        service._get_job = MethodType(_fake_get_job, service)
+        service._claim_generation = MethodType(_fake_claim_generation, service)
+        service._sleep_before_claim_retry = MethodType(_fake_sleep_before_claim_retry, service)
+        service._terminalize_non_owner = MethodType(_unexpected_terminalize, service)
+        service._write_candidate_chunks = MethodType(_fake_write_candidate_chunks, service)
+        service._publish_generation = MethodType(_fake_publish_generation, service)
+
+        await service.process_job(document_id=document.id, job_id=job.id)
+
+        assert claim_attempts == [2, 2]
+        assert retry_waits == ["slept"]
+        assert document.status == "ready"
+        assert document.published_generation == 2
+        assert job.status == "succeeded"
+        assert job.stage == "completed"
+
+    asyncio.run(_run())
+
+
 def test_process_job_missing_source_persists_app_error_message_for_unpublished_document() -> None:
     async def _run() -> None:
         session = _SessionSpy()
