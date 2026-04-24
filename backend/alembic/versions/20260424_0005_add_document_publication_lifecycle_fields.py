@@ -14,6 +14,27 @@ branch_labels = None
 depends_on = None
 
 
+def _dedupe_legacy_document_chunk_rows(bind) -> None:
+    document_chunks = sa.table(
+        "document_chunks",
+        sa.column("id", sa.String(length=64)),
+        sa.column("document_id", sa.String(length=64)),
+        sa.column("chunk_index", sa.Integer()),
+    )
+    ranked_chunks = sa.select(
+        document_chunks.c.id.label("id"),
+        sa.func.row_number()
+        .over(
+            partition_by=(document_chunks.c.document_id, document_chunks.c.chunk_index),
+            order_by=document_chunks.c.id.asc(),
+        )
+        .label("duplicate_rank"),
+    ).subquery()
+    duplicate_ids = sa.select(ranked_chunks.c.id).where(ranked_chunks.c.duplicate_rank > 1)
+
+    bind.execute(sa.delete(document_chunks).where(document_chunks.c.id.in_(duplicate_ids)))
+
+
 def upgrade() -> None:
     op.add_column(
         "documents",
@@ -39,6 +60,7 @@ def upgrade() -> None:
         "document_chunks",
         sa.Column("generation", sa.Integer(), nullable=False, server_default=sa.text("0")),
     )
+    _dedupe_legacy_document_chunk_rows(op.get_bind())
 
     op.execute(
         """
