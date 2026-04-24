@@ -16,6 +16,7 @@ from app.documents.types import ChunkRecord, ParsedDocument
 from app.model.document import Document, DocumentChunk, DocumentJob
 
 _TERMINAL_JOB_STATUSES = {"succeeded", "failed", "canceled"}
+_STARTABLE_JOB_STATUSES = ("queued", "running")
 _CLAIM_RETRY_DELAY_SECONDS = 0.01
 _CLAIM_LEASE_TIMEOUT = timedelta(seconds=30)
 
@@ -48,12 +49,9 @@ class DocumentBuildService:
         if not claimed:
             return
 
-        document.status = "processing"
-        job.status = "running"
-        job.stage = "parsing"
-        job.progress = 10
-        job.message = "parsing document"
-        await self.session.commit()
+        if not await self._start_claimed_job(document=document, job=job):
+            await self._terminalize_non_owner(document=document, job=job)
+            return
 
         try:
             parsed = self._parser(document.filename, self._resolve_content(document, content))
@@ -169,6 +167,52 @@ class DocumentBuildService:
 
     async def _sleep_before_claim_retry(self) -> None:
         await asyncio.sleep(_CLAIM_RETRY_DELAY_SECONDS)
+
+    async def _start_claimed_job(self, *, document: Document, job: DocumentJob) -> bool:
+        generation = job.build_generation
+        if generation is None:
+            return False
+
+        document_result = await self.session.execute(
+            update(Document)
+            .where(
+                Document.id == document.id,
+                Document.deleted_at.is_(None),
+                Document.latest_requested_generation == generation,
+                Document.active_build_generation == generation,
+                Document.active_build_job_id == job.id,
+            )
+            .values(status="processing")
+        )
+        if document_result.rowcount != 1:
+            await self.session.rollback()
+            await self.session.refresh(document)
+            await self.session.refresh(job)
+            return False
+
+        job_result = await self.session.execute(
+            update(DocumentJob)
+            .where(
+                DocumentJob.id == job.id,
+                DocumentJob.status.in_(_STARTABLE_JOB_STATUSES),
+            )
+            .values(
+                status="running",
+                stage="parsing",
+                progress=10,
+                message="parsing document",
+            )
+        )
+        if job_result.rowcount != 1:
+            await self.session.rollback()
+            await self.session.refresh(document)
+            await self.session.refresh(job)
+            return False
+
+        await self.session.commit()
+        await self.session.refresh(document)
+        await self.session.refresh(job)
+        return True
 
     async def _refresh_heartbeat_if_owned(self, *, document: Document, job: DocumentJob) -> bool:
         if not await self._touch_heartbeat_if_owned(document=document, job=job):
