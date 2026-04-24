@@ -110,6 +110,11 @@ async def _load_document_record(session_factory, *, document_id: str) -> Documen
         return await session.get(Document, document_id)
 
 
+async def _load_document_job_record(session_factory, *, job_id: str) -> DocumentJob | None:
+    async with session_factory() as session:
+        return await session.get(DocumentJob, job_id)
+
+
 async def _tombstone_document_record(session_factory, *, document_id: str) -> None:
     async with session_factory() as session:
         document = await session.get(Document, document_id)
@@ -583,6 +588,10 @@ def test_documents_migration_reconcile_only_cancels_queued_jobs(monkeypatch) -> 
     from app.api.v1 import documents as documents_api
 
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
+    claimed_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    first_updated_at = datetime(2026, 1, 2, 0, 0, tzinfo=timezone.utc)
+    second_updated_at = datetime(2026, 1, 2, 0, 1, tzinfo=timezone.utc)
+    running_updated_at = datetime(2026, 1, 2, 0, 2, tzinfo=timezone.utc)
 
     async def _seed_reconcile_state() -> None:
         async with session_factory() as session:
@@ -599,6 +608,9 @@ def test_documents_migration_reconcile_only_cancels_queued_jobs(monkeypatch) -> 
                         published_generation=2,
                         next_generation=4,
                         latest_requested_generation=3,
+                        active_build_generation=3,
+                        active_build_job_id="job-live-queued",
+                        active_build_heartbeat_at=claimed_at,
                     ),
                     Document(
                         id="doc-tombstoned",
@@ -626,6 +638,7 @@ def test_documents_migration_reconcile_only_cancels_queued_jobs(monkeypatch) -> 
                         stage="queued",
                         progress=0,
                         message="queued",
+                        updated_at=first_updated_at,
                     ),
                     DocumentJob(
                         id="job-tombstoned-queued",
@@ -636,6 +649,7 @@ def test_documents_migration_reconcile_only_cancels_queued_jobs(monkeypatch) -> 
                         stage="queued",
                         progress=0,
                         message="queued",
+                        updated_at=second_updated_at,
                     ),
                     DocumentJob(
                         id="job-running",
@@ -646,6 +660,7 @@ def test_documents_migration_reconcile_only_cancels_queued_jobs(monkeypatch) -> 
                         stage="chunking",
                         progress=60,
                         message="running",
+                        updated_at=running_updated_at,
                     ),
                 ]
             )
@@ -664,21 +679,76 @@ def test_documents_migration_reconcile_only_cancels_queued_jobs(monkeypatch) -> 
             reconcile_response = client.post("/api/v1/documents/ops/migration-reconcile", headers=headers)
             assert reconcile_response.status_code == 200
             reconcile_data = _extract_data(reconcile_response.json())
-            assert set(reconcile_data["reconciled_job_ids"]) == {"job-live-queued", "job-tombstoned-queued"}
+            assert reconcile_data["reconciled_job_ids"] == ["job-live-queued", "job-tombstoned-queued"]
             assert reconcile_data["queued_jobs"] == 0
             assert reconcile_data["running_jobs"] == 1
             assert reconcile_data["active_dispatcher_tasks"] == 0
 
             live_job = client.get("/api/v1/documents/jobs/job-live-queued", headers=headers)
-            assert _extract_data(live_job.json())["status"] == "canceled"
+            live_job_data = _extract_data(live_job.json())
+            assert live_job_data["status"] == "canceled"
+            assert live_job_data["stage"] == "failed"
+            assert live_job_data["progress"] == 0
+            assert live_job_data["message"] == "canceled during migration drain"
+
+            tombstoned_job = client.get("/api/v1/documents/jobs/job-tombstoned-queued", headers=headers)
+            tombstoned_job_data = _extract_data(tombstoned_job.json())
+            assert tombstoned_job_data["status"] == "canceled"
+            assert tombstoned_job_data["stage"] == "failed"
+            assert tombstoned_job_data["progress"] == 0
+            assert tombstoned_job_data["message"] == "canceled during migration drain"
 
             running_job = client.get("/api/v1/documents/jobs/job-running", headers=headers)
-            assert _extract_data(running_job.json())["status"] == "running"
+            running_job_data = _extract_data(running_job.json())
+            assert running_job_data["status"] == "running"
+            assert running_job_data["stage"] == "chunking"
+            assert running_job_data["progress"] == 60
+            assert running_job_data["message"] == "running"
 
             docs_data = _extract_data(client.get("/api/v1/documents?page=1&page_size=20", headers=headers).json())
             live_doc = next(item for item in docs_data["items"] if item["document_id"] == "doc-live")
             assert live_doc["status"] == "ready"
             assert all(item["document_id"] != "doc-tombstoned" for item in docs_data["items"])
+
+            persisted_live_doc = asyncio.run(_load_document_record(session_factory, document_id="doc-live"))
+            assert persisted_live_doc is not None
+            assert persisted_live_doc.status == "ready"
+            assert persisted_live_doc.latest_requested_generation == 2
+            assert persisted_live_doc.active_build_generation is None
+            assert persisted_live_doc.active_build_job_id is None
+            assert persisted_live_doc.active_build_heartbeat_at is None
+
+            persisted_tombstoned_doc = asyncio.run(
+                _load_document_record(session_factory, document_id="doc-tombstoned")
+            )
+            assert persisted_tombstoned_doc is not None
+            assert persisted_tombstoned_doc.deleted_at is not None
+            assert persisted_tombstoned_doc.status == "pending"
+            assert persisted_tombstoned_doc.latest_requested_generation == 2
+            assert persisted_tombstoned_doc.published_generation == 1
+
+            persisted_live_job = asyncio.run(_load_document_job_record(session_factory, job_id="job-live-queued"))
+            assert persisted_live_job is not None
+            assert persisted_live_job.status == "canceled"
+            assert persisted_live_job.stage == "failed"
+            assert persisted_live_job.progress == 0
+            assert persisted_live_job.message == "canceled during migration drain"
+
+            persisted_tombstoned_job = asyncio.run(
+                _load_document_job_record(session_factory, job_id="job-tombstoned-queued")
+            )
+            assert persisted_tombstoned_job is not None
+            assert persisted_tombstoned_job.status == "canceled"
+            assert persisted_tombstoned_job.stage == "failed"
+            assert persisted_tombstoned_job.progress == 0
+            assert persisted_tombstoned_job.message == "canceled during migration drain"
+
+            persisted_running_job = asyncio.run(_load_document_job_record(session_factory, job_id="job-running"))
+            assert persisted_running_job is not None
+            assert persisted_running_job.status == "running"
+            assert persisted_running_job.stage == "chunking"
+            assert persisted_running_job.progress == 60
+            assert persisted_running_job.message == "running"
     finally:
         settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
