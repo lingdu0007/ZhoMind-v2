@@ -16,7 +16,7 @@ from app.documents.build_service import DocumentBuildService
 from app.documents.job_dispatcher import DocumentJobDispatcher
 from app.documents.types import ChunkRecord
 from app.model.base import Base
-from app.model.document import Document, DocumentJob
+from app.model.document import Document, DocumentChunk, DocumentJob
 
 
 class _SessionSpy:
@@ -25,6 +25,46 @@ class _SessionSpy:
 
     async def commit(self) -> None:
         self.commit_calls += 1
+
+
+def test_publication_lifecycle_fields_exist_on_document_models() -> None:
+    document_mapper = inspect(Document)
+    assert "published_generation" in document_mapper.columns
+    assert "next_generation" in document_mapper.columns
+    assert "latest_requested_generation" in document_mapper.columns
+    assert "active_build_generation" in document_mapper.columns
+    assert "active_build_job_id" in document_mapper.columns
+    assert "active_build_heartbeat_at" in document_mapper.columns
+    assert "deleted_at" in document_mapper.columns
+
+    job_mapper = inspect(DocumentJob)
+    assert "build_generation" in job_mapper.columns
+    assert "requested_chunk_strategy" in job_mapper.columns
+
+    chunk_mapper = inspect(DocumentChunk)
+    assert "generation" in chunk_mapper.columns
+
+
+def test_publication_lifecycle_metadata_defines_live_row_generation_rules() -> None:
+    document_indexes = {index.name: index for index in Document.__table__.indexes}
+    filename_index = document_indexes["ux_documents_filename_live"]
+    assert filename_index.unique is True
+    assert tuple(filename_index.columns.keys()) == ("filename",)
+    assert str(filename_index.dialect_options["sqlite"]["where"]) == "deleted_at IS NULL"
+    assert str(filename_index.dialect_options["postgresql"]["where"]) == "deleted_at IS NULL"
+
+    job_constraints = {constraint.name: constraint for constraint in DocumentJob.__table__.constraints}
+    job_generation_constraint = job_constraints["uq_document_jobs_document_generation"]
+    assert tuple(job_generation_constraint.columns.keys()) == ("document_id", "build_generation")
+
+    chunk_constraints = {constraint.name: constraint for constraint in DocumentChunk.__table__.constraints}
+    chunk_generation_constraint = chunk_constraints["uq_document_chunks_document_generation_index"]
+    assert tuple(chunk_generation_constraint.columns.keys()) == ("document_id", "generation", "chunk_index")
+
+    chunk_indexes = {index.name: index for index in DocumentChunk.__table__.indexes}
+    generation_index = chunk_indexes["ix_document_chunks_document_generation"]
+    assert generation_index.unique is False
+    assert tuple(generation_index.columns.keys()) == ("document_id", "generation")
 
 
 async def test_process_job_success_updates_document_and_job_status() -> None:
