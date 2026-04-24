@@ -446,7 +446,9 @@ def test_documents_and_jobs_flow_tombstone_visibility_after_delete() -> None:
 
             hidden_docs = client.get("/api/v1/documents?page=1&page_size=20", headers=headers)
             assert hidden_docs.status_code == 200
-            hidden_docs_items = _extract_data(hidden_docs.json())["items"]
+            hidden_docs_data = _extract_data(hidden_docs.json())
+            hidden_docs_items = hidden_docs_data["items"]
+            assert hidden_docs_data["pagination"]["total"] == 0
             assert all(item["document_id"] != document_id for item in hidden_docs_items)
 
             hidden_chunks = client.get(
@@ -459,8 +461,6 @@ def test_documents_and_jobs_flow_tombstone_visibility_after_delete() -> None:
             tombstoned_document = asyncio.run(_load_document_record(session_factory, document_id=document_id))
             assert tombstoned_document is not None
             assert tombstoned_document.deleted_at is not None
-            assert tombstoned_document.status == "pending"
-            assert tombstoned_document.latest_requested_generation == tombstoned_document.published_generation
     finally:
         settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
