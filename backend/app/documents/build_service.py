@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import undefer
 
@@ -16,6 +16,7 @@ from app.model.document import Document, DocumentChunk, DocumentJob
 
 _TERMINAL_JOB_STATUSES = {"succeeded", "failed", "canceled"}
 _CLAIM_RETRY_DELAY_SECONDS = 0.01
+_CLAIM_LEASE_TIMEOUT = timedelta(seconds=30)
 
 
 class DocumentBuildService:
@@ -62,7 +63,9 @@ class DocumentBuildService:
             job.stage = "chunking"
             job.progress = 60
             job.message = "chunking document"
-            await self.session.commit()
+            if not await self._refresh_heartbeat_if_owned(document=document, job=job):
+                await self._terminalize_non_owner(document=document, job=job)
+                return
 
             requested_strategy = job.requested_chunk_strategy or document.chunk_strategy
             chunker = self._chunker or (
@@ -75,13 +78,18 @@ class DocumentBuildService:
 
             job.progress = 90
             job.message = "writing candidate document chunks"
-            await self.session.commit()
+            if not await self._refresh_heartbeat_if_owned(document=document, job=job):
+                await self._terminalize_non_owner(document=document, job=job)
+                return
 
             await self._write_candidate_chunks(document=document, generation=generation, chunks=chunks)
             if not await self._refresh_and_verify_owner(document=document, job=job):
                 await self._terminalize_non_owner(document=document, job=job)
                 return
 
+            if not await self._refresh_heartbeat_if_owned(document=document, job=job):
+                await self._terminalize_non_owner(document=document, job=job)
+                return
             await self._publish_generation(document=document, job=job, generation=generation, chunks=chunks)
         except AppError as exc:
             await self._fail_claimed_job(document=document, job=job, message=self._format_app_error(exc))
@@ -92,6 +100,8 @@ class DocumentBuildService:
 
     async def _claim_generation(self, *, document: Document, job: DocumentJob) -> bool:
         generation = self._require_build_generation(job)
+        now = datetime.now(timezone.utc)
+        lease_cutoff = now - _CLAIM_LEASE_TIMEOUT
         claim_result = await self.session.execute(
             update(Document)
             .where(
@@ -101,12 +111,16 @@ class DocumentBuildService:
                 or_(
                     Document.active_build_generation.is_(None),
                     Document.active_build_job_id == job.id,
+                    and_(
+                        Document.active_build_heartbeat_at < lease_cutoff,
+                        Document.active_build_generation <= generation,
+                    ),
                 ),
             )
             .values(
                 active_build_generation=generation,
                 active_build_job_id=job.id,
-                active_build_heartbeat_at=datetime.now(timezone.utc),
+                active_build_heartbeat_at=now,
             )
         )
         await self.session.commit()
@@ -143,6 +157,34 @@ class DocumentBuildService:
 
     async def _sleep_before_claim_retry(self) -> None:
         await asyncio.sleep(_CLAIM_RETRY_DELAY_SECONDS)
+
+    async def _refresh_heartbeat_if_owned(self, *, document: Document, job: DocumentJob) -> bool:
+        generation = job.build_generation
+        if generation is None:
+            return False
+
+        now = datetime.now(timezone.utc)
+        heartbeat_result = await self.session.execute(
+            update(Document)
+            .where(
+                Document.id == document.id,
+                Document.deleted_at.is_(None),
+                Document.latest_requested_generation == generation,
+                Document.active_build_generation == generation,
+                Document.active_build_job_id == job.id,
+            )
+            .values(active_build_heartbeat_at=now)
+        )
+        if heartbeat_result.rowcount != 1:
+            await self.session.rollback()
+            await self.session.refresh(document)
+            await self.session.refresh(job)
+            return False
+
+        await self.session.commit()
+        await self.session.refresh(document)
+        await self.session.refresh(job)
+        return True
 
     async def _refresh_and_verify_owner(self, *, document: Document, job: DocumentJob) -> bool:
         await self.session.refresh(document)

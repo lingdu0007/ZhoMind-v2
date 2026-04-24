@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 import gc
 import importlib.util
 import os
@@ -26,12 +27,69 @@ class _SessionSpy:
     def __init__(self) -> None:
         self.commit_calls = 0
         self.refresh_calls = 0
+        self.rollback_calls = 0
 
     async def commit(self) -> None:
         self.commit_calls += 1
 
     async def refresh(self, _instance) -> None:
         self.refresh_calls += 1
+
+    async def rollback(self) -> None:
+        self.rollback_calls += 1
+
+
+class _ResultSpy:
+    def __init__(self, *, rowcount: int) -> None:
+        self.rowcount = rowcount
+
+
+class _LeaseAwareClaimSessionSpy(_SessionSpy):
+    def __init__(self, *, document: Document, job: DocumentJob) -> None:
+        super().__init__()
+        self.document = document
+        self.job = job
+        self.claim_sql: list[str] = []
+        self.execute_calls = 0
+
+    async def execute(self, statement) -> _ResultSpy:
+        self.execute_calls += 1
+        compiled = statement.compile()
+        sql = str(compiled)
+        params = compiled.params
+        self.claim_sql.append(sql)
+
+        assert "active_build_heartbeat_at" in sql
+        assert "active_build_generation" in sql
+        assert "<=" in sql
+
+        cutoff_key = next(key for key in params if key.startswith("active_build_heartbeat_at_"))
+        generation_key = next(key for key in params if key.startswith("active_build_generation_"))
+        lease_cutoff = params[cutoff_key]
+        requested_generation = params[generation_key]
+        claimed_at = params["active_build_heartbeat_at"]
+
+        can_claim = (
+            self.document.deleted_at is None
+            and self.document.latest_requested_generation == self.job.build_generation
+            and (
+                self.document.active_build_generation is None
+                or self.document.active_build_job_id == self.job.id
+                or (
+                    self.document.active_build_heartbeat_at is not None
+                    and self.document.active_build_heartbeat_at < lease_cutoff
+                    and self.document.active_build_generation is not None
+                    and self.document.active_build_generation <= requested_generation
+                )
+            )
+        )
+        if not can_claim:
+            return _ResultSpy(rowcount=0)
+
+        self.document.active_build_generation = self.job.build_generation
+        self.document.active_build_job_id = self.job.id
+        self.document.active_build_heartbeat_at = claimed_at
+        return _ResultSpy(rowcount=1)
 
 
 def _load_publication_lifecycle_migration_module():
@@ -205,6 +263,7 @@ def test_process_job_success_publishes_requested_generation_chunks() -> None:
         job.id = "job-1"
 
         candidate_writes: list[tuple[int, list[ChunkRecord]]] = []
+        heartbeat_calls: list[tuple[str, int, str]] = []
 
         async def _fake_get_document(self: DocumentBuildService, document_id: str) -> Document:
             assert document_id == document.id
@@ -236,6 +295,15 @@ def test_process_job_success_publishes_requested_generation_chunks() -> None:
             assert all(chunk.metadata["strategy"] == "paper" for chunk in chunks)
             candidate_writes.append((generation, chunks))
 
+        async def _fake_refresh_heartbeat_if_owned(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+        ) -> bool:
+            heartbeat_calls.append((job.stage, job.progress, job.message))
+            return True
+
         async def _fake_publish_generation(
             self: DocumentBuildService,
             *,
@@ -263,11 +331,17 @@ def test_process_job_success_publishes_requested_generation_chunks() -> None:
         service._claim_generation = MethodType(_fake_claim_generation, service)
         service._refresh_and_verify_owner = MethodType(_fake_refresh_and_verify_owner, service)
         service._write_candidate_chunks = MethodType(_fake_write_candidate_chunks, service)
+        service._refresh_heartbeat_if_owned = MethodType(_fake_refresh_heartbeat_if_owned, service)
         service._publish_generation = MethodType(_fake_publish_generation, service)
 
         await service.process_job(document_id=document.id, job_id=job.id)
 
         assert candidate_writes
+        assert heartbeat_calls == [
+            ("chunking", 60, "chunking document"),
+            ("chunking", 90, "writing candidate document chunks"),
+            ("chunking", 90, "writing candidate document chunks"),
+        ]
         assert candidate_writes[0][0] == 2
         assert document.status == "ready"
         assert document.published_generation == 2
@@ -284,9 +358,6 @@ def test_process_job_success_publishes_requested_generation_chunks() -> None:
 
 def test_process_job_retries_latest_generation_when_blocked_by_older_owner() -> None:
     async def _run() -> None:
-        session = _SessionSpy()
-        service = DocumentBuildService(session)  # type: ignore[arg-type]
-
         document = Document(
             filename="overlap.txt",
             file_type="txt",
@@ -299,6 +370,7 @@ def test_process_job_retries_latest_generation_when_blocked_by_older_owner() -> 
             latest_requested_generation=2,
             active_build_generation=1,
             active_build_job_id="job-old",
+            active_build_heartbeat_at=datetime.now(timezone.utc),
         )
         document.id = "doc-overlap"
 
@@ -313,6 +385,9 @@ def test_process_job_retries_latest_generation_when_blocked_by_older_owner() -> 
         )
         job.id = "job-new"
 
+        session = _LeaseAwareClaimSessionSpy(document=document, job=job)
+        service = DocumentBuildService(session)  # type: ignore[arg-type]
+
         claim_attempts: list[int] = []
         retry_waits: list[str] = []
 
@@ -324,22 +399,21 @@ def test_process_job_retries_latest_generation_when_blocked_by_older_owner() -> 
             assert job_id == job.id
             return job
 
-        async def _fake_claim_generation(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
-            claim_attempts.append(job.build_generation or -1)
-            if len(claim_attempts) == 1:
-                document.active_build_generation = 1
-                document.active_build_job_id = "job-old"
-                return False
-
-            document.active_build_generation = 2
-            document.active_build_job_id = job.id
-            return True
-
         async def _fake_sleep_before_claim_retry(self: DocumentBuildService) -> None:
+            claim_attempts.append(job.build_generation or -1)
             retry_waits.append("slept")
+            document.active_build_heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=5)
 
         async def _unexpected_terminalize(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> None:
             raise AssertionError("latest generation should retry instead of terminalizing")
+
+        async def _fake_refresh_heartbeat_if_owned(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+        ) -> bool:
+            return True
 
         async def _fake_write_candidate_chunks(
             self: DocumentBuildService,
@@ -372,18 +446,21 @@ def test_process_job_retries_latest_generation_when_blocked_by_older_owner() -> 
 
         service._get_document = MethodType(_fake_get_document, service)
         service._get_job = MethodType(_fake_get_job, service)
-        service._claim_generation = MethodType(_fake_claim_generation, service)
         service._sleep_before_claim_retry = MethodType(_fake_sleep_before_claim_retry, service)
         service._terminalize_non_owner = MethodType(_unexpected_terminalize, service)
+        service._refresh_heartbeat_if_owned = MethodType(_fake_refresh_heartbeat_if_owned, service)
         service._write_candidate_chunks = MethodType(_fake_write_candidate_chunks, service)
         service._publish_generation = MethodType(_fake_publish_generation, service)
 
         await service.process_job(document_id=document.id, job_id=job.id)
 
-        assert claim_attempts == [2, 2]
+        assert session.execute_calls == 2
+        assert claim_attempts == [2]
         assert retry_waits == ["slept"]
+        assert any("active_build_heartbeat_at" in sql and "<=" in sql for sql in session.claim_sql)
         assert document.status == "ready"
         assert document.published_generation == 2
+        assert document.active_build_job_id is None
         assert job.status == "succeeded"
         assert job.stage == "completed"
 
