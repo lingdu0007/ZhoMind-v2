@@ -82,6 +82,8 @@ class DocumentsOperatorService:
             job.stage = "failed"
             job.progress = min(job.progress, 99)
             job.message = "canceled during migration drain"
+            if document is not None:
+                self._release_claim_if_owned(document=document, job=job)
             if (
                 document is not None
                 and job.build_generation is not None
@@ -97,3 +99,12 @@ class DocumentsOperatorService:
             reconciled_job_ids.append(job.id)
         await session.commit()
         return reconciled_job_ids
+
+    @staticmethod
+    def _release_claim_if_owned(*, document: Document, job: DocumentJob) -> None:
+        if job.build_generation is None:
+            return
+        if document.active_build_generation == job.build_generation and document.active_build_job_id == job.id:
+            document.active_build_generation = None
+            document.active_build_job_id = None
+            document.active_build_heartbeat_at = None
