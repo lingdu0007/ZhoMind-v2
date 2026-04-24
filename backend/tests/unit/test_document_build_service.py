@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import importlib.util
 import os
+from pathlib import Path
 import tempfile
 from types import MethodType
 import warnings
 
 import pytest
+import sqlalchemy as sa
 from sqlalchemy import inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -25,6 +28,21 @@ class _SessionSpy:
 
     async def commit(self) -> None:
         self.commit_calls += 1
+
+
+def _load_publication_lifecycle_migration_module():
+    module_path = (
+        Path(__file__).resolve().parents[2]
+        / "alembic"
+        / "versions"
+        / "20260424_0005_add_document_publication_lifecycle_fields.py"
+    )
+    spec = importlib.util.spec_from_file_location("migration_20260424_0005", module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_publication_lifecycle_fields_exist_on_document_models() -> None:
@@ -65,6 +83,90 @@ def test_publication_lifecycle_metadata_defines_live_row_generation_rules() -> N
     generation_index = chunk_indexes["ix_document_chunks_document_generation"]
     assert generation_index.unique is False
     assert tuple(generation_index.columns.keys()) == ("document_id", "generation")
+
+
+def test_publication_lifecycle_migration_dedupes_legacy_duplicate_chunk_rows() -> None:
+    migration = _load_publication_lifecycle_migration_module()
+    assert hasattr(migration, "_dedupe_legacy_document_chunk_rows")
+
+    engine = sa.create_engine("sqlite:///:memory:")
+    metadata = sa.MetaData()
+    document_chunks = sa.Table(
+        "document_chunks",
+        metadata,
+        sa.Column("id", sa.String(length=64), primary_key=True),
+        sa.Column("document_id", sa.String(length=64), nullable=False),
+        sa.Column("chunk_index", sa.Integer(), nullable=False),
+        sa.Column("content", sa.Text(), nullable=False),
+        sa.Column("keywords", sa.JSON(), nullable=False),
+        sa.Column("generated_questions", sa.JSON(), nullable=False),
+        sa.Column("metadata", sa.JSON(), nullable=False),
+        sa.Column("generation", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    )
+    metadata.create_all(engine)
+
+    with engine.begin() as conn:
+        conn.execute(
+            document_chunks.insert(),
+            [
+                {
+                    "id": "b-dup",
+                    "document_id": "doc-1",
+                    "chunk_index": 0,
+                    "content": "duplicate",
+                    "keywords": [],
+                    "generated_questions": [],
+                    "metadata": {},
+                    "generation": 0,
+                },
+                {
+                    "id": "a-keep",
+                    "document_id": "doc-1",
+                    "chunk_index": 0,
+                    "content": "keep",
+                    "keywords": [],
+                    "generated_questions": [],
+                    "metadata": {},
+                    "generation": 0,
+                },
+                {
+                    "id": "c-keep",
+                    "document_id": "doc-1",
+                    "chunk_index": 1,
+                    "content": "neighbor",
+                    "keywords": [],
+                    "generated_questions": [],
+                    "metadata": {},
+                    "generation": 0,
+                },
+                {
+                    "id": "d-keep",
+                    "document_id": "doc-2",
+                    "chunk_index": 0,
+                    "content": "other-doc",
+                    "keywords": [],
+                    "generated_questions": [],
+                    "metadata": {},
+                    "generation": 0,
+                },
+            ],
+        )
+
+        migration._dedupe_legacy_document_chunk_rows(conn)
+
+        remaining_rows = conn.execute(
+            sa.select(document_chunks.c.id, document_chunks.c.document_id, document_chunks.c.chunk_index).order_by(
+                document_chunks.c.document_id,
+                document_chunks.c.chunk_index,
+                document_chunks.c.id,
+            )
+        ).all()
+
+    assert [tuple(row) for row in remaining_rows] == [
+        ("a-keep", "doc-1", 0),
+        ("c-keep", "doc-1", 1),
+        ("d-keep", "doc-2", 0),
+    ]
 
 
 async def test_process_job_success_updates_document_and_job_status() -> None:
