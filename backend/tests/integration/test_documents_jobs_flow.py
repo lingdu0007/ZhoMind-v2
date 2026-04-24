@@ -13,7 +13,7 @@ from app.infra.db import get_db_session
 from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
-from app.model.document import Document, DocumentChunk
+from app.model.document import Document, DocumentChunk, DocumentJob
 from app.service.chat_service import ChatService
 
 
@@ -548,6 +548,178 @@ def test_documents_migration_drain_status_and_resume(monkeypatch) -> None:
                 files={"file": ("after-resume.txt", b"body", "text/plain")},
             )
             assert unblocked_upload.status_code == 200
+    finally:
+        settings.admin_invite_code = original_code
+        app.dependency_overrides.clear()
+        asyncio.run(db_engine.dispose())
+        os.remove(db_path)
+
+
+def test_documents_migration_reconcile_only_cancels_queued_jobs(monkeypatch) -> None:
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-reconcile-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_init_db())
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    fake_redis = _InMemoryRedis()
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+
+    from app.common.config import get_settings
+
+    settings = get_settings()
+    original_code = settings.admin_invite_code
+    settings.admin_invite_code = "test-admin-code"
+    from app.api.v1 import documents as documents_api
+
+    monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
+
+    async def _seed_reconcile_state() -> None:
+        async with session_factory() as session:
+            session.add_all(
+                [
+                    Document(
+                        id="doc-live",
+                        filename="live.txt",
+                        file_type="txt",
+                        file_size=12,
+                        status="pending",
+                        chunk_strategy="general",
+                        chunk_count=1,
+                        published_generation=2,
+                        next_generation=4,
+                        latest_requested_generation=3,
+                    ),
+                    Document(
+                        id="doc-tombstoned",
+                        filename="tombstoned.txt",
+                        file_type="txt",
+                        file_size=12,
+                        status="pending",
+                        chunk_strategy="general",
+                        chunk_count=1,
+                        published_generation=1,
+                        next_generation=3,
+                        latest_requested_generation=2,
+                        deleted_at=datetime.now(timezone.utc),
+                    ),
+                ]
+            )
+            session.add_all(
+                [
+                    DocumentJob(
+                        id="job-live-queued",
+                        document_id="doc-live",
+                        build_generation=3,
+                        requested_chunk_strategy="paper",
+                        status="queued",
+                        stage="queued",
+                        progress=0,
+                        message="queued",
+                    ),
+                    DocumentJob(
+                        id="job-tombstoned-queued",
+                        document_id="doc-tombstoned",
+                        build_generation=2,
+                        requested_chunk_strategy="paper",
+                        status="queued",
+                        stage="queued",
+                        progress=0,
+                        message="queued",
+                    ),
+                    DocumentJob(
+                        id="job-running",
+                        document_id="doc-live",
+                        build_generation=4,
+                        requested_chunk_strategy="paper",
+                        status="running",
+                        stage="chunking",
+                        progress=60,
+                        message="running",
+                    ),
+                ]
+            )
+            await session.commit()
+
+    asyncio.run(_seed_reconcile_state())
+
+    try:
+        with TestClient(app) as client:
+            token = asyncio.run(_create_admin_token(client))
+            headers = _admin_headers(token)
+
+            drain_response = client.post("/api/v1/documents/ops/migration-drain", headers=headers)
+            assert drain_response.status_code == 200
+
+            reconcile_response = client.post("/api/v1/documents/ops/migration-reconcile", headers=headers)
+            assert reconcile_response.status_code == 200
+            reconcile_data = _extract_data(reconcile_response.json())
+            assert set(reconcile_data["reconciled_job_ids"]) == {"job-live-queued", "job-tombstoned-queued"}
+            assert reconcile_data["queued_jobs"] == 0
+            assert reconcile_data["running_jobs"] == 1
+            assert reconcile_data["active_dispatcher_tasks"] == 0
+
+            live_job = client.get("/api/v1/documents/jobs/job-live-queued", headers=headers)
+            assert _extract_data(live_job.json())["status"] == "canceled"
+
+            running_job = client.get("/api/v1/documents/jobs/job-running", headers=headers)
+            assert _extract_data(running_job.json())["status"] == "running"
+
+            docs_data = _extract_data(client.get("/api/v1/documents?page=1&page_size=20", headers=headers).json())
+            live_doc = next(item for item in docs_data["items"] if item["document_id"] == "doc-live")
+            assert live_doc["status"] == "ready"
+            assert all(item["document_id"] != "doc-tombstoned" for item in docs_data["items"])
+    finally:
+        settings.admin_invite_code = original_code
+        app.dependency_overrides.clear()
+        asyncio.run(db_engine.dispose())
+        os.remove(db_path)
+
+
+def test_documents_migration_reconcile_requires_active_drain() -> None:
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-reconcile-inactive-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_init_db())
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    fake_redis = _InMemoryRedis()
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+
+    from app.common.config import get_settings
+
+    settings = get_settings()
+    original_code = settings.admin_invite_code
+    settings.admin_invite_code = "test-admin-code"
+
+    try:
+        with TestClient(app) as client:
+            token = asyncio.run(_create_admin_token(client))
+            headers = _admin_headers(token)
+
+            reconcile_response = client.post("/api/v1/documents/ops/migration-reconcile", headers=headers)
+            assert reconcile_response.status_code == 409
+            assert reconcile_response.json()["code"] == "DOC_MIGRATION_DRAIN_INACTIVE"
     finally:
         settings.admin_invite_code = original_code
         app.dependency_overrides.clear()

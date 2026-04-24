@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from contextlib import suppress
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.exceptions import AppError
-from app.model.document import DocumentJob
+from app.extensions.registry import get_task_backend
+from app.model.document import Document, DocumentJob
 
 DRAIN_MODE_KEY = "documents:drain_mode"
 DRAIN_STARTED_AT_KEY = "documents:drain_started_at"
@@ -62,3 +64,36 @@ class DocumentsOperatorService:
             "active_dispatcher_tasks": active_dispatcher_tasks,
             "ready_for_migration": drain_enabled and running_jobs == 0 and active_dispatcher_tasks == 0,
         }
+
+    async def reconcile_queued_jobs(
+        self,
+        *,
+        session: AsyncSession,
+        cancel_dispatcher_job,
+    ) -> list[str]:
+        await self.ensure_drain_enabled()
+        result = await session.execute(
+            select(DocumentJob).where(DocumentJob.status == "queued").order_by(DocumentJob.updated_at.asc())
+        )
+        reconciled_job_ids: list[str] = []
+        for job in result.scalars().all():
+            document = await session.get(Document, job.document_id)
+            job.status = "canceled"
+            job.stage = "failed"
+            job.progress = min(job.progress, 99)
+            job.message = "canceled during migration drain"
+            if (
+                document is not None
+                and job.build_generation is not None
+                and document.latest_requested_generation == job.build_generation
+            ):
+                if document.deleted_at is None:
+                    document.latest_requested_generation = document.published_generation
+                    document.status = "ready" if document.published_generation > 0 else "failed"
+            with suppress(Exception):
+                await get_task_backend("inmemory").cancel(job.id)
+            with suppress(Exception):
+                await cancel_dispatcher_job(job.id)
+            reconciled_job_ids.append(job.id)
+        await session.commit()
+        return reconciled_job_ids
