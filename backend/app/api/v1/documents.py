@@ -8,6 +8,7 @@ import threading
 from typing import TypeVar
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
+from redis.asyncio import Redis
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -18,9 +19,11 @@ from app.common.request_id import get_request_id
 from app.common.responses import ok_response
 from app.documents.build_service import DocumentBuildService
 from app.documents.job_dispatcher import DocumentJobDispatcher
+from app.documents.operator_service import DocumentsOperatorService
 from app.documents.schemas import BatchBuildRequest, BatchDeleteRequest, BuildDocumentRequest
 from app.extensions.registry import get_task_backend
 from app.infra.db import get_db_session
+from app.infra.redis import get_redis_client
 from app.model.document import Document, DocumentChunk, DocumentJob
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -66,6 +69,10 @@ def _ok(data: dict) -> dict:
     payload = ok_response(data=data, request_id=get_request_id())
     payload.update(data)
     return payload
+
+
+def _get_active_dispatcher_tasks() -> int:
+    return _dispatcher_loop.submit(_job_dispatcher.active_count())
 
 
 def _validate_pagination(page: int, page_size: int) -> tuple[int, int]:
@@ -133,6 +140,17 @@ async def _get_document_or_404(session: AsyncSession, document_id: str) -> Docum
     if document is None:
         raise AppError(status_code=404, code="RESOURCE_NOT_FOUND", message="document not found")
     return document
+
+
+async def _ensure_document_mutations_allowed(redis: Redis) -> None:
+    operator_service = DocumentsOperatorService(redis=redis)
+    drain_enabled, _ = await operator_service.read_drain_state()
+    if drain_enabled:
+        raise AppError(
+            status_code=503,
+            code="DOC_MIGRATION_DRAIN_ACTIVE",
+            message="document mutations are temporarily disabled for migration drain",
+        )
 
 
 async def _create_job(
@@ -350,12 +368,84 @@ async def list_documents(
     )
 
 
+@router.post("/ops/migration-drain")
+async def migration_drain(
+    _: object = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+    redis: Redis = Depends(get_redis_client),
+) -> dict:
+    operator_service = DocumentsOperatorService(redis=redis)
+    await operator_service.enable_drain()
+    return _ok(
+        await operator_service.collect_status(
+            session=session,
+            active_dispatcher_tasks=_get_active_dispatcher_tasks(),
+        )
+    )
+
+
+@router.get("/ops/migration-status")
+async def migration_status(
+    _: object = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+    redis: Redis = Depends(get_redis_client),
+) -> dict:
+    operator_service = DocumentsOperatorService(redis=redis)
+    return _ok(
+        await operator_service.collect_status(
+            session=session,
+            active_dispatcher_tasks=_get_active_dispatcher_tasks(),
+        )
+    )
+
+
+@router.post("/ops/migration-reconcile")
+async def migration_reconcile(
+    _: object = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+    redis: Redis = Depends(get_redis_client),
+) -> dict:
+    operator_service = DocumentsOperatorService(redis=redis)
+
+    async def _cancel_dispatcher_job(job_id: str) -> None:
+        _dispatcher_loop.submit(_job_dispatcher.cancel(job_id))
+
+    reconciled_job_ids = await operator_service.reconcile_queued_jobs(
+        session=session,
+        cancel_dispatcher_job=_cancel_dispatcher_job,
+    )
+    status = await operator_service.collect_status(
+        session=session,
+        active_dispatcher_tasks=_get_active_dispatcher_tasks(),
+    )
+    status["reconciled_job_ids"] = reconciled_job_ids
+    return _ok(status)
+
+
+@router.post("/ops/migration-resume")
+async def migration_resume(
+    _: object = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+    redis: Redis = Depends(get_redis_client),
+) -> dict:
+    operator_service = DocumentsOperatorService(redis=redis)
+    await operator_service.clear_drain()
+    return _ok(
+        await operator_service.collect_status(
+            session=session,
+            active_dispatcher_tasks=_get_active_dispatcher_tasks(),
+        )
+    )
+
+
 @router.post("/upload")
 async def upload_document(
     file: UploadFile = File(...),
     _: object = Depends(require_admin),
     session: AsyncSession = Depends(get_db_session),
+    redis: Redis = Depends(get_redis_client),
 ) -> dict:
+    await _ensure_document_mutations_allowed(redis)
     filename = (file.filename or "").strip()
     if not filename:
         raise AppError(status_code=400, code="VALIDATION_ERROR", message="file is required")
@@ -415,7 +505,9 @@ async def build_document(
     payload: BuildDocumentRequest,
     _: object = Depends(require_admin),
     session: AsyncSession = Depends(get_db_session),
+    redis: Redis = Depends(get_redis_client),
 ) -> dict:
+    await _ensure_document_mutations_allowed(redis)
     document = await _get_document_or_404(session, document_id)
     previous_status = document.status
     document.status = "pending"
@@ -453,7 +545,9 @@ async def batch_build_documents(
     payload: BatchBuildRequest,
     _: object = Depends(require_admin),
     session: AsyncSession = Depends(get_db_session),
+    redis: Redis = Depends(get_redis_client),
 ) -> dict:
+    await _ensure_document_mutations_allowed(redis)
     document_ids = [document_id for document_id in dict.fromkeys(payload.document_ids) if document_id]
     if not document_ids:
         raise AppError(status_code=400, code="VALIDATION_ERROR", message="document_ids is required")
@@ -527,7 +621,9 @@ async def batch_delete_documents(
     payload: BatchDeleteRequest,
     _: object = Depends(require_admin),
     session: AsyncSession = Depends(get_db_session),
+    redis: Redis = Depends(get_redis_client),
 ) -> dict:
+    await _ensure_document_mutations_allowed(redis)
     document_ids = [document_id for document_id in dict.fromkeys(payload.document_ids) if document_id]
     if not document_ids:
         raise AppError(status_code=400, code="VALIDATION_ERROR", message="document_ids is required")
@@ -609,7 +705,9 @@ async def delete_document(
     filename: str,
     _: object = Depends(require_admin),
     session: AsyncSession = Depends(get_db_session),
+    redis: Redis = Depends(get_redis_client),
 ) -> dict:
+    await _ensure_document_mutations_allowed(redis)
     result = await session.execute(
         select(Document).where(
             Document.filename == filename,
@@ -672,7 +770,9 @@ async def cancel_job(
     job_id: str,
     _: object = Depends(require_admin),
     session: AsyncSession = Depends(get_db_session),
+    redis: Redis = Depends(get_redis_client),
 ) -> dict:
+    await _ensure_document_mutations_allowed(redis)
     result = await session.execute(select(DocumentJob).where(DocumentJob.id == job_id))
     job = result.scalar_one_or_none()
     if job is None:

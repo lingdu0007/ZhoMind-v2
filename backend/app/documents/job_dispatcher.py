@@ -42,6 +42,10 @@ class DocumentJobDispatcher:
             await task
         return True
 
+    async def active_count(self) -> int:
+        async with self._lock:
+            return sum(1 for task, _ in self._tasks.values() if not task.done())
+
     async def _run(self, *, job_id: str, coro: Awaitable[None]) -> None:
         try:
             await coro
