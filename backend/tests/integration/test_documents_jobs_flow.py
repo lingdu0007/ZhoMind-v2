@@ -150,6 +150,30 @@ class _FakeDenseDocumentIndex:
         return self._rows[:limit]
 
 
+class _ScalarListResult:
+    def __init__(self, rows: list[DocumentChunk]) -> None:
+        self._rows = rows
+
+    def scalars(self) -> "_ScalarListResult":
+        return self
+
+    def all(self) -> list[DocumentChunk]:
+        return list(self._rows)
+
+
+class _LimitAwareLexicalSession:
+    def __init__(self, chunks: list[DocumentChunk]) -> None:
+        self._chunks = list(chunks)
+        self.limit_history: list[int | None] = []
+
+    async def execute(self, stmt):
+        limit_clause = stmt._limit_clause
+        limit_value = None if limit_clause is None else int(limit_clause.value)
+        self.limit_history.append(limit_value)
+        rows = self._chunks if limit_value is None else self._chunks[:limit_value]
+        return _ScalarListResult(rows)
+
+
 async def _seed_mixed_mode_retrieval_documents(
     session_factory,
     *,
@@ -1632,6 +1656,258 @@ def test_documents_dense_query_failure_falls_back_to_full_published_lexical_corp
         "doc-lexical-published",
     }
     assert {item["retrieval_source"] for item in result["items"]} == {"lexical"}
+
+    asyncio.run(db_engine.dispose())
+    os.remove(db_path)
+
+
+def test_documents_dense_query_failure_searches_full_published_live_corpus_beyond_candidate_limit() -> None:
+    from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
+
+    settings = Settings(
+        EMBEDDING_API_KEY="emb-key",
+        EMBEDDING_BASE_URL="https://emb.example.com/v1",
+        EMBEDDING_MODEL="emb-model",
+        DENSE_EMBEDDING_DIM=2,
+        MILVUS_URI="http://milvus.example.com:19530",
+    )
+    lexical_chunks = [
+        DocumentChunk(
+            id=f"chunk-filler-{idx:03d}",
+            document_id=f"doc-filler-{idx:03d}",
+            generation=1,
+            chunk_index=0,
+            content=f"aaaaa bbbbb ccccc {idx:03d}",
+            keywords=[],
+            generated_questions=[],
+            chunk_metadata={"source": "filler"},
+        )
+        for idx in range(205)
+    ]
+    lexical_chunks.append(
+        DocumentChunk(
+            id="chunk-dense-tail-match",
+            document_id="doc-dense-tail-match",
+            generation=1,
+            chunk_index=0,
+            content="xqvzjk dense-ready tail evidence",
+            keywords=[],
+            generated_questions=[],
+            chunk_metadata={"source": "tail-match"},
+        )
+    )
+    session = _LimitAwareLexicalSession(lexical_chunks)
+
+    async def _run() -> dict:
+        service = MixedModeDocumentRetrieverService(
+            session,
+            settings=settings,
+            embedding_provider=_StubEmbeddingProvider(),
+            document_index=_FakeDenseDocumentIndex(error=RuntimeError("milvus unavailable")),
+        )
+        result = await service.retrieve("xqvzjk", top_k=5)
+        return {
+            "items": result.items,
+            "lexical_candidate_count": result.lexical_candidate_count,
+            "dense_query_failed": result.dense_query_failed,
+            "lexical_scope": result.lexical_scope,
+        }
+
+    result = asyncio.run(_run())
+
+    assert result["dense_query_failed"] is True
+    assert result["lexical_scope"] == "full_published_live"
+    assert session.limit_history == [None]
+    assert result["lexical_candidate_count"] == 1
+    assert [(item["document_id"], item["retrieval_source"]) for item in result["items"]] == [
+        ("doc-dense-tail-match", "lexical")
+    ]
+
+
+def test_documents_sparse_only_searches_full_published_live_corpus_beyond_candidate_limit() -> None:
+    from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
+
+    lexical_chunks = [
+        DocumentChunk(
+            id=f"chunk-filler-{idx:03d}",
+            document_id=f"doc-filler-{idx:03d}",
+            generation=1,
+            chunk_index=0,
+            content=f"aaaaa bbbbb ccccc {idx:03d}",
+            keywords=[],
+            generated_questions=[],
+            chunk_metadata={"source": "filler"},
+        )
+        for idx in range(205)
+    ]
+    lexical_chunks.append(
+        DocumentChunk(
+            id="chunk-sparse-tail-match",
+            document_id="doc-sparse-tail-match",
+            generation=1,
+            chunk_index=0,
+            content="xqvzjk sparse-only tail evidence",
+            keywords=[],
+            generated_questions=[],
+            chunk_metadata={"source": "tail-match"},
+        )
+    )
+    session = _LimitAwareLexicalSession(lexical_chunks)
+
+    async def _run() -> dict:
+        service = MixedModeDocumentRetrieverService(session)
+        result = await service.retrieve("xqvzjk", top_k=5)
+        return {
+            "items": result.items,
+            "strategy": result.strategy,
+            "lexical_candidate_count": result.lexical_candidate_count,
+            "lexical_scope": result.lexical_scope,
+        }
+
+    result = asyncio.run(_run())
+
+    assert result["strategy"] == "sparse_only"
+    assert result["lexical_scope"] == "full_published_live"
+    assert session.limit_history == [None]
+    assert result["lexical_candidate_count"] == 1
+    assert [(item["document_id"], item["retrieval_source"]) for item in result["items"]] == [
+        ("doc-sparse-tail-match", "lexical")
+    ]
+
+
+def test_documents_dense_success_keeps_lexical_fallback_scoped_to_not_dense_ready_subset() -> None:
+    from app.rag.dense_contract import build_embedding_contract_fingerprint
+    from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
+
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-dense-narrow-scope-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    settings = Settings(
+        EMBEDDING_API_KEY="emb-key",
+        EMBEDDING_BASE_URL="https://emb.example.com/v1",
+        EMBEDDING_MODEL="emb-model",
+        DENSE_EMBEDDING_DIM=2,
+        MILVUS_URI="http://milvus.example.com:19530",
+    )
+    fingerprint = build_embedding_contract_fingerprint(settings)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    async def _seed() -> None:
+        async with session_factory() as session:
+            session.add_all(
+                [
+                    Document(
+                        id="doc-dense-hit",
+                        filename="dense-hit.txt",
+                        file_type="txt",
+                        file_size=10,
+                        status="ready",
+                        chunk_strategy="general",
+                        chunk_count=1,
+                        published_generation=1,
+                        dense_ready_generation=1,
+                        dense_ready_fingerprint=fingerprint,
+                        next_generation=2,
+                        latest_requested_generation=1,
+                    ),
+                    Document(
+                        id="doc-not-dense-tail",
+                        filename="not-dense-tail.txt",
+                        file_type="txt",
+                        file_size=10,
+                        status="ready",
+                        chunk_strategy="general",
+                        chunk_count=1,
+                        published_generation=1,
+                        dense_ready_generation=0,
+                        dense_ready_fingerprint=None,
+                        next_generation=2,
+                        latest_requested_generation=1,
+                    ),
+                    Document(
+                        id="doc-dense-tail",
+                        filename="dense-tail.txt",
+                        file_type="txt",
+                        file_size=10,
+                        status="ready",
+                        chunk_strategy="general",
+                        chunk_count=1,
+                        published_generation=1,
+                        dense_ready_generation=1,
+                        dense_ready_fingerprint=fingerprint,
+                        next_generation=2,
+                        latest_requested_generation=1,
+                    ),
+                    DocumentChunk(
+                        id="chunk-dense-hit",
+                        document_id="doc-dense-hit",
+                        generation=1,
+                        chunk_index=0,
+                        content="anchor dense hit",
+                        keywords=[],
+                        generated_questions=[],
+                        chunk_metadata={"source": "dense"},
+                    ),
+                    DocumentChunk(
+                        id="chunk-not-dense-tail",
+                        document_id="doc-not-dense-tail",
+                        generation=1,
+                        chunk_index=0,
+                        content="xqvzjk not dense ready tail evidence",
+                        keywords=[],
+                        generated_questions=[],
+                        chunk_metadata={"source": "not-dense"},
+                    ),
+                    DocumentChunk(
+                        id="chunk-dense-tail",
+                        document_id="doc-dense-tail",
+                        generation=1,
+                        chunk_index=0,
+                        content="xqvzjk dense ready tail evidence",
+                        keywords=[],
+                        generated_questions=[],
+                        chunk_metadata={"source": "dense-ready"},
+                    ),
+                ]
+            )
+            await session.commit()
+
+    asyncio.run(_init_db())
+    asyncio.run(_seed())
+
+    dense_row = {
+        "document_id": "doc-dense-hit",
+        "generation": 1,
+        "chunk_index": 0,
+        "content_sha256": hashlib.sha256("anchor dense hit".encode("utf-8")).hexdigest(),
+        "distance": 0.99,
+    }
+
+    async def _run() -> dict:
+        async with session_factory() as session:
+            service = MixedModeDocumentRetrieverService(
+                session,
+                settings=settings,
+                embedding_provider=_StubEmbeddingProvider(),
+                document_index=_FakeDenseDocumentIndex(rows=[dense_row]),
+            )
+            result = await service.retrieve("xqvzjk", top_k=5)
+            return {
+                "items": result.items,
+                "lexical_candidate_count": result.lexical_candidate_count,
+                "lexical_scope": result.lexical_scope,
+            }
+
+    result = asyncio.run(_run())
+
+    assert result["lexical_scope"] == "not_dense_ready_published"
+    assert result["lexical_candidate_count"] == 1
+    assert [item["document_id"] for item in result["items"]] == ["doc-dense-hit", "doc-not-dense-tail"]
 
     asyncio.run(db_engine.dispose())
     os.remove(db_path)
