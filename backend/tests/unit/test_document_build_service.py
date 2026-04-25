@@ -63,9 +63,16 @@ class _DeleteOnlySessionSpy(_SessionSpy):
 
 
 class _DenseIndexSpy:
-    def __init__(self, *, result: DenseIndexResult | None = None, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        result: DenseIndexResult | None = None,
+        error: Exception | None = None,
+        delete_error: Exception | None = None,
+    ) -> None:
         self.result = result or DenseIndexResult(active=False, fingerprint=None)
         self.error = error
+        self.delete_error = delete_error
         self.index_calls: list[tuple[str, int, list[DocumentChunk]]] = []
         self.delete_calls: list[tuple[str, int]] = []
 
@@ -83,6 +90,8 @@ class _DenseIndexSpy:
 
     async def delete_candidate_generation(self, *, document_id: str, generation: int) -> None:
         self.delete_calls.append((document_id, generation))
+        if self.delete_error is not None:
+            raise self.delete_error
 
 
 class _ResultSpy:
@@ -1737,6 +1746,101 @@ def test_process_job_dense_index_failure_deletes_candidate_vectors_for_generatio
         assert job.status == "failed"
         assert job.stage == "failed"
         assert job.message == "milvus unavailable"
+
+    asyncio.run(_run())
+
+
+def test_fail_claimed_job_terminalizes_even_when_dense_cleanup_fails() -> None:
+    async def _run() -> None:
+        document = Document(
+            filename="dense-fail-cleanup.txt",
+            file_type="txt",
+            file_size=1600,
+            source_content=("A" * 1600).encode("utf-8"),
+            status="processing",
+            chunk_strategy="general",
+            chunk_count=3,
+            published_generation=1,
+            latest_requested_generation=2,
+            active_build_generation=2,
+            active_build_job_id="job-dense-fail-cleanup",
+        )
+        document.id = "doc-dense-fail-cleanup"
+
+        job = DocumentJob(
+            document_id=document.id,
+            build_generation=2,
+            requested_chunk_strategy="paper",
+            status="running",
+            stage="chunking",
+            progress=90,
+            message="writing candidate document chunks",
+        )
+        job.id = "job-dense-fail-cleanup"
+
+        session = _CancelCleanupSessionSpy(document=document, job=job)
+        dense_index = _DenseIndexSpy(delete_error=RuntimeError("milvus delete unavailable"))
+        service = DocumentBuildService(session, dense_index_service=dense_index)  # type: ignore[arg-type]
+
+        await service._fail_claimed_job(document=document, job=job, message="milvus unavailable")
+
+        assert session.deleted_generations == [(document.id, 2)]
+        assert session.commit_calls == 1
+        assert dense_index.delete_calls == [(document.id, 2)]
+        assert document.status == "pending"
+        assert document.published_generation == 1
+        assert document.active_build_generation is None
+        assert document.active_build_job_id is None
+        assert job.status == "failed"
+        assert job.stage == "failed"
+        assert job.message.startswith("milvus unavailable")
+
+    asyncio.run(_run())
+
+
+def test_terminalize_non_owner_releases_claim_even_when_dense_cleanup_fails() -> None:
+    async def _run() -> None:
+        document = Document(
+            filename="superseded-cleanup.txt",
+            file_type="txt",
+            file_size=1600,
+            source_content=("A" * 1600).encode("utf-8"),
+            status="processing",
+            chunk_strategy="general",
+            chunk_count=3,
+            published_generation=1,
+            latest_requested_generation=3,
+            active_build_generation=2,
+            active_build_job_id="job-superseded-cleanup",
+        )
+        document.id = "doc-superseded-cleanup"
+
+        job = DocumentJob(
+            document_id=document.id,
+            build_generation=2,
+            requested_chunk_strategy="paper",
+            status="running",
+            stage="chunking",
+            progress=90,
+            message="writing candidate document chunks",
+        )
+        job.id = "job-superseded-cleanup"
+
+        session = _CancelCleanupSessionSpy(document=document, job=job)
+        dense_index = _DenseIndexSpy(delete_error=RuntimeError("milvus delete unavailable"))
+        service = DocumentBuildService(session, dense_index_service=dense_index)  # type: ignore[arg-type]
+
+        await service._terminalize_non_owner(document=document, job=job)
+
+        assert session.deleted_generations == [(document.id, 2)]
+        assert session.commit_calls == 1
+        assert dense_index.delete_calls == [(document.id, 2)]
+        assert document.status == "pending"
+        assert document.active_build_generation is None
+        assert document.active_build_job_id is None
+        assert job.status == "canceled"
+        assert job.stage == "failed"
+        assert job.message.startswith("job superseded by newer build request")
 
     asyncio.run(_run())
 
