@@ -16,3 +16,7 @@ class BatchBuildRequest(BaseModel):
 
 class BatchDeleteRequest(BaseModel):
     document_ids: list[str] = Field(default_factory=list)
+
+
+class DenseMaintenanceRequest(BaseModel):
+    limit: int = Field(default=20, ge=1, le=100)
