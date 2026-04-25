@@ -85,6 +85,15 @@ async def _collect_operator_status(*, session: AsyncSession, redis: Redis) -> di
     )
 
 
+def _ready_for_dense_maintenance(status: dict) -> bool:
+    return (
+        status["drain_enabled"]
+        and status["queued_jobs"] == 0
+        and status["running_jobs"] == 0
+        and status["active_dispatcher_tasks"] == 0
+    )
+
+
 async def _ensure_dense_maintenance_ready(*, session: AsyncSession, redis: Redis) -> None:
     status = await _collect_operator_status(session=session, redis=redis)
     if not status["drain_enabled"]:
@@ -93,11 +102,7 @@ async def _ensure_dense_maintenance_ready(*, session: AsyncSession, redis: Redis
             code="DOC_MIGRATION_DRAIN_INACTIVE",
             message="migration drain is not active",
         )
-    if (
-        status["queued_jobs"] > 0
-        or status["running_jobs"] > 0
-        or status["active_dispatcher_tasks"] > 0
-    ):
+    if not _ready_for_dense_maintenance(status):
         raise AppError(
             status_code=409,
             code="DOC_MIGRATION_NOT_READY",
@@ -430,6 +435,7 @@ async def dense_status(
     redis: Redis = Depends(get_redis_client),
 ) -> dict:
     status = await _collect_operator_status(session=session, redis=redis)
+    status["ready_for_dense_maintenance"] = _ready_for_dense_maintenance(status)
     status.update(asdict(await DenseMaintenanceService().collect_status(session=session)))
     return _ok(status)
 
