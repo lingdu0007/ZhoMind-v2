@@ -150,6 +150,32 @@ class _FakeDenseDocumentIndex:
         return self._rows[:limit]
 
 
+class _DenseMaintenanceIndexResult:
+    def __init__(self, *, fingerprint: str) -> None:
+        self.active = True
+        self.fingerprint = fingerprint
+
+
+class _DenseMaintenanceIndexSpy:
+    def __init__(self, *, result_fingerprint: str) -> None:
+        self.result_fingerprint = result_fingerprint
+        self.index_calls: list[tuple[str, int, list[DocumentChunk]]] = []
+        self.delete_calls: list[str] = []
+
+    async def index_candidate_generation(
+        self,
+        *,
+        document_id: str,
+        generation: int,
+        chunks: list[DocumentChunk],
+    ) -> _DenseMaintenanceIndexResult:
+        self.index_calls.append((document_id, generation, list(chunks)))
+        return _DenseMaintenanceIndexResult(fingerprint=self.result_fingerprint)
+
+    async def delete_document_current_fingerprint(self, *, document_id: str) -> None:
+        self.delete_calls.append(document_id)
+
+
 class _ScalarListResult:
     def __init__(self, rows: list[DocumentChunk]) -> None:
         self._rows = rows
@@ -172,6 +198,18 @@ class _LimitAwareLexicalSession:
         self.limit_history.append(limit_value)
         rows = self._chunks if limit_value is None else self._chunks[:limit_value]
         return _ScalarListResult(rows)
+
+
+def _dense_settings(**overrides: object) -> Settings:
+    values: dict[str, object] = {
+        "EMBEDDING_API_KEY": "emb-key",
+        "EMBEDDING_BASE_URL": "https://emb.example.com/v1",
+        "EMBEDDING_MODEL": "text-embedding-3-large",
+        "DENSE_EMBEDDING_DIM": 3,
+        "MILVUS_URI": "http://milvus.example.com:19530",
+    }
+    values.update(overrides)
+    return Settings(**values)
 
 
 async def _seed_mixed_mode_retrieval_documents(
@@ -1088,6 +1126,639 @@ def test_documents_migration_reconcile_requires_active_drain() -> None:
             reconcile_response = client.post("/api/v1/documents/ops/migration-reconcile", headers=headers)
             assert reconcile_response.status_code == 409
             assert reconcile_response.json()["code"] == "DOC_MIGRATION_DRAIN_INACTIVE"
+    finally:
+        settings.admin_invite_code = original_code
+        app.dependency_overrides.clear()
+        asyncio.run(db_engine.dispose())
+        os.remove(db_path)
+
+
+def test_documents_dense_status_merges_operator_and_dense_counts(monkeypatch) -> None:
+    from app.api.v1 import documents as documents_api
+    from app.common.config import get_settings
+    from app.documents.dense_maintenance_service import DenseMaintenanceService
+    from app.rag.dense_contract import build_embedding_contract_fingerprint
+
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-dense-status-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    dense_settings = _dense_settings()
+    current_fingerprint = build_embedding_contract_fingerprint(dense_settings)
+    other_fingerprint = build_embedding_contract_fingerprint(_dense_settings(EMBEDDING_MODEL="text-embedding-3-small"))
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    async def _seed_documents() -> None:
+        async with session_factory() as session:
+            session.add_all(
+                [
+                    Document(
+                        id="doc-ready-current",
+                        filename="doc-ready-current.txt",
+                        file_type="txt",
+                        file_size=10,
+                        status="ready",
+                        chunk_strategy="general",
+                        chunk_count=1,
+                        published_generation=2,
+                        dense_ready_generation=2,
+                        dense_ready_fingerprint=current_fingerprint,
+                    ),
+                    Document(
+                        id="doc-not-ready",
+                        filename="doc-not-ready.txt",
+                        file_type="txt",
+                        file_size=10,
+                        status="ready",
+                        chunk_strategy="general",
+                        chunk_count=1,
+                        published_generation=1,
+                        dense_ready_generation=0,
+                        dense_ready_fingerprint=None,
+                    ),
+                    Document(
+                        id="doc-stale-current",
+                        filename="doc-stale-current.txt",
+                        file_type="txt",
+                        file_size=10,
+                        status="ready",
+                        chunk_strategy="general",
+                        chunk_count=1,
+                        published_generation=3,
+                        dense_ready_generation=2,
+                        dense_ready_fingerprint=current_fingerprint,
+                    ),
+                    Document(
+                        id="doc-tombstoned-current",
+                        filename="doc-tombstoned-current.txt",
+                        file_type="txt",
+                        file_size=10,
+                        status="ready",
+                        chunk_strategy="general",
+                        chunk_count=1,
+                        published_generation=4,
+                        dense_ready_generation=4,
+                        dense_ready_fingerprint=current_fingerprint,
+                        deleted_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
+                    ),
+                    Document(
+                        id="doc-ready-other",
+                        filename="doc-ready-other.txt",
+                        file_type="txt",
+                        file_size=10,
+                        status="ready",
+                        chunk_strategy="general",
+                        chunk_count=1,
+                        published_generation=5,
+                        dense_ready_generation=5,
+                        dense_ready_fingerprint=other_fingerprint,
+                    ),
+                ]
+            )
+            session.add_all(
+                [
+                    DocumentJob(
+                        id="job-queued-dense-status",
+                        document_id="doc-not-ready",
+                        build_generation=2,
+                        requested_chunk_strategy="general",
+                        status="queued",
+                        stage="queued",
+                        progress=0,
+                        message="queued",
+                    ),
+                    DocumentJob(
+                        id="job-running-dense-status",
+                        document_id="doc-ready-current",
+                        build_generation=3,
+                        requested_chunk_strategy="general",
+                        status="running",
+                        stage="chunking",
+                        progress=10,
+                        message="running",
+                    ),
+                ]
+            )
+            await session.commit()
+
+    asyncio.run(_init_db())
+    asyncio.run(_seed_documents())
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    fake_redis = _InMemoryRedis()
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+
+    settings = get_settings()
+    original_code = settings.admin_invite_code
+    settings.admin_invite_code = "test-admin-code"
+    monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 2)
+    monkeypatch.setattr(
+        documents_api,
+        "DenseMaintenanceService",
+        lambda: DenseMaintenanceService(settings=dense_settings),
+    )
+
+    try:
+        with TestClient(app) as client:
+            token = asyncio.run(_create_admin_token(client))
+            headers = _admin_headers(token)
+
+            response = client.get("/api/v1/documents/ops/dense-status", headers=headers)
+            assert response.status_code == 200
+            data = _extract_data(response.json())
+            assert data["drain_enabled"] is False
+            assert data["drain_started_at"] is None
+            assert data["queued_jobs"] == 1
+            assert data["running_jobs"] == 1
+            assert data["active_dispatcher_tasks"] == 2
+            assert data["ready_for_migration"] is False
+            assert data["current_embedding_contract_fingerprint"] == current_fingerprint
+            assert data["dense_mode_active"] is True
+            assert data["published_live_documents"] == 4
+            assert data["published_live_dense_ready_documents"] == 1
+            assert data["published_live_not_dense_ready_documents"] == 3
+            assert data["published_live_stale_generation_documents"] == 1
+            assert data["tombstoned_current_fingerprint_documents"] == 1
+    finally:
+        settings.admin_invite_code = original_code
+        app.dependency_overrides.clear()
+        asyncio.run(db_engine.dispose())
+        os.remove(db_path)
+
+
+def test_documents_dense_backfill_and_dense_reconcile_require_active_drain(monkeypatch) -> None:
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-dense-backfill-inactive-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_init_db())
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    fake_redis = _InMemoryRedis()
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+
+    from app.api.v1 import documents as documents_api
+    from app.common.config import get_settings
+
+    settings = get_settings()
+    original_code = settings.admin_invite_code
+    settings.admin_invite_code = "test-admin-code"
+    monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
+
+    try:
+        with TestClient(app) as client:
+            token = asyncio.run(_create_admin_token(client))
+            headers = _admin_headers(token)
+
+            backfill_response = client.post("/api/v1/documents/ops/dense-backfill", headers=headers, json={})
+            assert backfill_response.status_code == 409
+            assert backfill_response.json()["code"] == "DOC_MIGRATION_DRAIN_INACTIVE"
+
+            reconcile_response = client.post("/api/v1/documents/ops/dense-reconcile", headers=headers, json={})
+            assert reconcile_response.status_code == 409
+            assert reconcile_response.json()["code"] == "DOC_MIGRATION_DRAIN_INACTIVE"
+    finally:
+        settings.admin_invite_code = original_code
+        app.dependency_overrides.clear()
+        asyncio.run(db_engine.dispose())
+        os.remove(db_path)
+
+
+def test_documents_dense_backfill_indexes_eligible_published_docs(monkeypatch) -> None:
+    from app.api.v1 import documents as documents_api
+    from app.common.config import get_settings
+    from app.documents.dense_maintenance_service import DenseMaintenanceService
+    from app.rag.dense_contract import build_embedding_contract_fingerprint
+
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-dense-backfill-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    dense_settings = _dense_settings()
+    current_fingerprint = build_embedding_contract_fingerprint(dense_settings)
+    spy = _DenseMaintenanceIndexSpy(result_fingerprint="fingerprint-from-maintenance-spy")
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    async def _seed_documents() -> None:
+        async with session_factory() as session:
+            session.add_all(
+                [
+                    Document(
+                        id="doc-backfill-a",
+                        filename="doc-backfill-a.txt",
+                        file_type="txt",
+                        file_size=10,
+                        status="ready",
+                        chunk_strategy="general",
+                        chunk_count=2,
+                        published_generation=2,
+                        dense_ready_generation=0,
+                        dense_ready_fingerprint=None,
+                        next_generation=3,
+                        latest_requested_generation=2,
+                        uploaded_at=datetime(2026, 4, 1, 0, 0, tzinfo=timezone.utc),
+                    ),
+                    Document(
+                        id="doc-backfill-b",
+                        filename="doc-backfill-b.txt",
+                        file_type="txt",
+                        file_size=10,
+                        status="ready",
+                        chunk_strategy="general",
+                        chunk_count=1,
+                        published_generation=1,
+                        dense_ready_generation=0,
+                        dense_ready_fingerprint=None,
+                        next_generation=2,
+                        latest_requested_generation=1,
+                        uploaded_at=datetime(2026, 4, 1, 0, 1, tzinfo=timezone.utc),
+                    ),
+                    Document(
+                        id="doc-backfill-stale",
+                        filename="doc-backfill-stale.txt",
+                        file_type="txt",
+                        file_size=10,
+                        status="ready",
+                        chunk_strategy="general",
+                        chunk_count=1,
+                        published_generation=3,
+                        dense_ready_generation=2,
+                        dense_ready_fingerprint=current_fingerprint,
+                        next_generation=4,
+                        latest_requested_generation=3,
+                        uploaded_at=datetime(2026, 4, 1, 0, 2, tzinfo=timezone.utc),
+                    ),
+                    Document(
+                        id="doc-backfill-active",
+                        filename="doc-backfill-active.txt",
+                        file_type="txt",
+                        file_size=10,
+                        status="pending",
+                        chunk_strategy="general",
+                        chunk_count=1,
+                        published_generation=4,
+                        dense_ready_generation=0,
+                        dense_ready_fingerprint=None,
+                        next_generation=5,
+                        latest_requested_generation=4,
+                        active_build_generation=5,
+                        uploaded_at=datetime(2026, 4, 1, 0, 3, tzinfo=timezone.utc),
+                    ),
+                ]
+            )
+            session.add_all(
+                [
+                    DocumentChunk(
+                        id="chunk-backfill-a-0",
+                        document_id="doc-backfill-a",
+                        generation=2,
+                        chunk_index=0,
+                        content="doc-backfill-a chunk 0",
+                        chunk_metadata={"source": "published"},
+                    ),
+                    DocumentChunk(
+                        id="chunk-backfill-a-1",
+                        document_id="doc-backfill-a",
+                        generation=2,
+                        chunk_index=1,
+                        content="doc-backfill-a chunk 1",
+                        chunk_metadata={"source": "published"},
+                    ),
+                    DocumentChunk(
+                        id="chunk-backfill-b-0",
+                        document_id="doc-backfill-b",
+                        generation=1,
+                        chunk_index=0,
+                        content="doc-backfill-b chunk 0",
+                        chunk_metadata={"source": "published"},
+                    ),
+                    DocumentChunk(
+                        id="chunk-backfill-stale-0",
+                        document_id="doc-backfill-stale",
+                        generation=3,
+                        chunk_index=0,
+                        content="doc-backfill-stale chunk 0",
+                        chunk_metadata={"source": "published"},
+                    ),
+                    DocumentChunk(
+                        id="chunk-backfill-active-0",
+                        document_id="doc-backfill-active",
+                        generation=4,
+                        chunk_index=0,
+                        content="doc-backfill-active chunk 0",
+                        chunk_metadata={"source": "published"},
+                    ),
+                ]
+            )
+            await session.commit()
+
+    asyncio.run(_init_db())
+    asyncio.run(_seed_documents())
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    fake_redis = _InMemoryRedis()
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+
+    settings = get_settings()
+    original_code = settings.admin_invite_code
+    settings.admin_invite_code = "test-admin-code"
+    monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
+    monkeypatch.setattr(
+        documents_api,
+        "DenseMaintenanceService",
+        lambda: DenseMaintenanceService(settings=dense_settings, dense_index_service=spy),
+    )
+
+    try:
+        with TestClient(app) as client:
+            token = asyncio.run(_create_admin_token(client))
+            headers = _admin_headers(token)
+
+            drain_response = client.post("/api/v1/documents/ops/migration-drain", headers=headers)
+            assert drain_response.status_code == 200
+
+            response = client.post("/api/v1/documents/ops/dense-backfill", headers=headers, json={})
+            assert response.status_code == 200
+            data = _extract_data(response.json())
+            assert data["processed_documents"] == 4
+            assert data["indexed_documents"] == 2
+            assert data["skipped_documents"] == 2
+            assert data["failed_documents"] == 0
+            assert data["current_embedding_contract_fingerprint"] == current_fingerprint
+            assert data["dense_mode_active"] is True
+            assert [(item["document_id"], item["outcome"], item["reason"]) for item in data["documents"]] == [
+                ("doc-backfill-a", "indexed", None),
+                ("doc-backfill-b", "indexed", None),
+                ("doc-backfill-stale", "skipped", "stale_current_fingerprint"),
+                ("doc-backfill-active", "skipped", "active_build_in_progress"),
+            ]
+            assert [(document_id, generation) for document_id, generation, _chunks in spy.index_calls] == [
+                ("doc-backfill-a", 2),
+                ("doc-backfill-b", 1),
+            ]
+
+            persisted_a = asyncio.run(_load_document_record(session_factory, document_id="doc-backfill-a"))
+            persisted_b = asyncio.run(_load_document_record(session_factory, document_id="doc-backfill-b"))
+            persisted_stale = asyncio.run(_load_document_record(session_factory, document_id="doc-backfill-stale"))
+            persisted_active = asyncio.run(_load_document_record(session_factory, document_id="doc-backfill-active"))
+            assert persisted_a is not None
+            assert persisted_a.dense_ready_generation == 2
+            assert persisted_a.dense_ready_fingerprint == "fingerprint-from-maintenance-spy"
+            assert persisted_b is not None
+            assert persisted_b.dense_ready_generation == 1
+            assert persisted_b.dense_ready_fingerprint == "fingerprint-from-maintenance-spy"
+            assert persisted_stale is not None
+            assert persisted_stale.dense_ready_generation == 2
+            assert persisted_stale.dense_ready_fingerprint == current_fingerprint
+            assert persisted_active is not None
+            assert persisted_active.dense_ready_generation == 0
+            assert persisted_active.dense_ready_fingerprint is None
+    finally:
+        settings.admin_invite_code = original_code
+        app.dependency_overrides.clear()
+        asyncio.run(db_engine.dispose())
+        os.remove(db_path)
+
+
+def test_documents_dense_reconcile_clears_tombstoned_and_stale_current_fingerprint_docs(monkeypatch) -> None:
+    from app.api.v1 import documents as documents_api
+    from app.common.config import get_settings
+    from app.documents.dense_maintenance_service import DenseMaintenanceService
+    from app.rag.dense_contract import build_embedding_contract_fingerprint
+
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-dense-reconcile-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    dense_settings = _dense_settings()
+    current_fingerprint = build_embedding_contract_fingerprint(dense_settings)
+    spy = _DenseMaintenanceIndexSpy(result_fingerprint=current_fingerprint)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    async def _seed_documents() -> None:
+        async with session_factory() as session:
+            session.add_all(
+                [
+                    Document(
+                        id="doc-reconcile-stale",
+                        filename="doc-reconcile-stale.txt",
+                        file_type="txt",
+                        file_size=10,
+                        status="ready",
+                        chunk_strategy="general",
+                        chunk_count=1,
+                        published_generation=3,
+                        dense_ready_generation=2,
+                        dense_ready_fingerprint=current_fingerprint,
+                        next_generation=4,
+                        latest_requested_generation=3,
+                        uploaded_at=datetime(2026, 4, 1, 0, 0, tzinfo=timezone.utc),
+                    ),
+                    Document(
+                        id="doc-reconcile-tombstoned",
+                        filename="doc-reconcile-tombstoned.txt",
+                        file_type="txt",
+                        file_size=10,
+                        status="ready",
+                        chunk_strategy="general",
+                        chunk_count=1,
+                        published_generation=2,
+                        dense_ready_generation=2,
+                        dense_ready_fingerprint=current_fingerprint,
+                        next_generation=3,
+                        latest_requested_generation=2,
+                        deleted_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
+                        uploaded_at=datetime(2026, 4, 1, 0, 1, tzinfo=timezone.utc),
+                    ),
+                    Document(
+                        id="doc-reconcile-keep",
+                        filename="doc-reconcile-keep.txt",
+                        file_type="txt",
+                        file_size=10,
+                        status="ready",
+                        chunk_strategy="general",
+                        chunk_count=1,
+                        published_generation=1,
+                        dense_ready_generation=1,
+                        dense_ready_fingerprint=current_fingerprint,
+                        next_generation=2,
+                        latest_requested_generation=1,
+                        uploaded_at=datetime(2026, 4, 1, 0, 2, tzinfo=timezone.utc),
+                    ),
+                ]
+            )
+            await session.commit()
+
+    asyncio.run(_init_db())
+    asyncio.run(_seed_documents())
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    fake_redis = _InMemoryRedis()
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+
+    settings = get_settings()
+    original_code = settings.admin_invite_code
+    settings.admin_invite_code = "test-admin-code"
+    monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
+    monkeypatch.setattr(
+        documents_api,
+        "DenseMaintenanceService",
+        lambda: DenseMaintenanceService(settings=dense_settings, dense_index_service=spy),
+    )
+
+    try:
+        with TestClient(app) as client:
+            token = asyncio.run(_create_admin_token(client))
+            headers = _admin_headers(token)
+
+            drain_response = client.post("/api/v1/documents/ops/migration-drain", headers=headers)
+            assert drain_response.status_code == 200
+
+            response = client.post("/api/v1/documents/ops/dense-reconcile", headers=headers, json={"limit": 10})
+            assert response.status_code == 200
+            data = _extract_data(response.json())
+            assert data["processed_documents"] == 2
+            assert data["reconciled_documents"] == 2
+            assert data["failed_documents"] == 0
+            assert data["current_embedding_contract_fingerprint"] == current_fingerprint
+            assert data["dense_mode_active"] is True
+            assert [(item["document_id"], item["outcome"], item["reason"]) for item in data["documents"]] == [
+                ("doc-reconcile-stale", "reconciled", None),
+                ("doc-reconcile-tombstoned", "reconciled", None),
+            ]
+            assert spy.delete_calls == ["doc-reconcile-stale", "doc-reconcile-tombstoned"]
+
+            persisted_stale = asyncio.run(_load_document_record(session_factory, document_id="doc-reconcile-stale"))
+            persisted_tombstoned = asyncio.run(
+                _load_document_record(session_factory, document_id="doc-reconcile-tombstoned")
+            )
+            persisted_keep = asyncio.run(_load_document_record(session_factory, document_id="doc-reconcile-keep"))
+            assert persisted_stale is not None
+            assert persisted_stale.dense_ready_generation == 0
+            assert persisted_stale.dense_ready_fingerprint is None
+            assert persisted_tombstoned is not None
+            assert persisted_tombstoned.dense_ready_generation == 0
+            assert persisted_tombstoned.dense_ready_fingerprint is None
+            assert persisted_keep is not None
+            assert persisted_keep.dense_ready_generation == 1
+            assert persisted_keep.dense_ready_fingerprint == current_fingerprint
+    finally:
+        settings.admin_invite_code = original_code
+        app.dependency_overrides.clear()
+        asyncio.run(db_engine.dispose())
+        os.remove(db_path)
+
+
+def test_documents_dense_backfill_and_dense_reconcile_return_migration_not_ready_when_drain_not_quiescent(
+    monkeypatch,
+) -> None:
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-dense-not-ready-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    async def _seed_job() -> None:
+        async with session_factory() as session:
+            session.add(
+                Document(
+                    id="doc-dense-not-ready",
+                    filename="doc-dense-not-ready.txt",
+                    file_type="txt",
+                    file_size=10,
+                    status="pending",
+                    chunk_strategy="general",
+                    chunk_count=1,
+                    published_generation=1,
+                    next_generation=2,
+                    latest_requested_generation=1,
+                )
+            )
+            session.add(
+                DocumentJob(
+                    id="job-dense-not-ready",
+                    document_id="doc-dense-not-ready",
+                    build_generation=2,
+                    requested_chunk_strategy="general",
+                    status="queued",
+                    stage="queued",
+                    progress=0,
+                    message="queued",
+                )
+            )
+            await session.commit()
+
+    asyncio.run(_init_db())
+    asyncio.run(_seed_job())
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    fake_redis = _InMemoryRedis()
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+
+    from app.api.v1 import documents as documents_api
+    from app.common.config import get_settings
+
+    settings = get_settings()
+    original_code = settings.admin_invite_code
+    settings.admin_invite_code = "test-admin-code"
+    monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 1)
+
+    try:
+        with TestClient(app) as client:
+            token = asyncio.run(_create_admin_token(client))
+            headers = _admin_headers(token)
+
+            drain_response = client.post("/api/v1/documents/ops/migration-drain", headers=headers)
+            assert drain_response.status_code == 200
+
+            backfill_response = client.post("/api/v1/documents/ops/dense-backfill", headers=headers, json={"limit": 5})
+            assert backfill_response.status_code == 409
+            assert backfill_response.json()["code"] == "DOC_MIGRATION_NOT_READY"
+
+            reconcile_response = client.post(
+                "/api/v1/documents/ops/dense-reconcile",
+                headers=headers,
+                json={"limit": 5},
+            )
+            assert reconcile_response.status_code == 409
+            assert reconcile_response.json()["code"] == "DOC_MIGRATION_NOT_READY"
     finally:
         settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
