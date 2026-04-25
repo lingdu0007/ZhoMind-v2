@@ -1,3 +1,5 @@
+from app.common.config import get_settings
+from app.rag.dense_contract import dense_mode_active
 from app.rag.runtime.provider_adapters import JudgeAdapter, RerankerAdapter, RetrieverAdapter
 from app.rag.runtime.state import RagStateDict
 
@@ -35,7 +37,7 @@ class RetrievalPlanNode:
 
     async def run(self, state: RagStateDict) -> RagStateDict:
         plan = state.get("retrieval_plan") or {}
-        plan["strategy"] = "sparse_only"
+        plan["strategy"] = "dense_plus_lexical_migration" if dense_mode_active(get_settings()) else "sparse_only"
         plan["top_k"] = int(plan.get("top_k") or self.default_top_k)
         state["retrieval_plan"] = plan
         state["trace_steps"].append(
@@ -60,25 +62,36 @@ class RetrieveNode:
         top_k = int(plan.get("top_k") or self.top_k)
 
         retrieved, exec_detail = await self.retriever.retrieve(state["query_norm"], top_k=top_k)
+        ordered_items = []
+        for index, item in enumerate(retrieved.items):
+            ordered_item = dict(item)
+            ordered_item["__retrieval_order"] = int(item.get("__retrieval_order", index))
+            ordered_items.append(ordered_item)
 
-        state["candidates_sparse"] = retrieved
-        state["candidates_dense"] = []
-        state["provider_trace"]["retrieve"] = {
+        dense_items = [item for item in ordered_items if item.get("retrieval_source") == "dense"]
+        sparse_items = [item for item in ordered_items if item.get("retrieval_source") != "dense"]
+
+        state["candidates_sparse"] = sparse_items
+        state["candidates_dense"] = dense_items
+        retrieve_detail = {
+            "strategy": retrieved.strategy,
+            "dense_candidate_count": retrieved.dense_candidate_count,
+            "dense_hydrated_count": retrieved.dense_hydrated_count,
+            "lexical_candidate_count": retrieved.lexical_candidate_count,
+            "merged_count": retrieved.merged_count,
+            "dense_query_failed": retrieved.dense_query_failed,
+            "lexical_scope": retrieved.lexical_scope,
+            "sparse_count": len(state["candidates_sparse"]),
+            "dense_count": len(state["candidates_dense"]),
             "provider": exec_detail["provider"],
             "fallback_used": exec_detail["fallback_used"],
             "provider_error": exec_detail["error"],
         }
+        state["provider_trace"]["retrieve"] = retrieve_detail
         state["trace_steps"].append(
             {
                 "step": "retrieve",
-                "detail": {
-                    "strategy": plan.get("strategy", "sparse_only"),
-                    "sparse_count": len(state["candidates_sparse"]),
-                    "dense_count": len(state["candidates_dense"]),
-                    "provider": exec_detail["provider"],
-                    "fallback_used": exec_detail["fallback_used"],
-                    "provider_error": exec_detail["error"],
-                },
+                "detail": retrieve_detail,
             }
         )
         return state
@@ -87,7 +100,8 @@ class RetrieveNode:
 
 class FusionNode:
     async def run(self, state: RagStateDict) -> RagStateDict:
-        merged = [*state["candidates_sparse"], *state["candidates_dense"]]
+        merged = [*state["candidates_dense"], *state["candidates_sparse"]]
+        merged.sort(key=lambda item: int(item.get("__retrieval_order", 0)))
         deduped: list[dict] = []
         seen: set[str] = set()
 
@@ -98,7 +112,9 @@ class FusionNode:
             if key in seen:
                 continue
             seen.add(key)
-            deduped.append(item)
+            normalized_item = dict(item)
+            normalized_item.pop("__retrieval_order", None)
+            deduped.append(normalized_item)
 
         state["candidates_fused"] = deduped
         state["trace_steps"].append(

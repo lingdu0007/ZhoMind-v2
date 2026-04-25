@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 
 from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,7 @@ from sqlalchemy.orm import undefer
 
 from app.common.exceptions import AppError
 from app.documents.chunker import chunk_document
+from app.documents.dense_index_service import DenseIndexResult, DenseIndexService
 from app.documents.parsers import parse_document
 from app.documents.types import ChunkRecord, ParsedDocument
 from app.model.document import Document, DocumentChunk, DocumentJob
@@ -28,10 +30,13 @@ class DocumentBuildService:
         *,
         parser: Callable[[str, bytes], ParsedDocument] = parse_document,
         chunker: Callable[[ParsedDocument], list[ChunkRecord]] | None = None,
+        dense_index_service: DenseIndexService | None = None,
     ) -> None:
         self.session = session
         self._parser = parser
         self._chunker = chunker
+        self._dense_index_service = dense_index_service or DenseIndexService()
+        self._pending_dense_index_result: DenseIndexResult | None = None
 
     async def process_job(self, *, document_id: str, job_id: str, content: bytes | None = None) -> None:
         job = await self._get_job(job_id)
@@ -54,6 +59,7 @@ class DocumentBuildService:
             return
 
         try:
+            self._pending_dense_index_result = None
             parsed = self._parser(document.filename, self._resolve_content(document, content))
             if not await self._refresh_and_verify_owner(document=document, job=job):
                 await self._terminalize_non_owner(document=document, job=job)
@@ -93,6 +99,12 @@ class DocumentBuildService:
             if not await self._refresh_and_verify_owner(document=document, job=job):
                 await self._terminalize_non_owner(document=document, job=job)
                 return
+            dense_result = await self._dense_index_service.index_candidate_generation(
+                document_id=document.id,
+                generation=generation,
+                chunks=self._build_dense_candidate_chunks(document_id=document.id, generation=generation, chunks=chunks),
+            )
+            self._pending_dense_index_result = dense_result
 
             if not await self._refresh_heartbeat_if_owned(document=document, job=job):
                 await self._terminalize_non_owner(document=document, job=job)
@@ -107,6 +119,8 @@ class DocumentBuildService:
         except Exception as exc:
             await self._fail_claimed_job(document=document, job=job, message=str(exc) or "document build failed")
             raise
+        finally:
+            self._pending_dense_index_result = None
 
     async def _claim_generation(self, *, document: Document, job: DocumentJob) -> bool:
         generation = self._require_build_generation(job)
@@ -303,6 +317,7 @@ class DocumentBuildService:
         generation: int,
         chunks: list[ChunkRecord],
     ) -> None:
+        dense_ready_generation, dense_ready_fingerprint = self._resolve_dense_readiness(generation=generation)
         publish_result = await self.session.execute(
             update(Document)
             .where(
@@ -314,6 +329,8 @@ class DocumentBuildService:
             )
             .values(
                 published_generation=generation,
+                dense_ready_generation=dense_ready_generation,
+                dense_ready_fingerprint=dense_ready_fingerprint,
                 chunk_strategy=job.requested_chunk_strategy or document.chunk_strategy,
                 chunk_count=len(chunks),
                 status="ready",
@@ -336,7 +353,10 @@ class DocumentBuildService:
     async def _terminalize_non_owner(self, *, document: Document, job: DocumentJob) -> None:
         await self.session.refresh(document)
         await self.session.refresh(job)
-        await self._delete_candidate_generation(document_id=document.id, generation=job.build_generation)
+        cleanup_error = await self._delete_candidate_generation_assets(
+            document_id=document.id,
+            generation=job.build_generation,
+        )
         self._release_claim_if_owned(document=document, job=job)
 
         if document.deleted_at is not None:
@@ -358,6 +378,7 @@ class DocumentBuildService:
             job.message = "job superseded by newer build request"
             document.status = self._derive_non_publish_status(document)
 
+        job.message = self._append_cleanup_warning(job.message, cleanup_error)
         await self.session.commit()
 
     async def _cancel_claimed_job(self, *, document: Document, job: DocumentJob) -> None:
@@ -370,7 +391,10 @@ class DocumentBuildService:
             await self._terminalize_non_owner(document=document, job=job)
             return
 
-        await self._delete_candidate_generation(document_id=document.id, generation=job.build_generation)
+        cleanup_error = await self._delete_candidate_generation_assets(
+            document_id=document.id,
+            generation=job.build_generation,
+        )
         self._release_claim_if_owned(document=document, job=job)
 
         if document.deleted_at is not None:
@@ -385,6 +409,7 @@ class DocumentBuildService:
             job.progress = min(job.progress, 99)
             job.message = message
 
+        job.message = self._append_cleanup_warning(job.message, cleanup_error)
         await self.session.commit()
 
     async def _delete_candidate_generation(self, *, document_id: str, generation: int | None) -> None:
@@ -396,6 +421,41 @@ class DocumentBuildService:
                 DocumentChunk.generation == generation,
             )
         )
+
+    async def _delete_candidate_generation_assets(self, *, document_id: str, generation: int | None) -> Exception | None:
+        await self._delete_candidate_generation(document_id=document_id, generation=generation)
+        try:
+            await self._dense_index_service.delete_candidate_generation(document_id=document_id, generation=generation)
+        except Exception as exc:
+            return exc
+        return None
+
+    @staticmethod
+    def _build_dense_candidate_chunks(
+        *,
+        document_id: str,
+        generation: int,
+        chunks: list[ChunkRecord],
+    ) -> list[DocumentChunk]:
+        return [
+            DocumentChunk(
+                document_id=document_id,
+                generation=generation,
+                chunk_index=chunk.chunk_index,
+                content=chunk.content,
+                content_sha256=sha256(chunk.content.encode("utf-8")).hexdigest(),
+                keywords=[],
+                generated_questions=[],
+                chunk_metadata=chunk.metadata,
+            )
+            for chunk in chunks
+        ]
+
+    def _resolve_dense_readiness(self, *, generation: int) -> tuple[int, str | None]:
+        dense_result = self._pending_dense_index_result
+        if dense_result is not None and dense_result.active and dense_result.fingerprint:
+            return generation, dense_result.fingerprint
+        return 0, None
 
     @staticmethod
     def _release_claim_if_owned(*, document: Document, job: DocumentJob) -> None:
@@ -458,3 +518,12 @@ class DocumentBuildService:
         if exc.code and exc.message:
             return f"{exc.code}: {exc.message}"
         return exc.message or exc.code or "document build failed"
+
+    @staticmethod
+    def _append_cleanup_warning(message: str, cleanup_error: Exception | None) -> str:
+        if cleanup_error is None:
+            return message
+        warning = f"dense cleanup warning: {cleanup_error}"
+        if not message:
+            return warning
+        return f"{message} ({warning})"

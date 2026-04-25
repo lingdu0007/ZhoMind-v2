@@ -1,34 +1,21 @@
-from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-import re
 import uuid
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.config import get_settings
 from app.extensions.provider_router import ProviderRouter
 from app.extensions.registry import get_extension_registry
-from app.model.document import Document, DocumentChunk
 from app.rag.interfaces import RelevanceJudge, Reranker, Retriever
 from app.rag.runtime.graph_runner import RagGraphRunner
 from app.repository.chat_repository import ChatRepository
+from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
 from app.service.runtime_trace_mapper import RuntimeTraceMapper
 
 CHAT_RETRIEVER_PROVIDER = "chat-default-retriever"
 CHAT_RERANK_PROVIDER = "chat-default-reranker"
 CHAT_JUDGE_PROVIDER = "chat-default-judge"
 CHAT_LLM_PROVIDER = "chat-default-llm"
-
-
-class _SessionLexicalRetriever:
-    name = "inmemory-lexical-retriever"
-
-    def __init__(self, loader: Callable[[str, int], Awaitable[list[dict]]]) -> None:
-        self._loader = loader
-
-    async def retrieve(self, query: str, top_k: int) -> list[dict]:
-        return await self._loader(query, top_k)
 
 
 class _IdentityReranker:
@@ -50,83 +37,15 @@ class ChatService:
         self.session = session
         self.repo = ChatRepository(session)
 
-    def _tokenize(self, text: str) -> list[str]:
-        return [item for item in re.split(r"[\s\W_]+", text.lower()) if len(item) >= 2]
-
     def _compact(self, text: str) -> str:
         return "".join(ch for ch in text.lower() if ch.isalnum())
-
-    def _bigram_overlap(self, a: str, b: str) -> int:
-        if len(a) < 2 or len(b) < 2:
-            return 0
-        a_set = {a[i : i + 2] for i in range(len(a) - 1)}
-        b_set = {b[i : i + 2] for i in range(len(b) - 1)}
-        return len(a_set & b_set)
-
-    def _score_chunk(self, query: str, content: str) -> float:
-        query_norm = query.strip().lower()
-        content_norm = (content or "").strip().lower()
-        if not query_norm or not content_norm:
-            return 0.0
-
-        score = 0.0
-        query_compact = self._compact(query_norm)
-        content_compact = self._compact(content_norm)
-
-        if query_compact and query_compact in content_compact:
-            score += 5.0
-
-        query_tokens = self._tokenize(query_norm)
-        if query_tokens:
-            content_tokens = set(self._tokenize(content_norm))
-            overlap = sum(1 for token in query_tokens if token in content_tokens)
-            score += float(overlap)
-
-        score += min(self._bigram_overlap(query_compact, content_compact), 6) * 0.8
-        return score
-
-    async def _default_retrieve_chunks(self, question: str, top_k: int = 3) -> list[dict]:
-        query = question.strip()
-        if not query:
-            return []
-
-        result = await self.session.execute(
-            select(DocumentChunk)
-            .join(Document, DocumentChunk.document_id == Document.id)
-            .where(
-                Document.deleted_at.is_(None),
-                Document.published_generation > 0,
-                DocumentChunk.generation == Document.published_generation,
-            )
-            .limit(200)
-        )
-        candidates = list(result.scalars().all())
-
-        ranked: list[dict] = []
-        for chunk in candidates:
-            score = self._score_chunk(query=query, content=chunk.content)
-            if score <= 0:
-                continue
-            ranked.append(
-                {
-                    "chunk_id": chunk.id,
-                    "document_id": chunk.document_id,
-                    "chunk_index": chunk.chunk_index,
-                    "score": round(score, 4),
-                    "content_preview": chunk.content[:160],
-                    "metadata": chunk.chunk_metadata,
-                }
-            )
-
-        ranked.sort(key=lambda item: (-item["score"], item["chunk_index"], item["chunk_id"]))
-        return ranked[:top_k]
 
     def _resolve_retriever(self) -> tuple[Retriever, str]:
         provider = get_extension_registry().get_retriever(CHAT_RETRIEVER_PROVIDER)
         if provider is not None:
             return provider, CHAT_RETRIEVER_PROVIDER
 
-        fallback = _SessionLexicalRetriever(loader=self._default_retrieve_chunks)
+        fallback = MixedModeDocumentRetrieverService(self.session)
         return fallback, fallback.name
 
     def _resolve_reranker(self) -> tuple[Reranker, str]:

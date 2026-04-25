@@ -25,7 +25,16 @@ def test_retriever_primary_success() -> None:
 
     items, detail = asyncio.run(adapter.retrieve("hello", top_k=2))
 
-    assert items == [{"chunk_id": "c1", "content": "hello-2"}]
+    assert items.items == [{"chunk_id": "c1", "content": "hello-2"}]
+    assert items.strategy == "sparse_only"
+    assert items.dense_candidate_count == 0
+    assert items.dense_hydrated_count == 0
+    assert items.lexical_candidate_count == 1
+    assert items.merged_count == 1
+    assert items.dense_query_failed is False
+    assert items.lexical_scope == "full_published_live"
+    assert items.fallback_used is False
+    assert items.provider_error is None
     assert detail == {
         "provider": "retriever-main",
         "fallback_used": False,
@@ -38,7 +47,16 @@ def test_retriever_fallback_on_exception_has_normalized_error() -> None:
 
     items, detail = asyncio.run(adapter.retrieve("hello", top_k=2))
 
-    assert items == []
+    assert items.items == []
+    assert items.strategy == "sparse_only"
+    assert items.dense_candidate_count == 0
+    assert items.dense_hydrated_count == 0
+    assert items.lexical_candidate_count == 0
+    assert items.merged_count == 0
+    assert items.dense_query_failed is False
+    assert items.lexical_scope == "full_published_live"
+    assert items.fallback_used is False
+    assert items.provider_error is None
     assert detail["provider"] == "retriever-main"
     assert detail["fallback_used"] is True
     assert detail["error"] is not None
