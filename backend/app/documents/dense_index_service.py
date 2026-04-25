@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from app.common.exceptions import AppError
 from app.common.config import Settings, get_settings
 from app.extensions.registry import get_extension_registry
 from app.infra.milvus_document_index import MilvusDocumentIndex
@@ -19,6 +20,16 @@ class DocumentIndex(Protocol):
     async def upsert_generation(self, *, collection_name: str, rows: list[dict[str, object]]) -> None: ...
 
     async def delete_generation(self, *, collection_name: str, document_id: str, generation: int) -> None: ...
+
+    async def search(
+        self,
+        *,
+        collection_name: str,
+        vector: list[float],
+        limit: int,
+        filter: str = "",
+        output_fields: list[str] | None = None,
+    ) -> list[dict[str, object]]: ...
 
 
 @dataclass(frozen=True)
@@ -50,10 +61,8 @@ class DenseIndexService:
         if not contract.active:
             return DenseIndexResult(active=False, fingerprint=None)
 
-        embedding_provider = self._resolve_embedding_provider()
-        document_index = self._resolve_document_index()
-        if embedding_provider is None or document_index is None:
-            return DenseIndexResult(active=False, fingerprint=None)
+        embedding_provider = self._require_embedding_provider()
+        document_index = self._require_document_index()
 
         fingerprint = build_embedding_contract_fingerprint(self._settings)
         collection_name = build_milvus_collection_name(fingerprint)
@@ -105,3 +114,23 @@ class DenseIndexService:
         if self._document_index is None:
             self._document_index = MilvusDocumentIndex()
         return self._document_index
+
+    def _require_embedding_provider(self) -> EmbeddingProvider:
+        provider = self._resolve_embedding_provider()
+        if provider is None:
+            raise AppError(
+                status_code=503,
+                code="DENSE_INDEX_PROVIDER_UNAVAILABLE",
+                message="dense embedding provider is unavailable",
+            )
+        return provider
+
+    def _require_document_index(self) -> DocumentIndex:
+        document_index = self._resolve_document_index()
+        if document_index is None:
+            raise AppError(
+                status_code=503,
+                code="DENSE_INDEX_BACKEND_UNAVAILABLE",
+                message="dense document index is unavailable",
+            )
+        return document_index
