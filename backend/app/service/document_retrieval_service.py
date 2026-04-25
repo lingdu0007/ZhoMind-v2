@@ -141,15 +141,10 @@ class MixedModeDocumentRetrieverService:
         lexical_scope: str,
         fingerprint: str | None = None,
     ) -> list[dict[str, Any]]:
-        stmt = (
-            select(DocumentChunk)
-            .join(Document, DocumentChunk.document_id == Document.id)
-            .where(
-                Document.deleted_at.is_(None),
-                Document.published_generation > 0,
-                DocumentChunk.generation == Document.published_generation,
-            )
-            .limit(self._candidate_limit)
+        stmt = select(DocumentChunk).join(Document, DocumentChunk.document_id == Document.id).where(
+            Document.deleted_at.is_(None),
+            Document.published_generation > 0,
+            DocumentChunk.generation == Document.published_generation,
         )
         if lexical_scope == "not_dense_ready_published" and fingerprint:
             stmt = stmt.where(
@@ -158,7 +153,9 @@ class MixedModeDocumentRetrieverService:
                     Document.dense_ready_fingerprint.is_(None),
                     Document.dense_ready_fingerprint != fingerprint,
                 )
-            )
+            ).limit(self._candidate_limit)
+        elif lexical_scope != "full_published_live":
+            stmt = stmt.limit(self._candidate_limit)
 
         result = await self._session.execute(stmt)
         candidates = list(result.scalars().all())

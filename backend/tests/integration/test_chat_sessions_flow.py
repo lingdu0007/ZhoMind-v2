@@ -166,6 +166,77 @@ async def _seed_chat_retrieval_docs(
         await session.commit()
 
 
+async def _seed_chat_large_published_corpus_with_tail_match(
+    session_factory,
+    *,
+    fingerprint: str,
+    filler_count: int = 205,
+) -> None:
+    async with session_factory() as session:
+        records: list[Document | DocumentChunk] = []
+        for idx in range(filler_count):
+            doc_id = f"doc-chat-filler-{idx:03d}"
+            records.append(
+                Document(
+                    id=doc_id,
+                    filename=f"chat-filler-{idx:03d}.txt",
+                    file_type="txt",
+                    file_size=10,
+                    status="ready",
+                    chunk_strategy="general",
+                    chunk_count=1,
+                    published_generation=1,
+                    dense_ready_generation=1,
+                    dense_ready_fingerprint=fingerprint,
+                    next_generation=2,
+                    latest_requested_generation=1,
+                )
+            )
+            records.append(
+                DocumentChunk(
+                    id=f"chunk-chat-filler-{idx:03d}",
+                    document_id=doc_id,
+                    generation=1,
+                    chunk_index=0,
+                    content=f"aaaaa bbbbb ccccc {idx:03d}",
+                    keywords=[],
+                    generated_questions=[],
+                    chunk_metadata={"source": "filler"},
+                )
+            )
+
+        records.append(
+            Document(
+                id="doc-chat-tail-match",
+                filename="chat-tail-match.txt",
+                file_type="txt",
+                file_size=10,
+                status="ready",
+                chunk_strategy="general",
+                chunk_count=1,
+                published_generation=1,
+                dense_ready_generation=1,
+                dense_ready_fingerprint=fingerprint,
+                next_generation=2,
+                latest_requested_generation=1,
+            )
+        )
+        records.append(
+            DocumentChunk(
+                id="chunk-chat-tail-match",
+                document_id="doc-chat-tail-match",
+                generation=1,
+                chunk_index=0,
+                content="xqvzjk chat tail evidence",
+                keywords=[],
+                generated_questions=[],
+                chunk_metadata={"source": "tail-match"},
+            )
+        )
+        session.add_all(records)
+        await session.commit()
+
+
 def test_chat_and_sessions_flow(monkeypatch) -> None:
     db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
@@ -673,6 +744,111 @@ def test_chat_dense_failure_trace_marks_runtime_fallback_and_error(monkeypatch) 
                 "message": "milvus unavailable",
                 "type": "RuntimeError",
             }
+    finally:
+        if prev_retriever is not None:
+            registry.register_retriever(CHAT_RETRIEVER_PROVIDER, prev_retriever)
+        else:
+            registry.retrievers.pop(CHAT_RETRIEVER_PROVIDER, None)
+        if prev_embedding is not None:
+            registry.register_embedding("embedding-default", prev_embedding)
+        else:
+            registry.embedding_providers.pop("embedding-default", None)
+        if prev_reranker is not None:
+            registry.register_rerank(CHAT_RERANK_PROVIDER, prev_reranker)
+        else:
+            registry.rerank_providers.pop(CHAT_RERANK_PROVIDER, None)
+        if prev_judge is not None:
+            registry.register_judge(CHAT_JUDGE_PROVIDER, prev_judge)
+        else:
+            registry.judges.pop(CHAT_JUDGE_PROVIDER, None)
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+        get_extension_registry.cache_clear()
+        asyncio.run(db_engine.dispose())
+
+
+def test_chat_dense_failure_full_lexical_fallback_reads_tail_of_published_live_corpus(monkeypatch) -> None:
+    from app.rag.dense_contract import build_embedding_contract_fingerprint
+    from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
+
+    db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    monkeypatch.setenv("RAG_DISABLE_GATE", "false")
+    monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "missing-test-llm")
+    monkeypatch.setenv("RAG_LLM_FALLBACK_PROVIDERS", "")
+    get_settings.cache_clear()
+    get_extension_registry.cache_clear()
+
+    settings = Settings(
+        EMBEDDING_API_KEY="emb-key",
+        EMBEDDING_BASE_URL="https://emb.example.com/v1",
+        EMBEDDING_MODEL="emb-model",
+        DENSE_EMBEDDING_DIM=2,
+        MILVUS_URI="http://milvus.example.com:19530",
+    )
+    fingerprint = build_embedding_contract_fingerprint(settings)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_init_db())
+    asyncio.run(_seed_chat_large_published_corpus_with_tail_match(session_factory, fingerprint=fingerprint))
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    fake_redis = _InMemoryRedis()
+
+    async def override_get_redis_client() -> _InMemoryRedis:
+        return fake_redis
+
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = override_get_redis_client
+
+    registry = get_extension_registry()
+    prev_retriever = registry.get_retriever(CHAT_RETRIEVER_PROVIDER)
+    prev_embedding = registry.get_embedding("embedding-default")
+    prev_reranker = registry.get_rerank(CHAT_RERANK_PROVIDER)
+    prev_judge = registry.get_judge(CHAT_JUDGE_PROVIDER)
+    registry.retrievers.pop(CHAT_RETRIEVER_PROVIDER, None)
+    registry.rerank_providers.pop(CHAT_RERANK_PROVIDER, None)
+    registry.judges.pop(CHAT_JUDGE_PROVIDER, None)
+    registry.register_embedding("embedding-default", _StubEmbeddingProvider())
+
+    class _InjectedMixedModeRetriever(MixedModeDocumentRetrieverService):
+        def __init__(self, session: AsyncSession) -> None:
+            super().__init__(
+                session,
+                settings=settings,
+                embedding_provider=_StubEmbeddingProvider(),
+                document_index=_FakeDenseDocumentIndex(error=RuntimeError("milvus unavailable")),
+            )
+
+    monkeypatch.setattr("app.service.chat_service.MixedModeDocumentRetrieverService", _InjectedMixedModeRetriever)
+
+    try:
+        with TestClient(app) as client:
+            headers = _auth_headers(client, username="dense-tail-failure-user")
+            response = client.post(
+                "/api/v1/chat",
+                headers=headers,
+                json={"message": "xqvzjk", "session_id": "session_dense_tail_failure_1"},
+            )
+            assert response.status_code == 200
+            data = _extract_data(response.json())
+
+            retrieve_trace = data["rag_trace"]["runtime"]["provider_trace"]["retrieve"]
+            assert retrieve_trace["dense_query_failed"] is True
+            assert retrieve_trace["fallback_used"] is True
+            assert retrieve_trace["lexical_scope"] == "full_published_live"
+            assert retrieve_trace["lexical_candidate_count"] == 1
+
+            evidence = data["rag_trace"]["evidence"]
+            assert [item["document_id"] for item in evidence] == ["doc-chat-tail-match"]
+            assert "xqvzjk chat tail evidence" in data["answer"]
     finally:
         if prev_retriever is not None:
             registry.register_retriever(CHAT_RETRIEVER_PROVIDER, prev_retriever)
