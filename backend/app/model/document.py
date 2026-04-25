@@ -1,14 +1,19 @@
 import uuid
 from datetime import datetime, timezone
+import hashlib
 
-from sqlalchemy import JSON, DateTime, Index, Integer, LargeBinary, String, Text, UniqueConstraint, text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import JSON, DateTime, Index, Integer, LargeBinary, String, Text, UniqueConstraint, event, text
+from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from app.model.base import Base
 
 
 def _new_id() -> str:
     return str(uuid.uuid4())
+
+
+def _content_sha256(value: str | None) -> str:
+    return hashlib.sha256((value or "").encode("utf-8")).hexdigest()
 
 
 class Document(Base):
@@ -32,6 +37,8 @@ class Document(Base):
     chunk_strategy: Mapped[str] = mapped_column(String(32), nullable=False, default="general")
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     published_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    dense_ready_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    dense_ready_fingerprint: Mapped[str | None] = mapped_column(String(128), nullable=True)
     next_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     latest_requested_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     active_build_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -78,6 +85,18 @@ class DocumentChunk(Base):
     generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     keywords: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     generated_questions: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     chunk_metadata: Mapped[dict] = mapped_column("metadata", JSON, nullable=False, default=dict)
+
+    @validates("content")
+    def _set_content_sha256(self, _key: str, value: str) -> str:
+        self.content_sha256 = _content_sha256(value)
+        return value
+
+
+@event.listens_for(DocumentChunk, "before_insert")
+@event.listens_for(DocumentChunk, "before_update")
+def _ensure_document_chunk_content_sha256(_mapper, _connection, target: DocumentChunk) -> None:
+    target.content_sha256 = _content_sha256(target.content)

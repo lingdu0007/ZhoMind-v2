@@ -6,6 +6,7 @@ from langchain_openai import ChatOpenAI
 
 from app.common.config import get_settings
 from app.extensions.langchain_chat_providers import AnthropicChatProvider, OpenAICompatibleChatProvider
+from app.extensions.langchain_embedding_providers import OpenAIEmbeddingProvider
 from app.rag.interfaces import EmbeddingProvider, LlmProvider, RelevanceJudge, Reranker, Retriever
 from app.tasks.interfaces import InMemoryTaskBackend, TaskBackend, create_inmemory_task_backend
 
@@ -114,6 +115,21 @@ def get_extension_registry() -> ExtensionRegistry:
 
     if "ark" in registry.llm_providers:
         registry.register_llm("chat-default-llm", registry.llm_providers["ark"])
+
+    if (
+        settings.embedding_api_key_configured
+        and settings.embedding_base_url_normalized
+        and settings.embedding_model_normalized
+        and settings.dense_embedding_dim > 0
+    ):
+        registry.register_embedding(
+            "embedding-default",
+            OpenAIEmbeddingProvider(
+                api_key=settings.embedding_api_key,
+                base_url=settings.embedding_base_url_normalized,
+                model=settings.embedding_model_normalized,
+            ),
+        )
 
     registry.register_task_backend("inmemory", create_inmemory_task_backend())
     return registry

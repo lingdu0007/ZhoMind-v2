@@ -17,8 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.common.exceptions import AppError
 from app.documents.build_service import DocumentBuildService
+from app.documents.dense_index_service import DenseIndexResult
 from app.documents.job_dispatcher import DocumentJobDispatcher
-from app.documents.types import ChunkRecord
+from app.documents.types import ChunkRecord, ParsedDocument
 from app.model.base import Base
 from app.model.document import Document, DocumentChunk, DocumentJob
 
@@ -37,6 +38,60 @@ class _SessionSpy:
 
     async def rollback(self) -> None:
         self.rollback_calls += 1
+
+
+class _DeleteOnlySessionSpy(_SessionSpy):
+    def __init__(self) -> None:
+        super().__init__()
+        self.deleted_generations: list[tuple[str, int | None]] = []
+
+    async def execute(self, statement) -> _ResultSpy:
+        compiled = statement.compile()
+        sql = str(compiled)
+        params = compiled.params
+        if sql.startswith("DELETE FROM document_chunks"):
+            document_id = None
+            generation = None
+            for key, value in params.items():
+                if key.startswith("document_id_"):
+                    document_id = value
+                if key.startswith("generation_"):
+                    generation = value
+            self.deleted_generations.append((document_id or "", generation))
+            return _ResultSpy(rowcount=1)
+        raise AssertionError(f"unexpected SQL: {sql}")
+
+
+class _DenseIndexSpy:
+    def __init__(
+        self,
+        *,
+        result: DenseIndexResult | None = None,
+        error: Exception | None = None,
+        delete_error: Exception | None = None,
+    ) -> None:
+        self.result = result or DenseIndexResult(active=False, fingerprint=None)
+        self.error = error
+        self.delete_error = delete_error
+        self.index_calls: list[tuple[str, int, list[DocumentChunk]]] = []
+        self.delete_calls: list[tuple[str, int]] = []
+
+    async def index_candidate_generation(
+        self,
+        *,
+        document_id: str,
+        generation: int,
+        chunks: list[DocumentChunk],
+    ) -> DenseIndexResult:
+        self.index_calls.append((document_id, generation, chunks))
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+    async def delete_candidate_generation(self, *, document_id: str, generation: int) -> None:
+        self.delete_calls.append((document_id, generation))
+        if self.delete_error is not None:
+            raise self.delete_error
 
 
 class _ResultSpy:
@@ -529,6 +584,469 @@ def test_process_job_success_publishes_requested_generation_chunks() -> None:
         assert job.status == "succeeded"
         assert job.stage == "completed"
         assert job.progress == 100
+
+    asyncio.run(_run())
+
+
+def test_process_job_dense_active_indexes_vectors_before_publish_and_marks_generation_dense_ready() -> None:
+    async def _run() -> None:
+        session = _SessionSpy()
+        dense_index = _DenseIndexSpy(result=DenseIndexResult(active=True, fingerprint="fp-123"))
+        service = DocumentBuildService(session, dense_index_service=dense_index)  # type: ignore[arg-type]
+
+        document = Document(
+            filename="guide.txt",
+            file_type="txt",
+            file_size=1600,
+            source_content=("A" * 1600).encode("utf-8"),
+            status="pending",
+            chunk_strategy="general",
+            chunk_count=1,
+            published_generation=1,
+            dense_ready_generation=0,
+            dense_ready_fingerprint=None,
+            latest_requested_generation=2,
+            active_build_generation=2,
+            active_build_job_id="job-1",
+        )
+        document.id = "doc-1"
+
+        job = DocumentJob(
+            document_id=document.id,
+            build_generation=2,
+            requested_chunk_strategy="paper",
+            status="queued",
+            stage="queued",
+            progress=0,
+            message="queued for rebuild",
+        )
+        job.id = "job-1"
+
+        events: list[str] = []
+
+        async def _fake_get_document(self: DocumentBuildService, document_id: str) -> Document:
+            assert document_id == document.id
+            return document
+
+        async def _fake_get_job(self: DocumentBuildService, job_id: str) -> DocumentJob:
+            assert job_id == job.id
+            return job
+
+        async def _fake_claim_generation(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
+            return True
+
+        async def _fake_start_claimed_job(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+        ) -> bool:
+            document.status = "processing"
+            job.status = "running"
+            job.stage = "parsing"
+            job.progress = 10
+            job.message = "parsing document"
+            return True
+
+        async def _fake_refresh_and_verify_owner(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
+            return True
+
+        async def _fake_refresh_heartbeat_if_owned(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+        ) -> bool:
+            return True
+
+        async def _fake_write_candidate_chunks(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+            generation: int,
+            chunks: list[ChunkRecord],
+        ) -> bool:
+            events.append("write")
+            return True
+
+        async def _fake_publish_generation(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+            generation: int,
+            chunks: list[ChunkRecord],
+        ) -> None:
+            events.append("publish")
+            assert generation == 2
+            assert dense_index.index_calls and dense_index.index_calls[0][0:2] == (document.id, 2)
+            dense_chunks = dense_index.index_calls[0][2]
+            assert len(dense_chunks) == len(chunks)
+            assert [chunk.chunk_index for chunk in dense_chunks] == [chunk.chunk_index for chunk in chunks]
+            assert all(chunk.content for chunk in dense_chunks)
+            assert all(len(chunk.content_sha256) == 64 for chunk in dense_chunks)
+            assert self._resolve_dense_readiness(generation=2) == (2, "fp-123")
+            document.published_generation = generation
+            document.chunk_strategy = job.requested_chunk_strategy or document.chunk_strategy
+            document.chunk_count = len(chunks)
+            document.status = "ready"
+            document.active_build_generation = None
+            document.active_build_job_id = None
+            job.status = "succeeded"
+            job.stage = "completed"
+            job.progress = 100
+            job.message = "document build completed"
+
+        original_index = dense_index.index_candidate_generation
+
+        async def _recording_index_candidate_generation(
+            *,
+            document_id: str,
+            generation: int,
+            chunks: list[DocumentChunk],
+        ) -> DenseIndexResult:
+            events.append("dense")
+            return await original_index(document_id=document_id, generation=generation, chunks=chunks)
+
+        dense_index.index_candidate_generation = _recording_index_candidate_generation
+        service._get_document = MethodType(_fake_get_document, service)
+        service._get_job = MethodType(_fake_get_job, service)
+        service._claim_generation = MethodType(_fake_claim_generation, service)
+        service._start_claimed_job = MethodType(_fake_start_claimed_job, service)
+        service._refresh_and_verify_owner = MethodType(_fake_refresh_and_verify_owner, service)
+        service._refresh_heartbeat_if_owned = MethodType(_fake_refresh_heartbeat_if_owned, service)
+        service._write_candidate_chunks = MethodType(_fake_write_candidate_chunks, service)
+        service._publish_generation = MethodType(_fake_publish_generation, service)
+
+        await service.process_job(document_id=document.id, job_id=job.id)
+
+        assert events == ["write", "dense", "publish"]
+        assert dense_index.delete_calls == []
+        assert document.published_generation == 2
+        assert document.dense_ready_generation == 0
+        assert document.dense_ready_fingerprint is None
+        assert job.status == "succeeded"
+
+    asyncio.run(_run())
+
+
+def test_process_job_dense_inactive_still_publishes_chunks_without_dense_readiness() -> None:
+    async def _run() -> None:
+        session = _SessionSpy()
+        dense_index = _DenseIndexSpy(result=DenseIndexResult(active=False, fingerprint=None))
+        service = DocumentBuildService(session, dense_index_service=dense_index)  # type: ignore[arg-type]
+
+        document = Document(
+            filename="guide.txt",
+            file_type="txt",
+            file_size=1600,
+            source_content=("A" * 1600).encode("utf-8"),
+            status="pending",
+            chunk_strategy="general",
+            chunk_count=1,
+            published_generation=1,
+            dense_ready_generation=1,
+            dense_ready_fingerprint="stale-fp",
+            latest_requested_generation=2,
+            active_build_generation=2,
+            active_build_job_id="job-1",
+        )
+        document.id = "doc-1"
+
+        job = DocumentJob(
+            document_id=document.id,
+            build_generation=2,
+            requested_chunk_strategy="paper",
+            status="queued",
+            stage="queued",
+            progress=0,
+            message="queued for rebuild",
+        )
+        job.id = "job-1"
+
+        async def _fake_get_document(self: DocumentBuildService, document_id: str) -> Document:
+            return document
+
+        async def _fake_get_job(self: DocumentBuildService, job_id: str) -> DocumentJob:
+            return job
+
+        async def _fake_claim_generation(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
+            return True
+
+        async def _fake_start_claimed_job(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+        ) -> bool:
+            document.status = "processing"
+            job.status = "running"
+            return True
+
+        async def _fake_refresh_and_verify_owner(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
+            return True
+
+        async def _fake_refresh_heartbeat_if_owned(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+        ) -> bool:
+            return True
+
+        async def _fake_write_candidate_chunks(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+            generation: int,
+            chunks: list[ChunkRecord],
+        ) -> bool:
+            return True
+
+        async def _fake_publish_generation(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+            generation: int,
+            chunks: list[ChunkRecord],
+        ) -> None:
+            assert self._resolve_dense_readiness(generation=2) == (0, None)
+            document.published_generation = generation
+            document.status = "ready"
+            document.active_build_generation = None
+            document.active_build_job_id = None
+            job.status = "succeeded"
+            job.stage = "completed"
+            job.progress = 100
+            job.message = "document build completed"
+
+        service._get_document = MethodType(_fake_get_document, service)
+        service._get_job = MethodType(_fake_get_job, service)
+        service._claim_generation = MethodType(_fake_claim_generation, service)
+        service._start_claimed_job = MethodType(_fake_start_claimed_job, service)
+        service._refresh_and_verify_owner = MethodType(_fake_refresh_and_verify_owner, service)
+        service._refresh_heartbeat_if_owned = MethodType(_fake_refresh_heartbeat_if_owned, service)
+        service._write_candidate_chunks = MethodType(_fake_write_candidate_chunks, service)
+        service._publish_generation = MethodType(_fake_publish_generation, service)
+
+        await service.process_job(document_id=document.id, job_id=job.id)
+
+        assert len(dense_index.index_calls) == 1
+        assert document.published_generation == 2
+        assert document.dense_ready_generation == 1
+        assert document.dense_ready_fingerprint == "stale-fp"
+        assert job.status == "succeeded"
+
+    asyncio.run(_run())
+
+
+def test_process_job_dense_provider_missing_does_not_publish_as_lexical_only_ready_generation() -> None:
+    async def _run() -> None:
+        session = _DeleteOnlySessionSpy()
+        dense_index = _DenseIndexSpy(
+            error=AppError(
+                status_code=503,
+                code="DENSE_INDEX_PROVIDER_UNAVAILABLE",
+                message="dense embedding provider is unavailable",
+            )
+        )
+        service = DocumentBuildService(session, dense_index_service=dense_index)  # type: ignore[arg-type]
+
+        document = Document(
+            filename="guide.txt",
+            file_type="txt",
+            file_size=1600,
+            source_content=("A" * 1600).encode("utf-8"),
+            status="processing",
+            chunk_strategy="general",
+            chunk_count=1,
+            published_generation=1,
+            dense_ready_generation=1,
+            dense_ready_fingerprint="fp-prev",
+            latest_requested_generation=2,
+            active_build_generation=2,
+            active_build_job_id="job-1",
+        )
+        document.id = "doc-1"
+
+        job = DocumentJob(
+            document_id=document.id,
+            build_generation=2,
+            requested_chunk_strategy="paper",
+            status="running",
+            stage="chunking",
+            progress=90,
+            message="writing candidate document chunks",
+        )
+        job.id = "job-1"
+
+        async def _fake_get_document(self: DocumentBuildService, document_id: str) -> Document:
+            return document
+
+        async def _fake_get_job(self: DocumentBuildService, job_id: str) -> DocumentJob:
+            return job
+
+        async def _fake_claim_generation(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
+            return True
+
+        async def _fake_start_claimed_job(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+        ) -> bool:
+            return True
+
+        async def _fake_refresh_and_verify_owner(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
+            return True
+
+        async def _fake_refresh_heartbeat_if_owned(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+        ) -> bool:
+            return True
+
+        async def _fake_write_candidate_chunks(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+            generation: int,
+            chunks: list[ChunkRecord],
+        ) -> bool:
+            return True
+
+        async def _unexpected_publish_generation(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+            generation: int,
+            chunks: list[ChunkRecord],
+        ) -> None:
+            raise AssertionError("dense-active provider-missing build must not publish")
+
+        service._get_document = MethodType(_fake_get_document, service)
+        service._get_job = MethodType(_fake_get_job, service)
+        service._claim_generation = MethodType(_fake_claim_generation, service)
+        service._start_claimed_job = MethodType(_fake_start_claimed_job, service)
+        service._refresh_and_verify_owner = MethodType(_fake_refresh_and_verify_owner, service)
+        service._refresh_heartbeat_if_owned = MethodType(_fake_refresh_heartbeat_if_owned, service)
+        service._write_candidate_chunks = MethodType(_fake_write_candidate_chunks, service)
+        service._publish_generation = MethodType(_unexpected_publish_generation, service)
+
+        with pytest.raises(AppError) as exc_info:
+            await service.process_job(document_id=document.id, job_id=job.id)
+
+        assert exc_info.value.code == "DENSE_INDEX_PROVIDER_UNAVAILABLE"
+        assert session.deleted_generations == [(document.id, 2)]
+        assert dense_index.delete_calls == [(document.id, 2)]
+        assert document.published_generation == 1
+        assert document.dense_ready_generation == 1
+        assert document.dense_ready_fingerprint == "fp-prev"
+        assert job.status == "failed"
+        assert job.stage == "failed"
+        assert "DENSE_INDEX_PROVIDER_UNAVAILABLE" in job.message
+
+    asyncio.run(_run())
+
+
+def test_process_job_does_not_persist_dense_readiness_before_publish() -> None:
+    async def _run() -> None:
+        db_fd, db_path = tempfile.mkstemp(prefix="build-dense-autoflush-", suffix=".db")
+        os.close(db_fd)
+        engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+        session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        class _DenseReadyService:
+            async def index_candidate_generation(
+                self,
+                *,
+                document_id: str,
+                generation: int,
+                chunks: list[DocumentChunk],
+            ) -> DenseIndexResult:
+                return DenseIndexResult(active=True, fingerprint="fp-123")
+
+            async def delete_candidate_generation(self, *, document_id: str, generation: int | None) -> None:
+                return None
+
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+
+            async with session_factory() as session:
+                document = Document(
+                    filename="autoflush.txt",
+                    file_type="txt",
+                    file_size=5,
+                    source_content=b"hello",
+                    status="pending",
+                    chunk_strategy="general",
+                    published_generation=0,
+                    dense_ready_generation=0,
+                    dense_ready_fingerprint=None,
+                    latest_requested_generation=1,
+                )
+                job = DocumentJob(
+                    document_id=document.id,
+                    build_generation=1,
+                    requested_chunk_strategy="paper",
+                    status="queued",
+                    stage="uploaded",
+                    progress=0,
+                    message="queued",
+                )
+                session.add(document)
+                await session.flush()
+                job.document_id = document.id
+                session.add(job)
+                await session.commit()
+
+            async with session_factory() as session:
+                service = DocumentBuildService(
+                    session,
+                    parser=lambda filename, content: ParsedDocument(source_file=filename, file_type="txt", text=content.decode("utf-8")),
+                    chunker=lambda parsed: [ChunkRecord(chunk_index=0, content=parsed.text, metadata={"strategy": "paper"})],
+                    dense_index_service=_DenseReadyService(),  # type: ignore[arg-type]
+                )
+                original_publish_generation = service._publish_generation
+
+                async def _inspect_before_publish(
+                    self: DocumentBuildService,
+                    *,
+                    document: Document,
+                    job: DocumentJob,
+                    generation: int,
+                    chunks: list[ChunkRecord],
+                ) -> None:
+                    async with session_factory() as inspection_session:
+                        persisted = await inspection_session.get(Document, document.id)
+                        assert persisted is not None
+                        assert persisted.dense_ready_generation == 0
+                        assert persisted.dense_ready_fingerprint is None
+                    await original_publish_generation(document=document, job=job, generation=generation, chunks=chunks)
+
+                service._publish_generation = MethodType(_inspect_before_publish, service)
+
+                job_row = await session.get(DocumentJob, job.id)
+                assert job_row is not None
+                await service.process_job(document_id=document.id, job_id=job.id)
+
+            async with session_factory() as session:
+                persisted = await session.get(Document, document.id)
+                assert persisted is not None
+                assert persisted.published_generation == 1
+                assert persisted.dense_ready_generation == 1
+                assert persisted.dense_ready_fingerprint == "fp-123"
+        finally:
+            await engine.dispose()
+            os.remove(db_path)
 
     asyncio.run(_run())
 
@@ -1040,6 +1558,289 @@ def test_process_job_cleans_up_claimed_owner_when_canceled_mid_flight() -> None:
         assert job.status == "canceled"
         assert job.stage == "failed"
         assert job.message == "job canceled by user"
+
+    asyncio.run(_run())
+
+
+def test_process_job_canceled_during_dense_indexing_deletes_candidate_vectors() -> None:
+    async def _run() -> None:
+        document = Document(
+            filename="cancel-dense.txt",
+            file_type="txt",
+            file_size=1600,
+            source_content=("A" * 1600).encode("utf-8"),
+            status="processing",
+            chunk_strategy="general",
+            chunk_count=3,
+            published_generation=1,
+            latest_requested_generation=2,
+            active_build_generation=2,
+            active_build_job_id="job-cancel-dense",
+        )
+        document.id = "doc-cancel-dense"
+
+        job = DocumentJob(
+            document_id=document.id,
+            build_generation=2,
+            requested_chunk_strategy="paper",
+            status="running",
+            stage="chunking",
+            progress=90,
+            message="writing candidate document chunks",
+        )
+        job.id = "job-cancel-dense"
+
+        session = _CancelCleanupSessionSpy(document=document, job=job)
+        dense_index = _DenseIndexSpy(error=asyncio.CancelledError())
+        service = DocumentBuildService(session, dense_index_service=dense_index)  # type: ignore[arg-type]
+
+        async def _fake_get_document(self: DocumentBuildService, document_id: str) -> Document:
+            return document
+
+        async def _fake_get_job(self: DocumentBuildService, job_id: str) -> DocumentJob:
+            return job
+
+        async def _fake_claim_generation(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
+            return True
+
+        async def _fake_start_claimed_job(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+        ) -> bool:
+            return True
+
+        async def _fake_refresh_and_verify_owner(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
+            return document.active_build_generation == job.build_generation and document.active_build_job_id == job.id
+
+        async def _fake_refresh_heartbeat_if_owned(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+        ) -> bool:
+            return True
+
+        async def _fake_write_candidate_chunks(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+            generation: int,
+            chunks: list[ChunkRecord],
+        ) -> bool:
+            job.status = "canceled"
+            job.stage = "failed"
+            job.message = "job canceled by user"
+            return True
+
+        service._get_document = MethodType(_fake_get_document, service)
+        service._get_job = MethodType(_fake_get_job, service)
+        service._claim_generation = MethodType(_fake_claim_generation, service)
+        service._start_claimed_job = MethodType(_fake_start_claimed_job, service)
+        service._refresh_and_verify_owner = MethodType(_fake_refresh_and_verify_owner, service)
+        service._refresh_heartbeat_if_owned = MethodType(_fake_refresh_heartbeat_if_owned, service)
+        service._write_candidate_chunks = MethodType(_fake_write_candidate_chunks, service)
+
+        with pytest.raises(asyncio.CancelledError):
+            await service.process_job(document_id=document.id, job_id=job.id)
+
+        assert session.deleted_generations == [(document.id, 2)]
+        assert dense_index.delete_calls == [(document.id, 2)]
+        assert document.published_generation == 1
+        assert document.active_build_generation is None
+        assert document.active_build_job_id is None
+        assert job.status == "canceled"
+
+    asyncio.run(_run())
+
+
+def test_process_job_dense_index_failure_deletes_candidate_vectors_for_generation() -> None:
+    async def _run() -> None:
+        document = Document(
+            filename="dense-fail.txt",
+            file_type="txt",
+            file_size=1600,
+            source_content=("A" * 1600).encode("utf-8"),
+            status="processing",
+            chunk_strategy="general",
+            chunk_count=3,
+            published_generation=1,
+            latest_requested_generation=2,
+            active_build_generation=2,
+            active_build_job_id="job-dense-fail",
+        )
+        document.id = "doc-dense-fail"
+
+        job = DocumentJob(
+            document_id=document.id,
+            build_generation=2,
+            requested_chunk_strategy="paper",
+            status="running",
+            stage="chunking",
+            progress=90,
+            message="writing candidate document chunks",
+        )
+        job.id = "job-dense-fail"
+
+        session = _CancelCleanupSessionSpy(document=document, job=job)
+        dense_index = _DenseIndexSpy(error=RuntimeError("milvus unavailable"))
+        service = DocumentBuildService(session, dense_index_service=dense_index)  # type: ignore[arg-type]
+
+        async def _fake_get_document(self: DocumentBuildService, document_id: str) -> Document:
+            return document
+
+        async def _fake_get_job(self: DocumentBuildService, job_id: str) -> DocumentJob:
+            return job
+
+        async def _fake_claim_generation(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
+            return True
+
+        async def _fake_start_claimed_job(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+        ) -> bool:
+            return True
+
+        async def _fake_refresh_and_verify_owner(self: DocumentBuildService, *, document: Document, job: DocumentJob) -> bool:
+            return document.active_build_generation == job.build_generation and document.active_build_job_id == job.id
+
+        async def _fake_refresh_heartbeat_if_owned(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+        ) -> bool:
+            return True
+
+        async def _fake_write_candidate_chunks(
+            self: DocumentBuildService,
+            *,
+            document: Document,
+            job: DocumentJob,
+            generation: int,
+            chunks: list[ChunkRecord],
+        ) -> bool:
+            return True
+
+        service._get_document = MethodType(_fake_get_document, service)
+        service._get_job = MethodType(_fake_get_job, service)
+        service._claim_generation = MethodType(_fake_claim_generation, service)
+        service._start_claimed_job = MethodType(_fake_start_claimed_job, service)
+        service._refresh_and_verify_owner = MethodType(_fake_refresh_and_verify_owner, service)
+        service._refresh_heartbeat_if_owned = MethodType(_fake_refresh_heartbeat_if_owned, service)
+        service._write_candidate_chunks = MethodType(_fake_write_candidate_chunks, service)
+
+        with pytest.raises(RuntimeError, match="milvus unavailable"):
+            await service.process_job(document_id=document.id, job_id=job.id)
+
+        assert session.deleted_generations == [(document.id, 2)]
+        assert dense_index.delete_calls == [(document.id, 2)]
+        assert document.status == "pending"
+        assert document.published_generation == 1
+        assert document.active_build_generation is None
+        assert document.active_build_job_id is None
+        assert job.status == "failed"
+        assert job.stage == "failed"
+        assert job.message == "milvus unavailable"
+
+    asyncio.run(_run())
+
+
+def test_fail_claimed_job_terminalizes_even_when_dense_cleanup_fails() -> None:
+    async def _run() -> None:
+        document = Document(
+            filename="dense-fail-cleanup.txt",
+            file_type="txt",
+            file_size=1600,
+            source_content=("A" * 1600).encode("utf-8"),
+            status="processing",
+            chunk_strategy="general",
+            chunk_count=3,
+            published_generation=1,
+            latest_requested_generation=2,
+            active_build_generation=2,
+            active_build_job_id="job-dense-fail-cleanup",
+        )
+        document.id = "doc-dense-fail-cleanup"
+
+        job = DocumentJob(
+            document_id=document.id,
+            build_generation=2,
+            requested_chunk_strategy="paper",
+            status="running",
+            stage="chunking",
+            progress=90,
+            message="writing candidate document chunks",
+        )
+        job.id = "job-dense-fail-cleanup"
+
+        session = _CancelCleanupSessionSpy(document=document, job=job)
+        dense_index = _DenseIndexSpy(delete_error=RuntimeError("milvus delete unavailable"))
+        service = DocumentBuildService(session, dense_index_service=dense_index)  # type: ignore[arg-type]
+
+        await service._fail_claimed_job(document=document, job=job, message="milvus unavailable")
+
+        assert session.deleted_generations == [(document.id, 2)]
+        assert session.commit_calls == 1
+        assert dense_index.delete_calls == [(document.id, 2)]
+        assert document.status == "pending"
+        assert document.published_generation == 1
+        assert document.active_build_generation is None
+        assert document.active_build_job_id is None
+        assert job.status == "failed"
+        assert job.stage == "failed"
+        assert job.message.startswith("milvus unavailable")
+
+    asyncio.run(_run())
+
+
+def test_terminalize_non_owner_releases_claim_even_when_dense_cleanup_fails() -> None:
+    async def _run() -> None:
+        document = Document(
+            filename="superseded-cleanup.txt",
+            file_type="txt",
+            file_size=1600,
+            source_content=("A" * 1600).encode("utf-8"),
+            status="processing",
+            chunk_strategy="general",
+            chunk_count=3,
+            published_generation=1,
+            latest_requested_generation=3,
+            active_build_generation=2,
+            active_build_job_id="job-superseded-cleanup",
+        )
+        document.id = "doc-superseded-cleanup"
+
+        job = DocumentJob(
+            document_id=document.id,
+            build_generation=2,
+            requested_chunk_strategy="paper",
+            status="running",
+            stage="chunking",
+            progress=90,
+            message="writing candidate document chunks",
+        )
+        job.id = "job-superseded-cleanup"
+
+        session = _CancelCleanupSessionSpy(document=document, job=job)
+        dense_index = _DenseIndexSpy(delete_error=RuntimeError("milvus delete unavailable"))
+        service = DocumentBuildService(session, dense_index_service=dense_index)  # type: ignore[arg-type]
+
+        await service._terminalize_non_owner(document=document, job=job)
+
+        assert session.deleted_generations == [(document.id, 2)]
+        assert session.commit_calls == 1
+        assert dense_index.delete_calls == [(document.id, 2)]
+        assert document.status == "pending"
+        assert document.active_build_generation is None
+        assert document.active_build_job_id is None
+        assert job.status == "canceled"
+        assert job.stage == "failed"
+        assert job.message.startswith("job superseded by newer build request")
 
     asyncio.run(_run())
 
