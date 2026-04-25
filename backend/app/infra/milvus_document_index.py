@@ -62,6 +62,23 @@ class MilvusDocumentIndex:
                 return
             raise
 
+    async def delete_document(self, *, collection_name: str, document_id: str) -> None:
+        exists = await asyncio.to_thread(self._client.has_collection, collection_name)
+        if not exists:
+            return
+        try:
+            await asyncio.to_thread(
+                self._client.delete,
+                collection_name,
+                None,
+                None,
+                self._delete_document_filter(document_id=document_id),
+            )
+        except Exception as exc:
+            if self._is_missing_collection_error(exc):
+                return
+            raise
+
     async def search(
         self,
         *,
@@ -96,6 +113,11 @@ class MilvusDocumentIndex:
     def _delete_filter(*, document_id: str, generation: int) -> str:
         escaped_document_id = document_id.replace("\\", "\\\\").replace('"', '\\"')
         return f'document_id == "{escaped_document_id}" and generation == {generation}'
+
+    @staticmethod
+    def _delete_document_filter(*, document_id: str) -> str:
+        escaped_document_id = document_id.replace("\\", "\\\\").replace('"', '\\"')
+        return f'document_id == "{escaped_document_id}"'
 
     @staticmethod
     def _is_missing_collection_error(exc: Exception) -> bool:

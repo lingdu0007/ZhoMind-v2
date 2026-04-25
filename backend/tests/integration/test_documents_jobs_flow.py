@@ -1279,6 +1279,7 @@ def test_documents_dense_status_merges_operator_and_dense_counts(monkeypatch) ->
             assert data["running_jobs"] == 1
             assert data["active_dispatcher_tasks"] == 2
             assert data["ready_for_migration"] is False
+            assert data["ready_for_dense_maintenance"] is False
             assert data["current_embedding_contract_fingerprint"] == current_fingerprint
             assert data["dense_mode_active"] is True
             assert data["published_live_documents"] == 4
@@ -1336,6 +1337,71 @@ def test_documents_dense_backfill_and_dense_reconcile_require_active_drain(monke
     finally:
         settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
+        asyncio.run(db_engine.dispose())
+        os.remove(db_path)
+
+
+def test_documents_dense_backfill_returns_dense_mode_inactive_when_drain_ready(monkeypatch) -> None:
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-dense-backfill-mode-inactive-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_init_db())
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    fake_redis = _InMemoryRedis()
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+
+    from app.api.v1 import documents as documents_api
+    from app.common.config import get_settings
+    from app.extensions.registry import get_extension_registry
+    from app.infra.milvus import get_milvus_provider
+
+    monkeypatch.setenv("EMBEDDING_API_KEY", "")
+    monkeypatch.setenv("EMBEDDING_BASE_URL", "")
+    monkeypatch.setenv("EMBEDDING_MODEL", "")
+    monkeypatch.setenv("DENSE_EMBEDDING_DIM", "0")
+    monkeypatch.setenv("MILVUS_URI", "")
+
+    get_settings.cache_clear()
+    get_extension_registry.cache_clear()
+    get_milvus_provider.cache_clear()
+
+    settings = get_settings()
+    original_code = settings.admin_invite_code
+    settings.admin_invite_code = "test-admin-code"
+    monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
+
+    try:
+        with TestClient(app) as client:
+            token = asyncio.run(_create_admin_token(client))
+            headers = _admin_headers(token)
+
+            drain_response = client.post("/api/v1/documents/ops/migration-drain", headers=headers)
+            assert drain_response.status_code == 200
+
+            backfill_response = client.post("/api/v1/documents/ops/dense-backfill", headers=headers, json={})
+            assert backfill_response.status_code == 409
+            assert backfill_response.json()["code"] == "DOC_DENSE_MODE_INACTIVE"
+
+            reconcile_response = client.post("/api/v1/documents/ops/dense-reconcile", headers=headers, json={})
+            assert reconcile_response.status_code == 409
+            assert reconcile_response.json()["code"] == "DOC_DENSE_MODE_INACTIVE"
+    finally:
+        settings.admin_invite_code = original_code
+        app.dependency_overrides.clear()
+        get_milvus_provider.cache_clear()
+        get_extension_registry.cache_clear()
+        get_settings.cache_clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
 
@@ -1679,10 +1745,10 @@ def test_documents_dense_reconcile_clears_tombstoned_and_stale_current_fingerpri
         os.remove(db_path)
 
 
-def test_documents_dense_backfill_and_dense_reconcile_return_migration_not_ready_when_drain_not_quiescent(
+def test_documents_dense_status_reports_queued_only_drain_as_not_ready_for_dense_maintenance(
     monkeypatch,
 ) -> None:
-    db_fd, db_path = tempfile.mkstemp(prefix="documents-dense-not-ready-", suffix=".db")
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-dense-queued-only-", suffix=".db")
     os.close(db_fd)
     db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
@@ -1738,7 +1804,7 @@ def test_documents_dense_backfill_and_dense_reconcile_return_migration_not_ready
     settings = get_settings()
     original_code = settings.admin_invite_code
     settings.admin_invite_code = "test-admin-code"
-    monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 1)
+    monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
 
     try:
         with TestClient(app) as client:
@@ -1747,6 +1813,16 @@ def test_documents_dense_backfill_and_dense_reconcile_return_migration_not_ready
 
             drain_response = client.post("/api/v1/documents/ops/migration-drain", headers=headers)
             assert drain_response.status_code == 200
+
+            status_response = client.get("/api/v1/documents/ops/dense-status", headers=headers)
+            assert status_response.status_code == 200
+            status_data = _extract_data(status_response.json())
+            assert status_data["drain_enabled"] is True
+            assert status_data["queued_jobs"] == 1
+            assert status_data["running_jobs"] == 0
+            assert status_data["active_dispatcher_tasks"] == 0
+            assert status_data["ready_for_migration"] is True
+            assert status_data["ready_for_dense_maintenance"] is False
 
             backfill_response = client.post("/api/v1/documents/ops/dense-backfill", headers=headers, json={"limit": 5})
             assert backfill_response.status_code == 409
