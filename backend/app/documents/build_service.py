@@ -353,7 +353,10 @@ class DocumentBuildService:
     async def _terminalize_non_owner(self, *, document: Document, job: DocumentJob) -> None:
         await self.session.refresh(document)
         await self.session.refresh(job)
-        await self._delete_candidate_generation_assets(document_id=document.id, generation=job.build_generation)
+        cleanup_error = await self._delete_candidate_generation_assets(
+            document_id=document.id,
+            generation=job.build_generation,
+        )
         self._release_claim_if_owned(document=document, job=job)
 
         if document.deleted_at is not None:
@@ -375,6 +378,7 @@ class DocumentBuildService:
             job.message = "job superseded by newer build request"
             document.status = self._derive_non_publish_status(document)
 
+        job.message = self._append_cleanup_warning(job.message, cleanup_error)
         await self.session.commit()
 
     async def _cancel_claimed_job(self, *, document: Document, job: DocumentJob) -> None:
@@ -387,7 +391,10 @@ class DocumentBuildService:
             await self._terminalize_non_owner(document=document, job=job)
             return
 
-        await self._delete_candidate_generation_assets(document_id=document.id, generation=job.build_generation)
+        cleanup_error = await self._delete_candidate_generation_assets(
+            document_id=document.id,
+            generation=job.build_generation,
+        )
         self._release_claim_if_owned(document=document, job=job)
 
         if document.deleted_at is not None:
@@ -402,6 +409,7 @@ class DocumentBuildService:
             job.progress = min(job.progress, 99)
             job.message = message
 
+        job.message = self._append_cleanup_warning(job.message, cleanup_error)
         await self.session.commit()
 
     async def _delete_candidate_generation(self, *, document_id: str, generation: int | None) -> None:
@@ -414,9 +422,13 @@ class DocumentBuildService:
             )
         )
 
-    async def _delete_candidate_generation_assets(self, *, document_id: str, generation: int | None) -> None:
+    async def _delete_candidate_generation_assets(self, *, document_id: str, generation: int | None) -> Exception | None:
         await self._delete_candidate_generation(document_id=document_id, generation=generation)
-        await self._dense_index_service.delete_candidate_generation(document_id=document_id, generation=generation)
+        try:
+            await self._dense_index_service.delete_candidate_generation(document_id=document_id, generation=generation)
+        except Exception as exc:
+            return exc
+        return None
 
     @staticmethod
     def _build_dense_candidate_chunks(
@@ -506,3 +518,12 @@ class DocumentBuildService:
         if exc.code and exc.message:
             return f"{exc.code}: {exc.message}"
         return exc.message or exc.code or "document build failed"
+
+    @staticmethod
+    def _append_cleanup_warning(message: str, cleanup_error: Exception | None) -> str:
+        if cleanup_error is None:
+            return message
+        warning = f"dense cleanup warning: {cleanup_error}"
+        if not message:
+            return warning
+        return f"{message} ({warning})"
