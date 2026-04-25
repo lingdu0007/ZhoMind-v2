@@ -114,7 +114,7 @@ def test_milvus_collection_name_is_deterministic_for_fingerprint() -> None:
 
     assert collection_name == dense_contract.build_milvus_collection_name(fingerprint)
     assert collection_name.startswith("document_chunks_")
-    assert collection_name == "document_chunks_0123456789abcdef"
+    assert collection_name == f"document_chunks_{fingerprint}"
 
 
 def test_dense_schema_fields_exist_on_document_models() -> None:
@@ -196,3 +196,63 @@ def test_dense_retrieval_migration_backfills_legacy_rows() -> None:
         ("chunk-1", hashlib.sha256("Alpha chunk".encode("utf-8")).hexdigest()),
         ("chunk-2", hashlib.sha256("Beta chunk".encode("utf-8")).hexdigest()),
     ]
+
+
+def test_dense_retrieval_migration_handles_empty_document_chunks() -> None:
+    migration = _load_dense_retrieval_migration_module()
+
+    engine = sa.create_engine("sqlite:///:memory:")
+    metadata = sa.MetaData()
+    documents = sa.Table(
+        "documents",
+        metadata,
+        sa.Column("id", sa.String(length=64), primary_key=True),
+        sa.Column("dense_ready_generation", sa.Integer(), nullable=True),
+        sa.Column("dense_ready_fingerprint", sa.String(length=128), nullable=True),
+    )
+    document_chunks = sa.Table(
+        "document_chunks",
+        metadata,
+        sa.Column("id", sa.String(length=64), primary_key=True),
+        sa.Column("document_id", sa.String(length=64), nullable=False),
+        sa.Column("content", sa.Text(), nullable=False),
+        sa.Column("content_sha256", sa.String(length=64), nullable=True),
+    )
+    metadata.create_all(engine)
+
+    with engine.begin() as conn:
+        conn.execute(
+            documents.insert(),
+            [
+                {
+                    "id": "doc-1",
+                    "dense_ready_generation": 9,
+                    "dense_ready_fingerprint": "stale-fingerprint",
+                }
+            ],
+        )
+
+        migration._backfill_dense_retrieval_fields(conn)
+
+        documents_row = conn.execute(
+            sa.select(
+                documents.c.dense_ready_generation,
+                documents.c.dense_ready_fingerprint,
+            )
+        ).one()
+        chunk_count = conn.execute(sa.select(sa.func.count()).select_from(document_chunks)).scalar_one()
+
+    assert documents_row.dense_ready_generation == 0
+    assert documents_row.dense_ready_fingerprint is None
+    assert chunk_count == 0
+
+
+def test_document_chunk_defaults_content_sha256_from_content() -> None:
+    chunk = DocumentChunk(
+        document_id="doc-1",
+        generation=1,
+        chunk_index=0,
+        content="abc",
+    )
+
+    assert chunk.content_sha256 == hashlib.sha256("abc".encode("utf-8")).hexdigest()
