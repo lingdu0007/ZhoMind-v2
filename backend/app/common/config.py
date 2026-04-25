@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     anthropic_model: str = Field("claude-sonnet-4-6", alias="ANTHROPIC_MODEL")
 
     @staticmethod
+    def _normalize_optional_text(raw_value: str | None) -> str:
+        return (raw_value or "").strip()
+
+    @staticmethod
     def _normalize_document_extensions(raw_value: str) -> list[str]:
         parts = [item.strip().lower().lstrip(".") for item in raw_value.split(",")]
         return [item for item in parts if item]
@@ -83,6 +87,22 @@ class Settings(BaseSettings):
     @property
     def document_allowed_extensions(self) -> list[str]:
         return self._normalize_document_extensions(self.document_allowed_extensions_raw)
+
+    @property
+    def embedding_api_key_configured(self) -> bool:
+        return bool(self._normalize_optional_text(self.embedding_api_key))
+
+    @property
+    def embedding_base_url_normalized(self) -> str:
+        return self._normalize_optional_text(self.embedding_base_url).rstrip("/")
+
+    @property
+    def embedding_model_normalized(self) -> str:
+        return self._normalize_optional_text(self.embedding_model)
+
+    @property
+    def milvus_uri_normalized(self) -> str:
+        return self._normalize_optional_text(self.milvus_uri)
 
     @property
     def rag_llm_fallback_providers(self) -> list[str]:
