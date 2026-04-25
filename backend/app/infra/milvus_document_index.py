@@ -46,13 +46,42 @@ class MilvusDocumentIndex:
         await asyncio.to_thread(self._client.upsert, collection_name, payload)
 
     async def delete_generation(self, *, collection_name: str, document_id: str, generation: int) -> None:
-        await asyncio.to_thread(
-            self._client.delete,
+        exists = await asyncio.to_thread(self._client.has_collection, collection_name)
+        if not exists:
+            return
+        try:
+            await asyncio.to_thread(
+                self._client.delete,
+                collection_name,
+                None,
+                None,
+                self._delete_filter(document_id=document_id, generation=generation),
+            )
+        except Exception as exc:
+            if self._is_missing_collection_error(exc):
+                return
+            raise
+
+    async def search(
+        self,
+        *,
+        collection_name: str,
+        vector: list[float],
+        limit: int,
+        filter: str = "",
+        output_fields: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        results = await asyncio.to_thread(
+            self._client.search,
             collection_name,
-            None,
-            None,
-            self._delete_filter(document_id=document_id, generation=generation),
+            [vector],
+            filter,
+            limit,
+            output_fields,
         )
+        if not results:
+            return []
+        return list(results[0])
 
     @staticmethod
     def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -67,6 +96,20 @@ class MilvusDocumentIndex:
     def _delete_filter(*, document_id: str, generation: int) -> str:
         escaped_document_id = document_id.replace("\\", "\\\\").replace('"', '\\"')
         return f'document_id == "{escaped_document_id}" and generation == {generation}'
+
+    @staticmethod
+    def _is_missing_collection_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return any(
+            needle in message
+            for needle in (
+                "collection not found",
+                "can't find collection",
+                "cannot find collection",
+                "collection doesn't exist",
+                "collection does not exist",
+            )
+        )
 
     @classmethod
     def _extract_vector_dimension(cls, description: Any) -> int | None:

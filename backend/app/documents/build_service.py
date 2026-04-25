@@ -36,6 +36,7 @@ class DocumentBuildService:
         self._parser = parser
         self._chunker = chunker
         self._dense_index_service = dense_index_service or DenseIndexService()
+        self._pending_dense_index_result: DenseIndexResult | None = None
 
     async def process_job(self, *, document_id: str, job_id: str, content: bytes | None = None) -> None:
         job = await self._get_job(job_id)
@@ -58,6 +59,7 @@ class DocumentBuildService:
             return
 
         try:
+            self._pending_dense_index_result = None
             parsed = self._parser(document.filename, self._resolve_content(document, content))
             if not await self._refresh_and_verify_owner(document=document, job=job):
                 await self._terminalize_non_owner(document=document, job=job)
@@ -102,7 +104,7 @@ class DocumentBuildService:
                 generation=generation,
                 chunks=self._build_dense_candidate_chunks(document_id=document.id, generation=generation, chunks=chunks),
             )
-            self._apply_dense_readiness(document=document, generation=generation, dense_result=dense_result)
+            self._pending_dense_index_result = dense_result
 
             if not await self._refresh_heartbeat_if_owned(document=document, job=job):
                 await self._terminalize_non_owner(document=document, job=job)
@@ -117,6 +119,8 @@ class DocumentBuildService:
         except Exception as exc:
             await self._fail_claimed_job(document=document, job=job, message=str(exc) or "document build failed")
             raise
+        finally:
+            self._pending_dense_index_result = None
 
     async def _claim_generation(self, *, document: Document, job: DocumentJob) -> bool:
         generation = self._require_build_generation(job)
@@ -313,6 +317,7 @@ class DocumentBuildService:
         generation: int,
         chunks: list[ChunkRecord],
     ) -> None:
+        dense_ready_generation, dense_ready_fingerprint = self._resolve_dense_readiness(generation=generation)
         publish_result = await self.session.execute(
             update(Document)
             .where(
@@ -324,8 +329,8 @@ class DocumentBuildService:
             )
             .values(
                 published_generation=generation,
-                dense_ready_generation=document.dense_ready_generation,
-                dense_ready_fingerprint=document.dense_ready_fingerprint,
+                dense_ready_generation=dense_ready_generation,
+                dense_ready_fingerprint=dense_ready_fingerprint,
                 chunk_strategy=job.requested_chunk_strategy or document.chunk_strategy,
                 chunk_count=len(chunks),
                 status="ready",
@@ -434,14 +439,11 @@ class DocumentBuildService:
             for chunk in chunks
         ]
 
-    @staticmethod
-    def _apply_dense_readiness(*, document: Document, generation: int, dense_result: DenseIndexResult) -> None:
-        if dense_result.active and dense_result.fingerprint:
-            document.dense_ready_generation = generation
-            document.dense_ready_fingerprint = dense_result.fingerprint
-            return
-        document.dense_ready_generation = 0
-        document.dense_ready_fingerprint = None
+    def _resolve_dense_readiness(self, *, generation: int) -> tuple[int, str | None]:
+        dense_result = self._pending_dense_index_result
+        if dense_result is not None and dense_result.active and dense_result.fingerprint:
+            return generation, dense_result.fingerprint
+        return 0, None
 
     @staticmethod
     def _release_claim_if_owned(*, document: Document, job: DocumentJob) -> None:
