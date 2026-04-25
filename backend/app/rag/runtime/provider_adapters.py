@@ -1,6 +1,6 @@
 from typing import TypedDict
 
-from app.rag.interfaces import LlmProvider, RelevanceJudge, Reranker, Retriever
+from app.rag.interfaces import LlmProvider, RelevanceJudge, Reranker, RetrieveResult, Retriever
 
 
 class ProviderExecError(TypedDict):
@@ -41,9 +41,9 @@ class RetrieverAdapter:
         self.provider = provider
         self.provider_name = provider_name
 
-    async def retrieve(self, query: str, top_k: int) -> tuple[list[dict], ProviderExecDetail]:
+    async def retrieve(self, query: str, top_k: int) -> tuple[RetrieveResult, ProviderExecDetail]:
         if self.provider is None:
-            return [], _build_detail(
+            return RetrieveResult(items=[], merged_count=0), _build_detail(
                 provider=self.provider_name,
                 fallback_used=True,
                 error=None,
@@ -51,17 +51,24 @@ class RetrieverAdapter:
 
         try:
             result = await self.provider.retrieve(query, top_k=top_k)
-            return result, _build_detail(
+            normalized_result = self._normalize_retrieve_result(result)
+            return normalized_result, _build_detail(
                 provider=self.provider_name,
-                fallback_used=False,
-                error=None,
+                fallback_used=normalized_result.fallback_used,
+                error=normalized_result.provider_error,
             )
         except Exception as exc:
-            return [], _build_detail(
+            return RetrieveResult(items=[], merged_count=0), _build_detail(
                 provider=self.provider_name,
                 fallback_used=True,
                 error=_normalize_provider_error(exc),
             )
+
+    @staticmethod
+    def _normalize_retrieve_result(result: RetrieveResult | list[dict]) -> RetrieveResult:
+        if isinstance(result, RetrieveResult):
+            return result
+        return RetrieveResult.from_items(result)
 
 
 class RerankerAdapter:
