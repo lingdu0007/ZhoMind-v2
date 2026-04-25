@@ -7,7 +7,6 @@ import json
 from app.common.config import Settings
 
 _COLLECTION_PREFIX = "document_chunks_"
-_COLLECTION_FINGERPRINT_LENGTH = 16
 
 
 @dataclass(frozen=True)
@@ -58,4 +57,4 @@ def build_milvus_collection_name(fingerprint: str) -> str:
     normalized_fingerprint = "".join(ch for ch in fingerprint.lower() if ch in "0123456789abcdef")
     if not normalized_fingerprint:
         raise ValueError("fingerprint must include at least one hexadecimal character")
-    return f"{_COLLECTION_PREFIX}{normalized_fingerprint[:_COLLECTION_FINGERPRINT_LENGTH]}"
+    return f"{_COLLECTION_PREFIX}{normalized_fingerprint}"

@@ -16,6 +16,7 @@ revision = "20260425_0006"
 down_revision = "20260424_0005"
 branch_labels = None
 depends_on = None
+_EMPTY_CONTENT_SHA256 = hashlib.sha256(b"").hexdigest()
 
 
 def _sha256_text(content: str) -> str:
@@ -49,16 +50,15 @@ def _backfill_dense_retrieval_fields(bind) -> None:
         .where(document_chunks.c.id == sa.bindparam("target_id"))
         .values(content_sha256=sa.bindparam("content_sha256"))
     )
-    bind.execute(
-        update_statement,
-        [
-            {
-                "target_id": row.id,
-                "content_sha256": _sha256_text(row.content or ""),
-            }
-            for row in chunk_rows
-        ],
-    )
+    chunk_updates = [
+        {
+            "target_id": row.id,
+            "content_sha256": _sha256_text(row.content or ""),
+        }
+        for row in chunk_rows
+    ]
+    if chunk_updates:
+        bind.execute(update_statement, chunk_updates)
 
 
 def upgrade() -> None:
@@ -72,7 +72,12 @@ def upgrade() -> None:
     )
     op.add_column(
         "document_chunks",
-        sa.Column("content_sha256", sa.String(length=64), nullable=False, server_default=sa.text("''")),
+        sa.Column(
+            "content_sha256",
+            sa.String(length=64),
+            nullable=False,
+            server_default=sa.text(f"'{_EMPTY_CONTENT_SHA256}'"),
+        ),
     )
 
     _backfill_dense_retrieval_fields(op.get_bind())
