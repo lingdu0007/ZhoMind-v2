@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 
 from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,7 @@ from sqlalchemy.orm import undefer
 
 from app.common.exceptions import AppError
 from app.documents.chunker import chunk_document
+from app.documents.dense_index_service import DenseIndexResult, DenseIndexService
 from app.documents.parsers import parse_document
 from app.documents.types import ChunkRecord, ParsedDocument
 from app.model.document import Document, DocumentChunk, DocumentJob
@@ -28,10 +30,12 @@ class DocumentBuildService:
         *,
         parser: Callable[[str, bytes], ParsedDocument] = parse_document,
         chunker: Callable[[ParsedDocument], list[ChunkRecord]] | None = None,
+        dense_index_service: DenseIndexService | None = None,
     ) -> None:
         self.session = session
         self._parser = parser
         self._chunker = chunker
+        self._dense_index_service = dense_index_service or DenseIndexService()
 
     async def process_job(self, *, document_id: str, job_id: str, content: bytes | None = None) -> None:
         job = await self._get_job(job_id)
@@ -93,6 +97,12 @@ class DocumentBuildService:
             if not await self._refresh_and_verify_owner(document=document, job=job):
                 await self._terminalize_non_owner(document=document, job=job)
                 return
+            dense_result = await self._dense_index_service.index_candidate_generation(
+                document_id=document.id,
+                generation=generation,
+                chunks=self._build_dense_candidate_chunks(document_id=document.id, generation=generation, chunks=chunks),
+            )
+            self._apply_dense_readiness(document=document, generation=generation, dense_result=dense_result)
 
             if not await self._refresh_heartbeat_if_owned(document=document, job=job):
                 await self._terminalize_non_owner(document=document, job=job)
@@ -314,6 +324,8 @@ class DocumentBuildService:
             )
             .values(
                 published_generation=generation,
+                dense_ready_generation=document.dense_ready_generation,
+                dense_ready_fingerprint=document.dense_ready_fingerprint,
                 chunk_strategy=job.requested_chunk_strategy or document.chunk_strategy,
                 chunk_count=len(chunks),
                 status="ready",
@@ -336,7 +348,7 @@ class DocumentBuildService:
     async def _terminalize_non_owner(self, *, document: Document, job: DocumentJob) -> None:
         await self.session.refresh(document)
         await self.session.refresh(job)
-        await self._delete_candidate_generation(document_id=document.id, generation=job.build_generation)
+        await self._delete_candidate_generation_assets(document_id=document.id, generation=job.build_generation)
         self._release_claim_if_owned(document=document, job=job)
 
         if document.deleted_at is not None:
@@ -370,7 +382,7 @@ class DocumentBuildService:
             await self._terminalize_non_owner(document=document, job=job)
             return
 
-        await self._delete_candidate_generation(document_id=document.id, generation=job.build_generation)
+        await self._delete_candidate_generation_assets(document_id=document.id, generation=job.build_generation)
         self._release_claim_if_owned(document=document, job=job)
 
         if document.deleted_at is not None:
@@ -396,6 +408,40 @@ class DocumentBuildService:
                 DocumentChunk.generation == generation,
             )
         )
+
+    async def _delete_candidate_generation_assets(self, *, document_id: str, generation: int | None) -> None:
+        await self._delete_candidate_generation(document_id=document_id, generation=generation)
+        await self._dense_index_service.delete_candidate_generation(document_id=document_id, generation=generation)
+
+    @staticmethod
+    def _build_dense_candidate_chunks(
+        *,
+        document_id: str,
+        generation: int,
+        chunks: list[ChunkRecord],
+    ) -> list[DocumentChunk]:
+        return [
+            DocumentChunk(
+                document_id=document_id,
+                generation=generation,
+                chunk_index=chunk.chunk_index,
+                content=chunk.content,
+                content_sha256=sha256(chunk.content.encode("utf-8")).hexdigest(),
+                keywords=[],
+                generated_questions=[],
+                chunk_metadata=chunk.metadata,
+            )
+            for chunk in chunks
+        ]
+
+    @staticmethod
+    def _apply_dense_readiness(*, document: Document, generation: int, dense_result: DenseIndexResult) -> None:
+        if dense_result.active and dense_result.fingerprint:
+            document.dense_ready_generation = generation
+            document.dense_ready_fingerprint = dense_result.fingerprint
+            return
+        document.dense_ready_generation = 0
+        document.dense_ready_fingerprint = None
 
     @staticmethod
     def _release_claim_if_owned(*, document: Document, job: DocumentJob) -> None:
