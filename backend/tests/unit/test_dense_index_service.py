@@ -8,7 +8,6 @@ from app.common.exceptions import AppError
 from app.common.config import Settings, get_settings
 from app.documents.dense_index_service import DenseIndexResult, DenseIndexService
 from app.extensions.langchain_embedding_providers import OpenAIEmbeddingProvider
-from app.extensions.registry import ExtensionRegistry
 from app.extensions.registry import get_extension_registry
 from app.infra.milvus_document_index import MilvusDocumentIndex
 from app.model.document import DocumentChunk
@@ -30,6 +29,7 @@ class _FakeDocumentIndex:
         self.ensure_calls: list[tuple[str, int]] = []
         self.upsert_calls: list[tuple[str, list[dict[str, object]]]] = []
         self.delete_calls: list[tuple[str, str, int]] = []
+        self.delete_document_calls: list[tuple[str, str]] = []
         self.search_calls: list[tuple[str, list[float], int, str, list[str] | None]] = []
 
     async def ensure_collection(self, *, collection_name: str, dimension: int) -> None:
@@ -40,6 +40,9 @@ class _FakeDocumentIndex:
 
     async def delete_generation(self, *, collection_name: str, document_id: str, generation: int) -> None:
         self.delete_calls.append((collection_name, document_id, generation))
+
+    async def delete_document(self, *, collection_name: str, document_id: str) -> None:
+        self.delete_document_calls.append((collection_name, document_id))
 
     async def search(
         self,
@@ -201,10 +204,169 @@ def test_dense_index_service_deletes_candidate_vectors_for_generation() -> None:
     asyncio.run(_run())
 
 
+def test_dense_index_service_deletes_document_vectors_for_current_fingerprint() -> None:
+    async def _run() -> None:
+        settings = _dense_settings()
+        document_index = _FakeDocumentIndex()
+        service = DenseIndexService(
+            settings=settings,
+            embedding_provider=_FakeEmbeddingProvider(vectors=[]),
+            document_index=document_index,
+        )
+        fingerprint = build_embedding_contract_fingerprint(settings)
+
+        await service.delete_document_current_fingerprint(document_id="doc-1")
+
+        assert document_index.delete_document_calls == [
+            (build_milvus_collection_name(fingerprint), "doc-1"),
+        ]
+
+    asyncio.run(_run())
+
+
+def test_dense_index_service_default_embedding_provider_resolution_uses_service_settings(monkeypatch) -> None:
+    async def _run() -> None:
+        settings = _dense_settings(
+            EMBEDDING_API_KEY="settings-key",
+            EMBEDDING_BASE_URL="https://settings.example.com/v1",
+            EMBEDDING_MODEL="settings-model",
+            DENSE_EMBEDDING_DIM=5,
+            MILVUS_URI="http://milvus.example.com:19530",
+        )
+        constructed_provider: dict[str, object] = {}
+
+        class _ResolvedEmbeddingProvider:
+            async def embed(self, texts: list[str]) -> list[list[float]]:
+                return [[0.1, 0.2, 0.3, 0.4, 0.5] for _ in texts]
+
+        def _provider_factory(*, api_key: str, base_url: str, model: str):
+            constructed_provider.update(
+                {
+                    "api_key": api_key,
+                    "base_url": base_url,
+                    "model": model,
+                }
+            )
+            return _ResolvedEmbeddingProvider()
+
+        monkeypatch.setattr("app.documents.dense_index_service.OpenAIEmbeddingProvider", _provider_factory, raising=False)
+        service = DenseIndexService(settings=settings, document_index=_FakeDocumentIndex())
+        chunks = [
+            DocumentChunk(document_id="doc-1", generation=2, chunk_index=0, content="alpha", chunk_metadata={}),
+        ]
+        result = await service.index_candidate_generation(
+            document_id="doc-1",
+            generation=2,
+            chunks=chunks,
+        )
+
+        fingerprint = build_embedding_contract_fingerprint(settings)
+        assert result == DenseIndexResult(active=True, fingerprint=fingerprint)
+        assert constructed_provider == {
+            "api_key": "settings-key",
+            "base_url": "https://settings.example.com/v1",
+            "model": "settings-model",
+        }
+
+    asyncio.run(_run())
+
+
+def test_dense_index_service_prefers_registry_embedding_override(monkeypatch) -> None:
+    async def _run() -> None:
+        settings = _dense_settings()
+        registry_provider = _FakeEmbeddingProvider(vectors=[[0.9, 0.8, 0.7]])
+        document_index = _FakeDocumentIndex()
+        get_extension_registry.cache_clear()
+        registry = get_extension_registry()
+        previous_provider = registry.get_embedding("embedding-default")
+        registry.register_embedding("embedding-default", registry_provider)
+        monkeypatch.setattr(
+            "app.documents.dense_index_service.OpenAIEmbeddingProvider",
+            lambda **kwargs: (_ for _ in ()).throw(AssertionError("settings fallback should not be used")),
+        )
+        service = DenseIndexService(settings=settings, document_index=document_index)
+        chunks = [
+            DocumentChunk(document_id="doc-1", generation=2, chunk_index=0, content="alpha", chunk_metadata={}),
+        ]
+
+        try:
+            result = await service.index_candidate_generation(
+                document_id="doc-1",
+                generation=2,
+                chunks=chunks,
+            )
+        finally:
+            if previous_provider is not None:
+                registry.register_embedding("embedding-default", previous_provider)
+            else:
+                registry.embedding_providers.pop("embedding-default", None)
+            get_extension_registry.cache_clear()
+
+        fingerprint = build_embedding_contract_fingerprint(settings)
+        assert result == DenseIndexResult(active=True, fingerprint=fingerprint)
+        assert registry_provider.calls == [["alpha"]]
+        assert document_index.ensure_calls == [(build_milvus_collection_name(fingerprint), 3)]
+
+    asyncio.run(_run())
+
+
+def test_dense_index_service_default_document_index_resolution_uses_service_settings(monkeypatch) -> None:
+    async def _run() -> None:
+        settings = _dense_settings(
+            MILVUS_URI="http://settings-milvus.example.com:19530",
+            MILVUS_TOKEN="settings-token",
+        )
+        constructed_client: dict[str, object] = {}
+        resolved_index: dict[str, object] = {}
+
+        class _ResolvedDocumentIndex:
+            def __init__(self, *, client) -> None:
+                resolved_index["client"] = client
+
+            async def ensure_collection(self, *, collection_name: str, dimension: int) -> None:
+                raise AssertionError("unexpected ensure_collection")
+
+            async def upsert_generation(self, *, collection_name: str, rows: list[dict[str, object]]) -> None:
+                raise AssertionError("unexpected upsert_generation")
+
+            async def delete_generation(self, *, collection_name: str, document_id: str, generation: int) -> None:
+                raise AssertionError("unexpected delete_generation")
+
+            async def delete_document(self, *, collection_name: str, document_id: str) -> None:
+                resolved_index["delete"] = (collection_name, document_id)
+
+            async def search(self, **kwargs) -> list[dict[str, object]]:
+                raise AssertionError(f"unexpected search: {kwargs}")
+
+        def _client_factory(*, uri: str, token: str | None = None):
+            constructed_client.update({"uri": uri, "token": token})
+            return object()
+
+        monkeypatch.setattr("app.documents.dense_index_service.MilvusClient", _client_factory, raising=False)
+        monkeypatch.setattr("app.documents.dense_index_service.MilvusDocumentIndex", _ResolvedDocumentIndex)
+        monkeypatch.setattr(
+            "app.infra.milvus_document_index.get_milvus_client",
+            lambda: (_ for _ in ()).throw(AssertionError("global milvus client should not be used")),
+        )
+
+        service = DenseIndexService(settings=settings)
+
+        await service.delete_document_current_fingerprint(document_id="doc-1")
+
+        assert constructed_client == {
+            "uri": "http://settings-milvus.example.com:19530",
+            "token": "settings-token",
+        }
+        assert resolved_index["client"] is not None
+        assert resolved_index["delete"][1] == "doc-1"
+
+    asyncio.run(_run())
+
+
 def test_dense_index_service_raises_when_dense_mode_is_active_but_provider_is_missing(monkeypatch) -> None:
     async def _run() -> None:
         settings = _dense_settings()
-        monkeypatch.setattr("app.documents.dense_index_service.get_extension_registry", lambda: ExtensionRegistry())
+        monkeypatch.setattr("app.documents.dense_index_service.OpenAIEmbeddingProvider", lambda **kwargs: None)
         service = DenseIndexService(
             settings=settings,
             embedding_provider=None,
@@ -246,6 +408,19 @@ def test_milvus_document_index_delete_generation_swallows_missing_collection_rac
 
         assert client.has_collection_calls == ["document_chunks_fp"]
         assert client.delete_calls == [("document_chunks_fp", None, None, 'document_id == "doc-1" and generation == 2')]
+
+    asyncio.run(_run())
+
+
+def test_milvus_document_index_delete_document_uses_document_only_filter() -> None:
+    async def _run() -> None:
+        client = _FakeMilvusClient()
+        index = MilvusDocumentIndex(client=client)
+
+        await index.delete_document(collection_name="document_chunks_fp", document_id='doc-"1"')
+
+        assert client.has_collection_calls == ["document_chunks_fp"]
+        assert client.delete_calls == [("document_chunks_fp", None, None, 'document_id == "doc-\\"1\\""')]
 
     asyncio.run(_run())
 
