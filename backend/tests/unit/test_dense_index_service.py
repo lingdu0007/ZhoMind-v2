@@ -271,6 +271,45 @@ def test_dense_index_service_default_embedding_provider_resolution_uses_service_
     asyncio.run(_run())
 
 
+def test_dense_index_service_prefers_registry_embedding_override(monkeypatch) -> None:
+    async def _run() -> None:
+        settings = _dense_settings()
+        registry_provider = _FakeEmbeddingProvider(vectors=[[0.9, 0.8, 0.7]])
+        document_index = _FakeDocumentIndex()
+        get_extension_registry.cache_clear()
+        registry = get_extension_registry()
+        previous_provider = registry.get_embedding("embedding-default")
+        registry.register_embedding("embedding-default", registry_provider)
+        monkeypatch.setattr(
+            "app.documents.dense_index_service.OpenAIEmbeddingProvider",
+            lambda **kwargs: (_ for _ in ()).throw(AssertionError("settings fallback should not be used")),
+        )
+        service = DenseIndexService(settings=settings, document_index=document_index)
+        chunks = [
+            DocumentChunk(document_id="doc-1", generation=2, chunk_index=0, content="alpha", chunk_metadata={}),
+        ]
+
+        try:
+            result = await service.index_candidate_generation(
+                document_id="doc-1",
+                generation=2,
+                chunks=chunks,
+            )
+        finally:
+            if previous_provider is not None:
+                registry.register_embedding("embedding-default", previous_provider)
+            else:
+                registry.embedding_providers.pop("embedding-default", None)
+            get_extension_registry.cache_clear()
+
+        fingerprint = build_embedding_contract_fingerprint(settings)
+        assert result == DenseIndexResult(active=True, fingerprint=fingerprint)
+        assert registry_provider.calls == [["alpha"]]
+        assert document_index.ensure_calls == [(build_milvus_collection_name(fingerprint), 3)]
+
+    asyncio.run(_run())
+
+
 def test_dense_index_service_default_document_index_resolution_uses_service_settings(monkeypatch) -> None:
     async def _run() -> None:
         settings = _dense_settings(

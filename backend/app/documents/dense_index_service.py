@@ -8,6 +8,7 @@ from pymilvus import MilvusClient
 from app.common.exceptions import AppError
 from app.common.config import Settings, get_settings
 from app.extensions.langchain_embedding_providers import OpenAIEmbeddingProvider
+from app.extensions.registry import get_extension_registry
 from app.infra.milvus_document_index import MilvusDocumentIndex
 from app.model.document import DocumentChunk
 from app.rag.dense_contract import DenseEmbeddingContract, build_embedding_contract_fingerprint, build_milvus_collection_name
@@ -126,6 +127,10 @@ class DenseIndexService:
             return self._embedding_provider
         contract = DenseEmbeddingContract.from_settings(self._settings)
         if contract.active:
+            registry_provider = get_extension_registry().get_embedding("embedding-default")
+            if registry_provider is not None:
+                self._embedding_provider = registry_provider
+                return self._embedding_provider
             self._embedding_provider = OpenAIEmbeddingProvider(
                 api_key=self._settings.embedding_api_key,
                 base_url=self._settings.embedding_base_url_normalized,
