@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import Awaitable
 from concurrent.futures import Future
 from contextlib import suppress
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 import threading
@@ -18,9 +19,10 @@ from app.common.exceptions import AppError
 from app.common.request_id import get_request_id
 from app.common.responses import ok_response
 from app.documents.build_service import DocumentBuildService
+from app.documents.dense_maintenance_service import DenseMaintenanceService
 from app.documents.job_dispatcher import DocumentJobDispatcher
 from app.documents.operator_service import DocumentsOperatorService
-from app.documents.schemas import BatchBuildRequest, BatchDeleteRequest, BuildDocumentRequest
+from app.documents.schemas import BatchBuildRequest, BatchDeleteRequest, BuildDocumentRequest, DenseMaintenanceRequest
 from app.extensions.registry import get_task_backend
 from app.infra.db import get_db_session
 from app.infra.redis import get_redis_client
@@ -73,6 +75,39 @@ def _ok(data: dict) -> dict:
 
 def _get_active_dispatcher_tasks() -> int:
     return _dispatcher_loop.submit(_job_dispatcher.active_count())
+
+
+async def _collect_operator_status(*, session: AsyncSession, redis: Redis) -> dict:
+    operator_service = DocumentsOperatorService(redis=redis)
+    return await operator_service.collect_status(
+        session=session,
+        active_dispatcher_tasks=_get_active_dispatcher_tasks(),
+    )
+
+
+def _ready_for_dense_maintenance(status: dict) -> bool:
+    return (
+        status["drain_enabled"]
+        and status["queued_jobs"] == 0
+        and status["running_jobs"] == 0
+        and status["active_dispatcher_tasks"] == 0
+    )
+
+
+async def _ensure_dense_maintenance_ready(*, session: AsyncSession, redis: Redis) -> None:
+    status = await _collect_operator_status(session=session, redis=redis)
+    if not status["drain_enabled"]:
+        raise AppError(
+            status_code=409,
+            code="DOC_MIGRATION_DRAIN_INACTIVE",
+            message="migration drain is not active",
+        )
+    if not _ready_for_dense_maintenance(status):
+        raise AppError(
+            status_code=409,
+            code="DOC_MIGRATION_NOT_READY",
+            message="migration drain is not quiescent",
+        )
 
 
 def _validate_pagination(page: int, page_size: int) -> tuple[int, int]:
@@ -390,13 +425,19 @@ async def migration_status(
     session: AsyncSession = Depends(get_db_session),
     redis: Redis = Depends(get_redis_client),
 ) -> dict:
-    operator_service = DocumentsOperatorService(redis=redis)
-    return _ok(
-        await operator_service.collect_status(
-            session=session,
-            active_dispatcher_tasks=_get_active_dispatcher_tasks(),
-        )
-    )
+    return _ok(await _collect_operator_status(session=session, redis=redis))
+
+
+@router.get("/ops/dense-status")
+async def dense_status(
+    _: object = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+    redis: Redis = Depends(get_redis_client),
+) -> dict:
+    status = await _collect_operator_status(session=session, redis=redis)
+    status["ready_for_dense_maintenance"] = _ready_for_dense_maintenance(status)
+    status.update(asdict(await DenseMaintenanceService().collect_status(session=session)))
+    return _ok(status)
 
 
 @router.post("/ops/migration-reconcile")
@@ -420,6 +461,36 @@ async def migration_reconcile(
     )
     status["reconciled_job_ids"] = reconciled_job_ids
     return _ok(status)
+
+
+@router.post("/ops/dense-backfill")
+async def dense_backfill(
+    request: DenseMaintenanceRequest,
+    _: object = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+    redis: Redis = Depends(get_redis_client),
+) -> dict:
+    await _ensure_dense_maintenance_ready(session=session, redis=redis)
+    result = await DenseMaintenanceService().backfill_published_documents(
+        session=session,
+        limit=request.limit,
+    )
+    return _ok(asdict(result))
+
+
+@router.post("/ops/dense-reconcile")
+async def dense_reconcile(
+    request: DenseMaintenanceRequest,
+    _: object = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+    redis: Redis = Depends(get_redis_client),
+) -> dict:
+    await _ensure_dense_maintenance_ready(session=session, redis=redis)
+    result = await DenseMaintenanceService().reconcile_current_fingerprint_documents(
+        session=session,
+        limit=request.limit,
+    )
+    return _ok(asdict(result))
 
 
 @router.post("/ops/migration-resume")

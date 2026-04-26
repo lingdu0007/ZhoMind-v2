@@ -3,15 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from pymilvus import MilvusClient
+
 from app.common.exceptions import AppError
 from app.common.config import Settings, get_settings
+from app.extensions.langchain_embedding_providers import OpenAIEmbeddingProvider
 from app.extensions.registry import get_extension_registry
 from app.infra.milvus_document_index import MilvusDocumentIndex
 from app.model.document import DocumentChunk
 from app.rag.dense_contract import DenseEmbeddingContract, build_embedding_contract_fingerprint, build_milvus_collection_name
 from app.rag.interfaces import EmbeddingProvider
-
-_DEFAULT_EMBEDDING_PROVIDER = "embedding-default"
 
 
 class DocumentIndex(Protocol):
@@ -20,6 +21,8 @@ class DocumentIndex(Protocol):
     async def upsert_generation(self, *, collection_name: str, rows: list[dict[str, object]]) -> None: ...
 
     async def delete_generation(self, *, collection_name: str, document_id: str, generation: int) -> None: ...
+
+    async def delete_document(self, *, collection_name: str, document_id: str) -> None: ...
 
     async def search(
         self,
@@ -104,15 +107,43 @@ class DenseIndexService:
             generation=generation,
         )
 
+    async def delete_document_current_fingerprint(self, *, document_id: str) -> None:
+        contract = DenseEmbeddingContract.from_settings(self._settings)
+        if not contract.active:
+            return
+
+        document_index = self._resolve_document_index()
+        if document_index is None:
+            return
+
+        fingerprint = build_embedding_contract_fingerprint(self._settings)
+        await document_index.delete_document(
+            collection_name=build_milvus_collection_name(fingerprint),
+            document_id=document_id,
+        )
+
     def _resolve_embedding_provider(self) -> EmbeddingProvider | None:
         if self._embedding_provider is not None:
             return self._embedding_provider
-        self._embedding_provider = get_extension_registry().get_embedding(_DEFAULT_EMBEDDING_PROVIDER)
+        contract = DenseEmbeddingContract.from_settings(self._settings)
+        if contract.active:
+            registry_provider = get_extension_registry().get_embedding("embedding-default")
+            if registry_provider is not None:
+                self._embedding_provider = registry_provider
+                return self._embedding_provider
+            self._embedding_provider = OpenAIEmbeddingProvider(
+                api_key=self._settings.embedding_api_key,
+                base_url=self._settings.embedding_base_url_normalized,
+                model=self._settings.embedding_model_normalized,
+            )
         return self._embedding_provider
 
     def _resolve_document_index(self) -> DocumentIndex | None:
         if self._document_index is None:
-            self._document_index = MilvusDocumentIndex()
+            client_kwargs: dict[str, str] = {"uri": self._settings.milvus_uri}
+            if self._settings.milvus_token:
+                client_kwargs["token"] = self._settings.milvus_token
+            self._document_index = MilvusDocumentIndex(client=MilvusClient(**client_kwargs))
         return self._document_index
 
     def _require_embedding_provider(self) -> EmbeddingProvider:
