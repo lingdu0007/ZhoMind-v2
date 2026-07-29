@@ -17,6 +17,12 @@ def event_loop() -> asyncio.AbstractEventLoop:
     loop.close()
 
 
+@pytest.fixture(autouse=True)
+def restore_event_loop(event_loop: asyncio.AbstractEventLoop):
+    asyncio.set_event_loop(event_loop)
+    yield
+
+
 @pytest.fixture
 async def db_session() -> AsyncSession:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
