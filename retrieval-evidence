@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 1 || "$1" != "smoke" ]]; then
+  printf 'usage: retrieval-evidence smoke\n' >&2
+  exit 2
+fi
+
+repository_root=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)
+workspace_root=$(cd "$repository_root/../.." && pwd)
+runtime_config="$repository_root/backend/.env"
+
+current_branch=$(git -C "$repository_root" branch --show-current)
+if [[ -z "$current_branch" || "$current_branch" == "main" ]]; then
+  printf 'retrieval-evidence smoke requires a local experiment branch\n' >&2
+  exit 2
+fi
+
+if [[ -n "$(git -C "$repository_root" status --porcelain --untracked-files=all)" ]]; then
+  printf 'retrieval-evidence smoke requires a clean working tree\n' >&2
+  exit 2
+fi
+
+if [[ ! -f "$runtime_config" ]]; then
+  printf 'missing ignored runtime configuration: backend/.env\n' >&2
+  exit 2
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+  printf 'docker is required to run retrieval-evidence smoke\n' >&2
+  exit 2
+fi
+
+run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+project_prefix=${RETRIEVAL_EVIDENCE_COMPOSE_PROJECT:-zhomind-retrieval-evidence}
+runtime_root=${RETRIEVAL_EVIDENCE_RUNTIME_DIR:-"$repository_root/.runtime/retrieval-evidence"}
+export COMPOSE_PROJECT_NAME="${project_prefix}-${run_id}"
+export DOCKER_VOLUME_DIRECTORY="$runtime_root/$run_id"
+export POSTGRES_HOST_PORT=${RETRIEVAL_EVIDENCE_POSTGRES_PORT:-15432}
+export REDIS_HOST_PORT=${RETRIEVAL_EVIDENCE_REDIS_PORT:-16379}
+export MINIO_API_HOST_PORT=${RETRIEVAL_EVIDENCE_MINIO_API_PORT:-19000}
+export MINIO_CONSOLE_HOST_PORT=${RETRIEVAL_EVIDENCE_MINIO_CONSOLE_PORT:-19001}
+export MILVUS_HOST_PORT=${RETRIEVAL_EVIDENCE_MILVUS_PORT:-19531}
+export MILVUS_HEALTH_HOST_PORT=${RETRIEVAL_EVIDENCE_MILVUS_HEALTH_PORT:-19091}
+export BACKEND_HOST_PORT=${RETRIEVAL_EVIDENCE_BACKEND_PORT:-18000}
+export ATTU_HOST_PORT=${RETRIEVAL_EVIDENCE_ATTU_PORT:-18080}
+
+evidence_output=${RETRIEVAL_EVIDENCE_OUTPUT_DIR:-"$workspace_root/evidence/runs"}
+mkdir -p "$DOCKER_VOLUME_DIRECTORY" "$evidence_output"
+
+compose=(docker compose -p "$COMPOSE_PROJECT_NAME")
+cleanup() {
+  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+"${compose[@]}" up -d --build
+
+for _ in $(seq 1 60); do
+  if curl -fsS "http://127.0.0.1:${BACKEND_HOST_PORT}/api/v1/health" >/dev/null; then
+    source_revision=$(git -C "$repository_root" rev-parse HEAD)
+    "${compose[@]}" run --rm --no-deps \
+      --volume "$evidence_output:/evidence" \
+      backend python -m app.retrieval_evidence smoke \
+      --base-url http://backend:8000 \
+      --output-dir /evidence \
+      --source-revision "$source_revision" \
+      --run-id "$run_id"
+    exit $?
+  fi
+  sleep 2
+done
+
+printf 'backend did not become healthy before the Retrieval Smoke timeout\n' >&2
+exit 1

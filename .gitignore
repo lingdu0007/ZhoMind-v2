@@ -55,6 +55,7 @@ yarn-error.log*
 # Environment / secrets
 # =========================
 .env
+.runtime/
 .env.local
 .env.*.local
 
