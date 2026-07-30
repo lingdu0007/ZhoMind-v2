@@ -48,6 +48,21 @@ test('parse an Evidence Summary frame as structured answer support', () => {
   });
 });
 
+test('parse a role-scoped Retrieval Diagnostics frame as structured administrator data', () => {
+  const [event] = collectEvents([
+    'event: retrieval_diagnostics\n',
+    'data: {"retrieval_diagnostics":{"timeline":[{"step":"retrieve"}],"candidate_counts":{"retrieved":2,"reranked":1}}}\n\n'
+  ]);
+
+  assert.deepEqual(event, {
+    type: 'retrieval_diagnostics',
+    retrieval_diagnostics: {
+      timeline: [{ step: 'retrieve' }],
+      candidate_counts: { retrieved: 2, reranked: 1 }
+    }
+  });
+});
+
 test('fallback supports non-standard plain json line stream', () => {
   const frames = collectEvents(['{"delta":"hello"}\n', '{"delta":" world"}\n']);
   assert.deepEqual(

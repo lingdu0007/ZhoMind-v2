@@ -39,6 +39,7 @@
         <ChatMessageList
           :messages="chatStore.messages"
           :retry-disabled="chatStore.loading"
+          :show-diagnostics="authStore.isAdmin"
           @retry="retryAssistantMessage"
           @open-source="openSourceExcerpt"
         />

@@ -505,6 +505,11 @@ test('a Knowledge User can inspect Evidence Summary source excerpts without expo
                 'event: evidence_summary\ndata: {"evidence_summary":{"coverage":"sufficient","source_count":1,"sources":[{"source_id":"chunk-deploy-1","metadata":{"filename":"deploy-runbook.md"},"excerpt":"发布前必须由值班负责人完成变更审批。"}]}}\n\n'
               )
             );
+            controller.enqueue(
+              encoder.encode(
+                'event: retrieval_diagnostics\ndata: {"retrieval_diagnostics":{"timeline":[{"step":"retrieve"}],"candidate_counts":{"retrieved":1,"reranked":1},"evidence_gate":{"outcome":"passed","reason":"sufficient_evidence"},"fallback":{"state":"not_used","hops":0,"final_provider":null},"provider_errors":[],"trace_preview":"user-visible trace must stay hidden"}}\n\n'
+              )
+            );
             controller.enqueue(encoder.encode('event: done\ndata: [DONE]\n\n'));
             controller.close();
           }
@@ -524,6 +529,7 @@ test('a Knowledge User can inspect Evidence Summary source excerpts without expo
   assert.equal(await summary.getByText('证据充分').isVisible(), true);
   assert.equal(await summary.getByText('1 个来源').isVisible(), true);
   assert.equal(await page.getByText('RAG Trace').count(), 0);
+  assert.equal(await page.getByLabel('检索诊断').count(), 0);
 
   const sourceButton = summary.getByRole('button', { name: '查看来源 deploy-runbook.md' });
   await sourceButton.click();
@@ -577,6 +583,14 @@ test('historical Evidence Summaries retain source identity and show unavailable 
                 coverage: 'sufficient',
                 source_count: 1,
                 sources: [{ source_id: 'chunk-history-7', metadata: {}, excerpt: '历史来源摘录。' }]
+              },
+              retrieval_diagnostics: {
+                timeline: [{ step: 'retrieve' }],
+                candidate_counts: { retrieved: 1, reranked: 1 },
+                evidence_gate: { outcome: 'passed', reason: 'sufficient_evidence' },
+                fallback: { state: 'not_used', hops: 0, final_provider: null },
+                provider_errors: [],
+                trace_preview: 'historical trace must stay hidden'
               }
             },
             {
@@ -612,4 +626,125 @@ test('historical Evidence Summaries retain source identity and show unavailable 
   assert.equal(await unavailableAnswer.getByText('证据不可用').isVisible(), true);
   assert.equal(await unavailableAnswer.getByText('没有可供核对的来源摘录。').isVisible(), true);
   assert.equal(await insufficientAnswer.getByText('证据不足', { exact: true }).isVisible(), true);
+  assert.equal(await page.getByLabel('检索诊断').count(), 0);
+});
+
+test('a System Administrator can expand bounded Retrieval Diagnostics for a live answer', { timeout: 30000 }, async (t) => {
+  const { page, baseUrl } = await startConversationWorkspace(t, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/me') {
+      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin' }));
+      return;
+    }
+    if (path === '/api/sessions') {
+      await route.fulfill(jsonResponse({ sessions: [] }));
+      return;
+    }
+    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
+  });
+
+  await page.addInitScript(() => {
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async (input, init) => {
+      if (!String(input).includes('/api/chat/stream')) return nativeFetch(input, init);
+      const encoder = new TextEncoder();
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode('event: content\ndata: {"content":"管理员可以检查检索过程。"}\n\n'));
+            controller.enqueue(
+              encoder.encode(
+                'event: retrieval_diagnostics\ndata: {"retrieval_diagnostics":{"timeline":[{"step":"retrieve"},{"step":"rerank"},{"step":"verify"}],"candidate_counts":{"retrieved":4,"reranked":2},"evidence_gate":{"outcome":"passed","reason":"sufficient_evidence"},"fallback":{"state":"used","hops":1,"final_provider":"fallback-llm"},"provider_errors":[{"stage":"generate","code":"PROVIDER_TIMEOUT","type":"TimeoutError"}],"trace_preview":"{\\"timeline\\":[{\\"step\\":\\"retrieve\\"}]}"}}\n\n'
+              )
+            );
+            controller.enqueue(encoder.encode('event: done\ndata: [DONE]\n\n'));
+            controller.close();
+          }
+        }),
+        { status: 200, headers: { 'Content-Type': 'text/event-stream' } }
+      );
+    };
+  });
+  await page.addInitScript(() => localStorage.setItem('access_token', 'admin-token'));
+  await page.goto(`${baseUrl}chat`);
+  await page.getByPlaceholder('请输入需要检索的问题').fill('管理员诊断问题');
+  await page.getByRole('button', { name: '发送' }).click();
+
+  const diagnostics = page.getByLabel('检索诊断');
+  await diagnostics.waitFor();
+  const disclosure = diagnostics.locator('details');
+  assert.equal(await disclosure.getAttribute('open'), null);
+
+  const summary = diagnostics.locator('summary');
+  await summary.focus();
+  await page.keyboard.press('Enter');
+  assert.equal(await disclosure.getAttribute('open'), '');
+  const diagnosticsContent = diagnostics.locator('.retrieval-diagnostics__content');
+  assert.equal(
+    await diagnosticsContent.evaluate((element) => getComputedStyle(element).animationName.startsWith('retrieval-diagnostics-expand')),
+    true
+  );
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  assert.equal(await diagnosticsContent.evaluate((element) => getComputedStyle(element).animationName), 'none');
+  assert.equal(await diagnostics.getByText('检索时间线').isVisible(), true);
+  assert.equal(await diagnostics.getByText('retrieve', { exact: true }).isVisible(), true);
+  assert.equal(await diagnostics.getByText('召回候选 4').isVisible(), true);
+  assert.equal(await diagnostics.getByText('重排候选 2').isVisible(), true);
+  assert.equal(await diagnostics.getByText('门禁通过').isVisible(), true);
+  assert.equal(await diagnostics.getByText('已回退 1 次').isVisible(), true);
+  assert.equal(await diagnostics.getByText('脱敏 trace 预览').isVisible(), true);
+});
+
+test('a System Administrator sees unavailable Retrieval Diagnostics fields for historical answers', { timeout: 30000 }, async (t) => {
+  const { page, baseUrl } = await startConversationWorkspace(t, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/me') {
+      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin' }));
+      return;
+    }
+    if (path === '/api/sessions' && route.request().method() === 'GET') {
+      await route.fulfill(
+        jsonResponse({ sessions: [{ session_id: 'admin-diagnostics-history', updated_at: '2026-07-30T12:00:00Z', message_count: 1 }] })
+      );
+      return;
+    }
+    if (path === '/api/sessions/admin-diagnostics-history') {
+      await route.fulfill(
+        jsonResponse({
+          messages: [
+            {
+              type: 'assistant',
+              content: '这是一条缺少部分诊断字段的历史回答。',
+              retrieval_diagnostics: {
+                timeline: [],
+                candidate_counts: { retrieved: null, reranked: null },
+                evidence_gate: { outcome: 'unavailable', reason: null },
+                fallback: { state: 'unavailable', hops: null, final_provider: null },
+                provider_errors: [],
+                trace_preview: ''
+              }
+            }
+          ]
+        })
+      );
+      return;
+    }
+    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
+  });
+
+  await page.addInitScript(() => localStorage.setItem('access_token', 'admin-token'));
+  await page.goto(`${baseUrl}chat`);
+  await page.getByRole('complementary', { name: '最近会话' }).getByRole('button', { name: /^admin-diagnostics-history/ }).click();
+
+  const diagnostics = page.getByLabel('检索诊断');
+  await diagnostics.waitFor();
+  const disclosure = diagnostics.locator('details');
+  assert.equal(await disclosure.getAttribute('open'), null);
+  await diagnostics.locator('summary').click();
+  assert.equal(await diagnostics.getByText('未返回检索时间线。').isVisible(), true);
+  assert.equal(await diagnostics.getByText('召回候选 不可用').isVisible(), true);
+  assert.equal(await diagnostics.getByText('重排候选 不可用').isVisible(), true);
+  assert.equal(await diagnostics.getByText('门禁不可用').isVisible(), true);
+  assert.equal(await diagnostics.getByText('回退状态不可用').isVisible(), true);
+  assert.equal(await diagnostics.getByText('未返回 trace 预览。').isVisible(), true);
 });

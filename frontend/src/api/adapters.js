@@ -147,6 +147,11 @@ export const streamChat = async ({ message, session_id, signal, token }, handler
       return;
     }
 
+    if (event.type === 'retrieval_diagnostics') {
+      handlers.onRetrievalDiagnostics?.(event.retrieval_diagnostics);
+      return;
+    }
+
     if (event.type === 'rag_step') {
       handlers.onRagStep?.(event.step ?? event.data ?? event);
       return;

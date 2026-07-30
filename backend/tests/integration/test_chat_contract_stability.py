@@ -40,7 +40,7 @@ def _extract_sse_event_data(payload: str, event: str) -> str | None:
     return None
 
 
-def test_administrator_chat_response_contract_preserves_retrieval_diagnostics(monkeypatch) -> None:
+def test_administrator_chat_response_contract_projects_bounded_retrieval_diagnostics(monkeypatch) -> None:
     db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     fake_redis = _InMemoryRedis()
@@ -82,17 +82,25 @@ def test_administrator_chat_response_contract_preserves_retrieval_diagnostics(mo
             assert body["code"] == "OK"
             assert "request_id" in body
             data = body["data"]
-            assert set(["session_id", "answer", "message", "rag_steps", "rag_trace"]).issubset(data.keys())
-            assert data["message"]["rag_trace"] == data["rag_trace"]
+            assert set(["session_id", "answer", "message", "retrieval_diagnostics"]).issubset(data.keys())
+            assert data["message"]["retrieval_diagnostics"] == data["retrieval_diagnostics"]
+            assert "rag_steps" not in data
+            assert "rag_trace" not in data
+            assert "rag_trace" not in data["message"]
 
-            runtime = data["rag_trace"]["runtime"]
-            assert runtime["request_id"].startswith("chat-")
-            assert runtime["session_id"] == "contract_s1"
-            assert runtime["graph_alias"] == "default_v1"
-            assert set(["gate", "steps", "step_names"]).issubset(runtime.keys())
-            assert runtime["gate"]["passed"] is False
-            assert runtime["gate"]["reason"] == "reject_insufficient_evidence"
-            assert runtime["step_names"] == [
+            diagnostics = data["retrieval_diagnostics"]
+            assert diagnostics["candidate_counts"] == {"retrieved": 0, "reranked": 0}
+            assert diagnostics["evidence_gate"] == {
+                "outcome": "rejected",
+                "reason": "reject_insufficient_evidence",
+            }
+            assert diagnostics["fallback"] == {
+                "state": "not_used",
+                "hops": 0,
+                "final_provider": None,
+            }
+            assert diagnostics["provider_errors"] == []
+            assert [item["step"] for item in diagnostics["timeline"]] == [
                 "normalize",
                 "memory_read",
                 "query_understand",
@@ -109,15 +117,10 @@ def test_administrator_chat_response_contract_preserves_retrieval_diagnostics(mo
                 "memory_write_gate",
                 "finalize",
             ]
-            assert runtime["steps"][0]["step"] == "normalize"
-            assert "tool_budget" in runtime
-            assert "max_calls" in runtime["tool_budget"]
-            assert "tool_errors" in runtime
-            assert "final_provider" in runtime
-            assert "provider_attempts" in runtime
-            assert "fallback_hops" in runtime
-            assert isinstance(runtime["provider_attempts"], list)
-            assert isinstance(runtime["fallback_hops"], int)
+            assert diagnostics["trace_preview"].startswith("{")
+            assert len(diagnostics["trace_preview"]) <= 1600
+            assert '"runtime":' in diagnostics["trace_preview"]
+            assert '"request_id":"chat-' in diagnostics["trace_preview"]
 
             stream_resp = client.post(
                 "/api/v1/chat/stream",
@@ -127,15 +130,13 @@ def test_administrator_chat_response_contract_preserves_retrieval_diagnostics(mo
             assert stream_resp.status_code == 200
             assert stream_resp.headers["content-type"].startswith("text/event-stream")
 
-            trace_data = _extract_sse_event_data(stream_resp.text, "trace")
-            assert trace_data is not None
-            trace_event = json.loads(trace_data)
-            trace = trace_event["trace"]
-            assert trace["runtime"]["request_id"].startswith("chat-")
-            assert trace["runtime"]["session_id"] == "contract_s1"
-            assert trace["runtime"]["graph_alias"] == "default_v1"
-            assert trace["runtime"]["step_names"] == runtime["step_names"]
-            assert trace["runtime"]["gate"]["reason"] == "reject_insufficient_evidence"
+            diagnostics_data = _extract_sse_event_data(stream_resp.text, "retrieval_diagnostics")
+            assert diagnostics_data is not None
+            streamed = json.loads(diagnostics_data)["retrieval_diagnostics"]
+            assert streamed["evidence_gate"]["reason"] == "reject_insufficient_evidence"
+            assert [item["step"] for item in streamed["timeline"]] == [item["step"] for item in diagnostics["timeline"]]
+            assert "event: rag_step" not in stream_resp.text
+            assert "event: trace" not in stream_resp.text
     finally:
         app.dependency_overrides.clear()
         get_settings.cache_clear()
@@ -187,6 +188,8 @@ def test_knowledge_user_chat_projection_excludes_retrieval_diagnostics(monkeypat
             assert "rag_steps" not in data
             assert "rag_trace" not in data
             assert "rag_trace" not in data["message"]
+            assert "retrieval_diagnostics" not in data
+            assert "retrieval_diagnostics" not in data["message"]
 
             stream_response = client.post(
                 "/api/v1/chat/stream",
@@ -197,6 +200,7 @@ def test_knowledge_user_chat_projection_excludes_retrieval_diagnostics(monkeypat
             assert "event: evidence_summary" in stream_response.text
             assert "event: rag_step" not in stream_response.text
             assert "event: trace" not in stream_response.text
+            assert "event: retrieval_diagnostics" not in stream_response.text
             assert "event: done" in stream_response.text
     finally:
         app.dependency_overrides.clear()
@@ -279,4 +283,98 @@ def test_knowledge_user_session_history_projects_source_excerpts_without_trace_d
             assert "provider_error" not in response.text
     finally:
         app.dependency_overrides.clear()
+        asyncio.run(db_engine.dispose())
+
+
+def test_administrator_session_history_projects_bounded_diagnostics_without_sensitive_trace_values(monkeypatch) -> None:
+    db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    fake_redis = _InMemoryRedis()
+
+    monkeypatch.setenv("ADMIN_INVITE_CODE", "diagnostic-admin-code")
+    get_settings.cache_clear()
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    async def _seed_history() -> None:
+        async with session_factory() as session:
+            repository = ChatRepository(session)
+            chat_session = await repository.get_or_create_session("admin_history_s1", "diagnostic-admin")
+            await repository.add_message(
+                session_id=chat_session.id,
+                user_id="diagnostic-admin",
+                message_type="assistant",
+                content="历史管理员回答",
+                rag_trace={
+                    "steps": [
+                        {"step": "retrieve", "detail": {"retrieved_count": 7}},
+                        {"step": "rerank", "detail": {"reranked_count": 3}},
+                    ],
+                    "gate": {"passed": True, "reason": "sufficient_evidence"},
+                    "runtime": {
+                        "steps": [{"step": "retrieve", "detail": {"provider_error": {"message": "token=admin-secret"}}}],
+                        "fallback_hops": 2,
+                        "final_provider": "fallback-llm",
+                        "provider_trace": {
+                            "retrieve": {
+                                "provider_error": {
+                                    "code": "PROVIDER_EXEC_FAILED",
+                                    "type": "TimeoutError",
+                                    "message": "api_key=admin-secret in backend/.env",
+                                }
+                            }
+                        },
+                        "provider_attempts": [{"error_code": "PROVIDER_NOT_CONFIGURED"}],
+                    },
+                    "environment": {"DATABASE_URL": "postgres://admin-secret"},
+                },
+            )
+            await session.commit()
+
+    asyncio.run(_init_db())
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+
+    try:
+        with TestClient(app) as client:
+            registration = client.post(
+                "/api/v1/auth/register",
+                json={
+                    "username": "diagnostic-admin",
+                    "password": "secret-123",
+                    "role": "admin",
+                    "admin_code": "diagnostic-admin-code",
+                },
+            )
+            token = registration.json()["data"]["access_token"]
+            asyncio.run(_seed_history())
+
+            response = client.get(
+                "/api/v1/sessions/admin_history_s1",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert response.status_code == 200
+            message = response.json()["data"]["messages"][0]
+            diagnostics = message["retrieval_diagnostics"]
+            assert diagnostics["candidate_counts"] == {"retrieved": 7, "reranked": 3}
+            assert diagnostics["evidence_gate"] == {"outcome": "passed", "reason": "sufficient_evidence"}
+            assert diagnostics["fallback"] == {"state": "used", "hops": 2, "final_provider": "fallback-llm"}
+            assert diagnostics["provider_errors"] == [
+                {"stage": "retrieve", "code": "PROVIDER_EXEC_FAILED", "type": "TimeoutError"},
+                {"stage": "generate", "code": "PROVIDER_NOT_CONFIGURED", "type": None},
+            ]
+            assert diagnostics["timeline"] == [{"step": "retrieve"}]
+            assert len(diagnostics["trace_preview"]) <= 1600
+            assert "rag_trace" not in message
+            assert "admin-secret" not in response.text
+            assert "DATABASE_URL" not in response.text
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
         asyncio.run(db_engine.dispose())
