@@ -33,15 +33,6 @@ export const useChatStore = defineStore('chat', {
     async loadSessions() {
       const data = await apiAdapter.listSessions();
       this.sessions = data?.sessions || data?.items || data?.data || [];
-      if (!this.activeSessionId && this.sessions.length > 0) {
-        const preferred =
-          this.sessions.find((item) => (item.session_id || item.id) !== 'default_session') ||
-          this.sessions[0];
-        const candidate = preferred.session_id || preferred.id || '';
-        if (candidate && candidate !== 'default_session') {
-          this.activeSessionId = candidate;
-        }
-      }
     },
     async loadSessionMessages(sessionId) {
       if (!sessionId) return;
@@ -62,12 +53,16 @@ export const useChatStore = defineStore('chat', {
       }));
     },
     async deleteSession(sessionId) {
-      await apiAdapter.deleteSession(sessionId);
+      const result = await apiAdapter.deleteSession(sessionId);
+      if (result?.deleted !== true) {
+        throw new Error('会话未删除，请刷新后重试。');
+      }
       if (this.activeSessionId === sessionId) {
         this.activeSessionId = '';
         this.messages = [];
       }
       await this.loadSessions();
+      return result;
     },
     stopStreaming() {
       if (this.streamController) {
@@ -92,6 +87,7 @@ export const useChatStore = defineStore('chat', {
         isThinking: true,
         rejected: false,
         reject_reason: '',
+        failed: false,
         status: '思考中...'
       });
 
@@ -142,7 +138,8 @@ export const useChatStore = defineStore('chat', {
               if (!assistantMsg) return;
               assistantMsg.streaming = false;
               assistantMsg.isThinking = false;
-              assistantMsg.status = '生成失败';
+              assistantMsg.failed = true;
+              assistantMsg.status = '回答失败，可重试';
               if (!assistantMsg.content) {
                 assistantMsg.content = `请求失败：${formatStreamError(err)}`;
               }
@@ -156,7 +153,9 @@ export const useChatStore = defineStore('chat', {
               if (assistantMsg.rejected && !assistantMsg.content) {
                 assistantMsg.content = '未检索到足够相关的知识片段，请补充更具体的问题或关键词。';
               }
-              assistantMsg.status = getDoneStatus(assistantMsg) || assistantMsg.status;
+              if (!assistantMsg.failed) {
+                assistantMsg.status = getDoneStatus(assistantMsg);
+              }
               this.streamTick += 1;
             }
           }
@@ -167,12 +166,13 @@ export const useChatStore = defineStore('chat', {
         assistantMsg.streaming = false;
         assistantMsg.isThinking = false;
         if (error?.name === 'AbortError') {
-          assistantMsg.status = '已停止';
-          assistantMsg.content = assistantMsg.content
-            ? `${assistantMsg.content}(回答已被终止)`
-            : '(已终止回答)';
+          assistantMsg.status = '回答已停止，内容不完整';
+          if (!assistantMsg.content) {
+            assistantMsg.content = '回答已停止，未生成可保留的内容。';
+          }
         } else {
-          assistantMsg.status = '生成失败';
+          assistantMsg.failed = true;
+          assistantMsg.status = '回答失败，可重试';
           if (!assistantMsg.content) {
             assistantMsg.content = `请求失败：${formatStreamError(error)}`;
           }
