@@ -34,10 +34,13 @@ def _extract_data(payload: dict) -> dict:
     return payload.get("data") or payload
 
 
-def _auth_headers(client: TestClient, username: str = "chat-user") -> dict[str, str]:
+def _auth_headers(client: TestClient, username: str = "chat-user", role: str = "user") -> dict[str, str]:
+    payload = {"username": username, "password": "secret-123", "role": role}
+    if role == "admin":
+        payload["admin_code"] = get_settings().admin_invite_code
     response = client.post(
         "/api/v1/auth/register",
-        json={"username": username, "password": "secret-123", "role": "user"},
+        json=payload,
     )
     assert response.status_code == 200
     token = response.json()["data"]["access_token"]
@@ -274,7 +277,7 @@ def test_chat_and_sessions_flow(monkeypatch) -> None:
 
     try:
         with TestClient(app) as client:
-            headers = _auth_headers(client)
+            headers = _auth_headers(client, role="admin")
 
             chat_response = client.post(
                 "/api/v1/chat",
@@ -438,7 +441,7 @@ def test_chat_reject_gate_when_no_evidence(monkeypatch) -> None:
 
     try:
         with TestClient(app) as client:
-            headers = _auth_headers(client, username="reject-user")
+            headers = _auth_headers(client, username="reject-user", role="admin")
             response = client.post(
                 "/api/v1/chat",
                 headers=headers,
@@ -505,7 +508,7 @@ def test_chat_smalltalk_fallback_without_evidence(monkeypatch) -> None:
 
     try:
         with TestClient(app) as client:
-            headers = _auth_headers(client, username="smalltalk-user")
+            headers = _auth_headers(client, username="smalltalk-user", role="admin")
             response = client.post(
                 "/api/v1/chat",
                 headers=headers,
@@ -606,7 +609,7 @@ def test_chat_dense_trace_uses_default_mixed_mode_retriever(monkeypatch) -> None
 
     try:
         with TestClient(app) as client:
-            headers = _auth_headers(client, username="dense-default-user")
+            headers = _auth_headers(client, username="dense-default-admin", role="admin")
             response = client.post(
                 "/api/v1/chat",
                 headers=headers,
@@ -716,7 +719,7 @@ def test_chat_dense_failure_trace_marks_runtime_fallback_and_error(monkeypatch) 
 
     try:
         with TestClient(app) as client:
-            headers = _auth_headers(client, username="dense-failure-user")
+            headers = _auth_headers(client, username="dense-failure-admin", role="admin")
             response = client.post(
                 "/api/v1/chat",
                 headers=headers,
@@ -831,7 +834,7 @@ def test_chat_dense_failure_full_lexical_fallback_reads_tail_of_published_live_c
 
     try:
         with TestClient(app) as client:
-            headers = _auth_headers(client, username="dense-tail-failure-user")
+            headers = _auth_headers(client, username="dense-tail-failure-admin", role="admin")
             response = client.post(
                 "/api/v1/chat",
                 headers=headers,

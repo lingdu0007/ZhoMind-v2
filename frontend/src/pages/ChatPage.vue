@@ -1,5 +1,5 @@
 <template>
-  <section ref="chatSectionRef" class="conversation-workspace">
+  <section ref="chatSectionRef" class="conversation-workspace" :class="{ 'conversation-workspace--excerpt-open': selectedSource }">
     <SessionDrawer
       class="conversation-workspace__session-rail"
       :loading="sessionsLoading"
@@ -11,8 +11,9 @@
       @start="startNewSession"
     />
 
-    <div class="chat-page">
-      <div class="top-bar">
+    <div class="conversation-workspace__content">
+      <div class="chat-page">
+        <div class="top-bar">
         <div>
           <h1>对话工作区</h1>
           <p class="subtitle" v-if="streamSubtitle">{{ streamSubtitle }}</p>
@@ -21,9 +22,9 @@
           <el-button class="btn-ghost" @click="startNewSession">新建会话</el-button>
           <el-button class="btn-ghost session-toggle" @click="toggleSessions">会话</el-button>
         </div>
-      </div>
+        </div>
 
-      <el-drawer v-model="sessionVisible" title="最近会话" direction="ltr" size="min(86vw, 320px)">
+        <el-drawer v-model="sessionVisible" title="最近会话" direction="ltr" size="min(86vw, 320px)">
         <SessionDrawer
           :loading="sessionsLoading"
           :sessions="chatStore.sessions"
@@ -33,11 +34,16 @@
           @refresh="loadSessions"
           @start="startNewSession"
         />
-      </el-drawer>
+        </el-drawer>
 
-      <ChatMessageList :messages="chatStore.messages" :retry-disabled="chatStore.loading" @retry="retryAssistantMessage" />
+        <ChatMessageList
+          :messages="chatStore.messages"
+          :retry-disabled="chatStore.loading"
+          @retry="retryAssistantMessage"
+          @open-source="openSourceExcerpt"
+        />
 
-      <div class="composer card">
+        <div class="composer card">
         <el-input
           v-model="input"
           type="textarea"
@@ -52,7 +58,20 @@
             发送
           </el-button>
         </div>
+        </div>
       </div>
+
+      <aside v-if="selectedSource" class="evidence-excerpt" role="complementary" aria-label="来源摘录" @keydown.esc.prevent="closeSourceExcerpt">
+        <header class="evidence-excerpt__header">
+          <div>
+            <p>来源摘录</p>
+            <h2>{{ sourceLabel }}</h2>
+          </div>
+          <button ref="excerptCloseRef" type="button" class="evidence-excerpt__close" aria-label="关闭来源摘录" @click="closeSourceExcerpt">关闭</button>
+        </header>
+        <p class="evidence-excerpt__id">{{ selectedSource.source_id }}</p>
+        <div class="evidence-excerpt__content">{{ selectedSource.excerpt || '未返回可展示的来源摘录。' }}</div>
+      </aside>
     </div>
   </section>
 </template>
@@ -64,6 +83,7 @@ import ChatMessageList from '../components/ChatMessageList.vue';
 import SessionDrawer from '../components/SessionDrawer.vue';
 import { useChatStore } from '../store/chat';
 import { useAuthStore } from '../store/auth';
+import { getEvidenceSourceLabel } from '../app/evidence-summary';
 
 const chatStore = useChatStore();
 const authStore = useAuthStore();
@@ -72,6 +92,11 @@ const chatSectionRef = ref(null);
 const sessionVisible = ref(false);
 const composerError = ref('');
 const sessionsLoading = ref(false);
+const selectedSource = ref(null);
+const sourceTrigger = ref(null);
+const excerptCloseRef = ref(null);
+
+const sourceLabel = computed(() => getEvidenceSourceLabel(selectedSource.value));
 
 const streamSubtitle = computed(() => {
   if (chatStore.loading) return '流式生成中…';
@@ -145,6 +170,19 @@ const startNewSession = () => {
   sessionVisible.value = false;
 };
 
+const openSourceExcerpt = async ({ source, trigger }) => {
+  selectedSource.value = source;
+  sourceTrigger.value = trigger;
+  await nextTick();
+  excerptCloseRef.value?.focus();
+};
+
+const closeSourceExcerpt = async () => {
+  selectedSource.value = null;
+  await nextTick();
+  sourceTrigger.value?.focus();
+};
+
 const onSend = async () => {
   if (!authStore.isLoggedIn) {
     ElMessage.warning('请先登录');
@@ -186,6 +224,7 @@ onMounted(loadSessions);
   display: grid;
   grid-template-columns: 264px minmax(0, 820px);
   justify-content: center;
+  width: min(100%, 1084px);
   min-height: calc(100vh - 92px);
   border: 1px solid var(--color-rule);
   background: var(--color-paper-raised);
@@ -193,6 +232,21 @@ onMounted(loadSessions);
 
 .conversation-workspace__session-rail {
   min-height: 100%;
+}
+
+.conversation-workspace--excerpt-open {
+  grid-template-columns: 264px minmax(0, 932px);
+  width: min(100%, 1196px);
+}
+
+.conversation-workspace__content {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.conversation-workspace--excerpt-open .conversation-workspace__content {
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 320px);
 }
 
 .chat-page {
@@ -237,6 +291,97 @@ onMounted(loadSessions);
   line-height: 1.5;
 }
 
+.evidence-excerpt {
+  min-width: 0;
+  padding: 24px;
+  border-left: 1px solid var(--color-rule);
+  background: var(--color-paper-muted);
+  animation: evidence-excerpt-enter 200ms ease-out both;
+}
+
+.evidence-excerpt__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--color-rule);
+}
+
+.evidence-excerpt__header p,
+.evidence-excerpt__header h2,
+.evidence-excerpt__id,
+.evidence-excerpt__content {
+  margin: 0;
+}
+
+.evidence-excerpt__header p {
+  color: var(--color-moss);
+  font-size: 12px;
+}
+
+.evidence-excerpt__header h2 {
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.evidence-excerpt__close {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  transition: transform 180ms ease-out;
+}
+
+.evidence-excerpt__close:hover {
+  border-color: var(--color-copper);
+  background: var(--color-paper-raised);
+  color: var(--color-copper-strong);
+}
+
+.evidence-excerpt__close:active {
+  transform: translateY(1px);
+}
+
+.evidence-excerpt__id {
+  margin-top: 16px;
+  color: var(--color-ink-soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.evidence-excerpt__content {
+  margin-top: 20px;
+  color: var(--color-ink);
+  font-size: 14px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+}
+
+@keyframes evidence-excerpt-enter {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
 @media (max-width: 1180px) {
   .conversation-workspace {
     display: block;
@@ -250,6 +395,17 @@ onMounted(loadSessions);
 
   .session-toggle {
     display: inline-flex;
+  }
+
+  .conversation-workspace--excerpt-open .conversation-workspace__content {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .evidence-excerpt {
+    border-top: 1px solid var(--color-rule);
+    border-left: 0;
   }
 }
 
