@@ -89,12 +89,11 @@ def test_chat_fallback_to_secondary_provider(monkeypatch) -> None:
 
             assert resp.status_code == 200
             data = resp.json()["data"]
-            runtime = data["rag_trace"]["runtime"]
+            diagnostics = data["retrieval_diagnostics"]
             assert data["answer"] == "fallback-ok"
-            assert runtime["final_provider"] == "openai"
-            assert runtime["fallback_hops"] == 1
-            assert runtime["provider_attempts"][0]["provider"] == "ark"
-            assert runtime["provider_attempts"][-1]["provider"] == "openai"
+            assert diagnostics["fallback"] == {"state": "used", "hops": 1, "final_provider": "openai"}
+            assert diagnostics["provider_errors"] == [{"stage": "generate", "code": "TimeoutError", "type": None}]
+            assert "rag_trace" not in data
     finally:
         if prev_ark is None:
             registry.llm_providers.pop("ark", None)

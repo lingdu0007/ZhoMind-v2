@@ -12,6 +12,7 @@ from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
 from app.model.document import Document, DocumentChunk
+from app.repository.chat_repository import ChatRepository
 from app.service.chat_service import CHAT_JUDGE_PROVIDER, CHAT_RERANK_PROVIDER, CHAT_RETRIEVER_PROVIDER
 
 
@@ -45,6 +46,14 @@ def _auth_headers(client: TestClient, username: str = "chat-user", role: str = "
     assert response.status_code == 200
     token = response.json()["data"]["access_token"]
     return {"Authorization": f"Bearer {token}"}
+
+
+async def _load_assistant_trace(session_factory, session_id: str, user_id: str) -> dict:
+    async with session_factory() as session:
+        messages = await ChatRepository(session).list_messages(session_id=session_id, user_id=user_id)
+    trace = next((item.rag_trace for item in messages if item.type == "assistant"), None)
+    assert isinstance(trace, dict)
+    return trace
 
 
 class _CustomRetriever:
@@ -291,9 +300,15 @@ def test_chat_and_sessions_flow(monkeypatch) -> None:
             assert isinstance(chat_data["answer"], str)
             assert "高优先级证据" in chat_data["answer"]
             assert chat_data["message"]["type"] == "assistant"
-            assert isinstance(chat_data["rag_steps"], list)
-            assert chat_data["rag_trace"]["query"] == "请介绍系统当前状态"
-            runtime_trace = chat_data["rag_trace"]["runtime"]
+            diagnostics = chat_data["retrieval_diagnostics"]
+            assert diagnostics["candidate_counts"] == {"retrieved": 2, "reranked": 1}
+            assert diagnostics["evidence_gate"] == {"outcome": "passed", "reason": "sufficient_evidence"}
+            assert "rag_steps" not in chat_data
+            assert "rag_trace" not in chat_data
+
+            saved_trace = asyncio.run(_load_assistant_trace(session_factory, "session_test_1", "chat-user"))
+            assert saved_trace["query"] == "请介绍系统当前状态"
+            runtime_trace = saved_trace["runtime"]
             assert runtime_trace["request_id"].startswith("chat-")
             assert runtime_trace["session_id"] == "session_test_1"
             assert runtime_trace["graph_alias"] == "default_v1"
@@ -318,13 +333,13 @@ def test_chat_and_sessions_flow(monkeypatch) -> None:
                 "finalize",
             ]
             assert runtime_trace["steps"][0]["step"] == "normalize"
-            assert chat_data["rag_steps"][0]["step"] == "retrieve"
-            assert chat_data["rag_steps"][0]["detail"]["retriever"] == CHAT_RETRIEVER_PROVIDER
-            assert chat_data["rag_steps"][0]["detail"]["gate_passed"] is True
-            assert chat_data["rag_steps"][0]["detail"]["gate_reason"] == "sufficient_evidence"
-            assert chat_data["rag_steps"][1]["detail"]["model"] == CHAT_RERANK_PROVIDER
-            assert chat_data["rag_steps"][2]["detail"]["judge"] == CHAT_JUDGE_PROVIDER
-            assert len(chat_data["rag_trace"]["evidence"]) == 1
+            assert saved_trace["steps"][0]["step"] == "retrieve"
+            assert saved_trace["steps"][0]["detail"]["retriever"] == CHAT_RETRIEVER_PROVIDER
+            assert saved_trace["steps"][0]["detail"]["gate_passed"] is True
+            assert saved_trace["steps"][0]["detail"]["gate_reason"] == "sufficient_evidence"
+            assert saved_trace["steps"][1]["detail"]["model"] == CHAT_RERANK_PROVIDER
+            assert saved_trace["steps"][2]["detail"]["judge"] == CHAT_JUDGE_PROVIDER
+            assert len(saved_trace["evidence"]) == 1
             assert "request_id" in chat_body
 
             stream_response = client.post(
@@ -335,9 +350,10 @@ def test_chat_and_sessions_flow(monkeypatch) -> None:
             assert stream_response.status_code == 200
             assert stream_response.headers["content-type"].startswith("text/event-stream")
             text = stream_response.text
-            assert "event: rag_step" in text
             assert "event: content" in text
-            assert "event: trace" in text
+            assert "event: retrieval_diagnostics" in text
+            assert "event: rag_step" not in text
+            assert "event: trace" not in text
             assert "event: done" in text
             assert "data: [DONE]" in text
 
@@ -356,6 +372,7 @@ def test_chat_and_sessions_flow(monkeypatch) -> None:
             assert len(detail_data["messages"]) == 4
             assert detail_data["messages"][0]["type"] == "user"
             assert detail_data["messages"][1]["type"] == "assistant"
+            assert "retrieval_diagnostics" in detail_data["messages"][1]
 
             delete_response = client.delete("/api/v1/sessions/session_test_1", headers=headers)
             assert delete_response.status_code == 200
@@ -450,13 +467,11 @@ def test_chat_reject_gate_when_no_evidence(monkeypatch) -> None:
             assert response.status_code == 200
             body = response.json()
             data = _extract_data(body)
-            assert data["rag_steps"][0]["step"] == "retrieve"
-            assert data["rag_steps"][0]["detail"]["gate_passed"] is False
-            assert data["rag_steps"][0]["detail"]["gate_reason"] == "reject_insufficient_evidence"
-            assert data["rag_trace"]["gate"]["passed"] is False
-            assert data["rag_trace"]["gate"]["reason"] == "reject_insufficient_evidence"
-            assert data["rag_trace"]["runtime"]["gate"]["passed"] is False
-            assert data["rag_trace"]["runtime"]["gate"]["reason"] == "reject_insufficient_evidence"
+            assert data["retrieval_diagnostics"]["evidence_gate"] == {
+                "outcome": "rejected",
+                "reason": "reject_insufficient_evidence",
+            }
+            assert "rag_trace" not in data
             assert "未检索到足够相关的知识片段" in data["answer"]
             assert "request_id" in body
     finally:
@@ -517,13 +532,11 @@ def test_chat_smalltalk_fallback_without_evidence(monkeypatch) -> None:
             assert response.status_code == 200
             body = response.json()
             data = _extract_data(body)
-            assert data["rag_steps"][0]["step"] == "retrieve"
-            assert data["rag_steps"][0]["detail"]["gate_passed"] is True
-            assert data["rag_steps"][0]["detail"]["gate_reason"] == "smalltalk_fallback"
-            assert data["rag_trace"]["gate"]["passed"] is True
-            assert data["rag_trace"]["gate"]["reason"] == "smalltalk_fallback"
-            assert data["rag_trace"]["runtime"]["gate"]["passed"] is True
-            assert data["rag_trace"]["runtime"]["gate"]["reason"] == "smalltalk_fallback"
+            assert data["retrieval_diagnostics"]["evidence_gate"] == {
+                "outcome": "passed",
+                "reason": "smalltalk_fallback",
+            }
+            assert "rag_trace" not in data
             assert "我是 ZhoMind 智能助手" in data["answer"]
             assert "request_id" in body
     finally:
@@ -617,10 +630,11 @@ def test_chat_dense_trace_uses_default_mixed_mode_retriever(monkeypatch) -> None
             )
             assert response.status_code == 200
             data = _extract_data(response.json())
-            assert data["rag_steps"][0]["detail"]["retriever"] == "inmemory-mixed-mode-retriever"
-            assert data["rag_trace"]["gate"]["passed"] is True
+            assert data["retrieval_diagnostics"]["evidence_gate"]["outcome"] == "passed"
+            saved_trace = asyncio.run(_load_assistant_trace(session_factory, "session_dense_default_1", "dense-default-admin"))
+            assert saved_trace["steps"][0]["detail"]["retriever"] == "inmemory-mixed-mode-retriever"
 
-            retrieve_trace = data["rag_trace"]["runtime"]["provider_trace"]["retrieve"]
+            retrieve_trace = saved_trace["runtime"]["provider_trace"]["retrieve"]
             assert retrieve_trace["strategy"] == "dense_plus_lexical_migration"
             assert retrieve_trace["dense_candidate_count"] == 1
             assert retrieve_trace["dense_hydrated_count"] == 1
@@ -629,7 +643,7 @@ def test_chat_dense_trace_uses_default_mixed_mode_retriever(monkeypatch) -> None
             assert retrieve_trace["dense_query_failed"] is False
             assert retrieve_trace["lexical_scope"] == "not_dense_ready_published"
 
-            evidence = data["rag_trace"]["evidence"]
+            evidence = saved_trace["evidence"]
             assert [item["retrieval_source"] for item in evidence] == ["dense", "lexical"]
             assert "alpha evidence from dense corpus" in data["answer"]
     finally:
@@ -727,8 +741,12 @@ def test_chat_dense_failure_trace_marks_runtime_fallback_and_error(monkeypatch) 
             )
             assert response.status_code == 200
             data = _extract_data(response.json())
+            assert {"stage": "retrieve", "code": "PROVIDER_EXEC_FAILED", "type": "RuntimeError"} in data[
+                "retrieval_diagnostics"
+            ]["provider_errors"]
 
-            retrieve_trace = data["rag_trace"]["runtime"]["provider_trace"]["retrieve"]
+            saved_trace = asyncio.run(_load_assistant_trace(session_factory, "session_dense_failure_1", "dense-failure-admin"))
+            retrieve_trace = saved_trace["runtime"]["provider_trace"]["retrieve"]
             assert retrieve_trace["dense_query_failed"] is True
             assert retrieve_trace["fallback_used"] is True
             assert retrieve_trace["provider_error"] == {
@@ -738,7 +756,7 @@ def test_chat_dense_failure_trace_marks_runtime_fallback_and_error(monkeypatch) 
             }
 
             retrieve_step = next(
-                step for step in data["rag_trace"]["runtime"]["steps"] if step["step"] == "retrieve"
+                step for step in saved_trace["runtime"]["steps"] if step["step"] == "retrieve"
             )
             assert retrieve_step["detail"]["dense_query_failed"] is True
             assert retrieve_step["detail"]["fallback_used"] is True
@@ -842,14 +860,20 @@ def test_chat_dense_failure_full_lexical_fallback_reads_tail_of_published_live_c
             )
             assert response.status_code == 200
             data = _extract_data(response.json())
+            assert {"stage": "retrieve", "code": "PROVIDER_EXEC_FAILED", "type": "RuntimeError"} in data[
+                "retrieval_diagnostics"
+            ]["provider_errors"]
 
-            retrieve_trace = data["rag_trace"]["runtime"]["provider_trace"]["retrieve"]
+            saved_trace = asyncio.run(
+                _load_assistant_trace(session_factory, "session_dense_tail_failure_1", "dense-tail-failure-admin")
+            )
+            retrieve_trace = saved_trace["runtime"]["provider_trace"]["retrieve"]
             assert retrieve_trace["dense_query_failed"] is True
             assert retrieve_trace["fallback_used"] is True
             assert retrieve_trace["lexical_scope"] == "full_published_live"
             assert retrieve_trace["lexical_candidate_count"] == 1
 
-            evidence = data["rag_trace"]["evidence"]
+            evidence = saved_trace["evidence"]
             assert [item["document_id"] for item in evidence] == ["doc-chat-tail-match"]
             assert "xqvzjk chat tail evidence" in data["answer"]
     finally:

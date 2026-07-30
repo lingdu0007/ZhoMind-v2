@@ -1,15 +1,6 @@
 import { defineStore } from 'pinia';
 import { apiAdapter, streamChat } from '../api/adapters';
-import { extractRejectReason, formatStreamError, getDoneStatus, getProviderStatus } from './chat-state';
-
-const toText = (value) => {
-  if (typeof value === 'string') return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-};
+import { formatStreamError, getDoneStatus } from './chat-state';
 
 export const useChatStore = defineStore('chat', {
   state: () => ({
@@ -44,8 +35,7 @@ export const useChatStore = defineStore('chat', {
         content: item?.content || '',
         timestamp: item?.timestamp,
         evidence_summary: item?.evidence_summary || null,
-        rag_trace: item?.rag_trace || null,
-        rag_steps: [],
+        retrieval_diagnostics: item?.retrieval_diagnostics || null,
         streaming: false,
         isThinking: false,
         rejected: false,
@@ -83,8 +73,7 @@ export const useChatStore = defineStore('chat', {
         role: 'assistant',
         content: '',
         evidence_summary: null,
-        rag_trace: null,
-        rag_steps: [],
+        retrieval_diagnostics: null,
         streaming: true,
         isThinking: true,
         rejected: false,
@@ -116,18 +105,6 @@ export const useChatStore = defineStore('chat', {
               assistantMsg.content += chunk || '';
               this.streamTick += 1;
             },
-            onRagStep: (step) => {
-              const assistantMsg = getAssistantMsg();
-              if (!assistantMsg) return;
-              assistantMsg.rag_steps.push(toText(step));
-              const rejectReason = extractRejectReason(step);
-              if (rejectReason) {
-                assistantMsg.rejected = true;
-                assistantMsg.reject_reason = rejectReason;
-                assistantMsg.status = '证据不足，进入拒答';
-              }
-              this.streamTick += 1;
-            },
             onEvidenceSummary: (evidenceSummary) => {
               const assistantMsg = getAssistantMsg();
               if (!assistantMsg) return;
@@ -138,12 +115,11 @@ export const useChatStore = defineStore('chat', {
               }
               this.streamTick += 1;
             },
-            onTrace: (trace) => {
+            onRetrievalDiagnostics: (diagnostics) => {
               const assistantMsg = getAssistantMsg();
               if (!assistantMsg) return;
-              assistantMsg.rag_trace = trace;
-              const providerStatus = getProviderStatus(trace);
-              if (providerStatus) assistantMsg.status = providerStatus;
+              assistantMsg.retrieval_diagnostics = diagnostics || null;
+              this.streamTick += 1;
             },
             onError: (err) => {
               const assistantMsg = getAssistantMsg();

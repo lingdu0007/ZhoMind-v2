@@ -1,4 +1,6 @@
 from datetime import datetime, timezone
+import json
+import re
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +18,74 @@ CHAT_RETRIEVER_PROVIDER = "chat-default-retriever"
 CHAT_RERANK_PROVIDER = "chat-default-reranker"
 CHAT_JUDGE_PROVIDER = "chat-default-judge"
 CHAT_LLM_PROVIDER = "chat-default-llm"
+DIAGNOSTIC_MAX_TIMELINE_STEPS = 16
+DIAGNOSTIC_MAX_PROVIDER_ERRORS = 5
+DIAGNOSTIC_MAX_TRACE_PREVIEW_CHARS = 1600
+_DIAGNOSTIC_CODE = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
+_DIAGNOSTIC_PREVIEW_COUNTS = frozenset(
+    {
+        "attempt",
+        "calls",
+        "dense_candidate_count",
+        "dense_count",
+        "dense_hydrated_count",
+        "deduped",
+        "errors",
+        "evidence_count",
+        "fallback_hops",
+        "items",
+        "latency_ms",
+        "lexical_candidate_count",
+        "max_calls",
+        "max_latency_ms",
+        "max_parallel",
+        "merged",
+        "merged_count",
+        "reranked_count",
+        "retrieved_count",
+        "sparse_count",
+        "top_k",
+        "used_evidence",
+        "user_fact_count",
+        "session_keys",
+    }
+)
+_DIAGNOSTIC_PREVIEW_FLAGS = frozenset(
+    {"allow", "dense_query_failed", "enabled", "fallback_used", "gate_passed", "ok", "passed"}
+)
+_DIAGNOSTIC_PREVIEW_STEP_FIELDS = {
+    "normalize": ("ok",),
+    "memory_read": ("session_keys", "user_fact_count"),
+    "query_understand": ("intent", "language"),
+    "plan": ("strategy", "top_k"),
+    "tool_plan": ("enabled", "items", "max_calls", "max_parallel", "max_latency_ms"),
+    "tool_execute": ("enabled", "calls", "max_calls", "max_parallel", "max_latency_ms"),
+    "tool_verify": ("enabled", "errors"),
+    "retrieve": (
+        "strategy",
+        "dense_candidate_count",
+        "dense_hydrated_count",
+        "lexical_candidate_count",
+        "merged_count",
+        "dense_query_failed",
+        "lexical_scope",
+        "sparse_count",
+        "dense_count",
+        "retriever",
+        "retrieved_count",
+        "gate_passed",
+        "gate_reason",
+        "provider",
+        "fallback_used",
+    ),
+    "fusion": ("merged", "deduped"),
+    "rerank": ("reranked_count", "model", "provider", "fallback_used"),
+    "verify": ("passed", "reason", "judge", "provider", "fallback_used"),
+    "context_pack": ("evidence_count",),
+    "generate": ("used_evidence", "llm"),
+    "memory_write_gate": ("allow", "reason"),
+    "finalize": ("ok",),
+}
 
 
 class _IdentityReranker:
@@ -235,6 +305,188 @@ class ChatService:
             "sources": sources,
         }
 
+    @staticmethod
+    def _diagnostic_code(value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        text = value.strip()
+        return text if _DIAGNOSTIC_CODE.fullmatch(text) else None
+
+    @staticmethod
+    def _diagnostic_count(value: object) -> int | None:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None
+        return value
+
+    def _diagnostic_preview_value(self, key: str, value: object) -> bool | int | str | None:
+        if key in _DIAGNOSTIC_PREVIEW_FLAGS:
+            return value if isinstance(value, bool) else None
+        if key in _DIAGNOSTIC_PREVIEW_COUNTS:
+            return self._diagnostic_count(value)
+        return self._diagnostic_code(value)
+
+    def _diagnostic_preview_steps(self, steps: object) -> list[dict]:
+        if not isinstance(steps, list):
+            return []
+        preview: list[dict] = []
+        for item in steps[:DIAGNOSTIC_MAX_TIMELINE_STEPS]:
+            if not isinstance(item, dict):
+                continue
+            step = self._diagnostic_code(item.get("step"))
+            if step is None:
+                continue
+            preview_item = {"step": step}
+            detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+            allowed_fields = _DIAGNOSTIC_PREVIEW_STEP_FIELDS.get(step, ())
+            preview_detail = {
+                key: self._diagnostic_preview_value(key, detail.get(key))
+                for key in allowed_fields
+                if key in detail
+            }
+            if preview_detail:
+                preview_item["detail"] = preview_detail
+            preview.append(preview_item)
+        return preview
+
+    def _diagnostic_trace_preview(self, rag_trace: dict) -> str:
+        runtime = rag_trace.get("runtime") if isinstance(rag_trace.get("runtime"), dict) else {}
+        gate = rag_trace.get("gate") if isinstance(rag_trace.get("gate"), dict) else {}
+        attempts = runtime.get("provider_attempts") if isinstance(runtime.get("provider_attempts"), list) else []
+        preview_attempts: list[dict] = []
+        for attempt in attempts[:DIAGNOSTIC_MAX_PROVIDER_ERRORS]:
+            if not isinstance(attempt, dict):
+                continue
+            preview_attempt = {
+                key: self._diagnostic_preview_value(key, attempt.get(key))
+                for key in ("provider", "attempt", "latency_ms", "error_code")
+                if key in attempt
+            }
+            if preview_attempt:
+                preview_attempts.append(preview_attempt)
+
+        preview = {
+            "gate": {
+                "passed": self._diagnostic_preview_value("passed", gate.get("passed")),
+                "reason": self._diagnostic_code(gate.get("reason")),
+            },
+            "steps": self._diagnostic_preview_steps(rag_trace.get("steps")),
+            "runtime": {
+                "request_id": self._diagnostic_code(runtime.get("request_id")),
+                "session_id": self._diagnostic_code(runtime.get("session_id")),
+                "graph_alias": self._diagnostic_code(runtime.get("graph_alias")),
+                "steps": self._diagnostic_preview_steps(runtime.get("steps")),
+                "final_provider": self._diagnostic_code(runtime.get("final_provider")),
+                "fallback_hops": self._diagnostic_count(runtime.get("fallback_hops")),
+                "provider_attempts": preview_attempts,
+            },
+        }
+        serialized = json.dumps(preview, ensure_ascii=False, separators=(",", ":"))
+        if len(serialized) <= DIAGNOSTIC_MAX_TRACE_PREVIEW_CHARS:
+            return serialized
+        return f"{serialized[: DIAGNOSTIC_MAX_TRACE_PREVIEW_CHARS - 3]}..."
+
+    def _diagnostic_timeline(self, rag_trace: dict) -> list[dict]:
+        runtime = rag_trace.get("runtime") if isinstance(rag_trace.get("runtime"), dict) else {}
+        runtime_steps = runtime.get("steps") if isinstance(runtime.get("steps"), list) else []
+        timeline: list[dict] = []
+        for item in runtime_steps[:DIAGNOSTIC_MAX_TIMELINE_STEPS]:
+            if not isinstance(item, dict):
+                continue
+            step = self._diagnostic_code(item.get("step"))
+            if step is not None:
+                timeline.append({"step": step})
+        return timeline
+
+    def _diagnostic_candidate_counts(self, rag_trace: dict) -> dict:
+        retrieved = None
+        reranked = None
+        steps = rag_trace.get("steps") if isinstance(rag_trace.get("steps"), list) else []
+        for item in steps:
+            if not isinstance(item, dict) or not isinstance(item.get("detail"), dict):
+                continue
+            detail = item["detail"]
+            if item.get("step") == "retrieve":
+                retrieved = self._diagnostic_count(detail.get("retrieved_count"))
+            elif item.get("step") == "rerank":
+                reranked = self._diagnostic_count(detail.get("reranked_count"))
+
+        runtime = rag_trace.get("runtime") if isinstance(rag_trace.get("runtime"), dict) else {}
+        runtime_steps = runtime.get("steps") if isinstance(runtime.get("steps"), list) else []
+        for item in runtime_steps:
+            if not isinstance(item, dict) or not isinstance(item.get("detail"), dict):
+                continue
+            detail = item["detail"]
+            if item.get("step") == "retrieve" and retrieved is None:
+                retrieved = self._diagnostic_count(detail.get("merged_count"))
+            elif item.get("step") == "rerank" and reranked is None:
+                reranked = self._diagnostic_count(detail.get("reranked_count"))
+
+        return {"retrieved": retrieved, "reranked": reranked}
+
+    def _diagnostic_provider_errors(self, rag_trace: dict) -> list[dict]:
+        runtime = rag_trace.get("runtime") if isinstance(rag_trace.get("runtime"), dict) else {}
+        provider_trace = runtime.get("provider_trace") if isinstance(runtime.get("provider_trace"), dict) else {}
+        errors: list[dict] = []
+        for stage, detail in provider_trace.items():
+            if len(errors) >= DIAGNOSTIC_MAX_PROVIDER_ERRORS:
+                break
+            if not isinstance(detail, dict):
+                continue
+            error = detail.get("provider_error") or detail.get("error")
+            if not isinstance(error, dict):
+                continue
+            errors.append(
+                {
+                    "stage": self._diagnostic_code(stage),
+                    "code": self._diagnostic_code(error.get("code")),
+                    "type": self._diagnostic_code(error.get("type")),
+                }
+            )
+
+        attempts = runtime.get("provider_attempts") if isinstance(runtime.get("provider_attempts"), list) else []
+        for attempt in attempts:
+            if len(errors) >= DIAGNOSTIC_MAX_PROVIDER_ERRORS:
+                break
+            if not isinstance(attempt, dict) or not attempt.get("error_code"):
+                continue
+            errors.append(
+                {
+                    "stage": "generate",
+                    "code": self._diagnostic_code(attempt.get("error_code")),
+                    "type": None,
+                }
+            )
+        return errors
+
+    def _retrieval_diagnostics(self, rag_trace: dict | None) -> dict:
+        trace = rag_trace if isinstance(rag_trace, dict) else {}
+        gate = trace.get("gate") if isinstance(trace.get("gate"), dict) else {}
+        gate_passed = gate.get("passed")
+        gate_outcome = "passed" if gate_passed is True else "rejected" if gate_passed is False else "unavailable"
+
+        runtime = trace.get("runtime") if isinstance(trace.get("runtime"), dict) else {}
+        fallback_hops = self._diagnostic_count(runtime.get("fallback_hops"))
+        fallback_state = "unavailable"
+        if fallback_hops is not None:
+            fallback_state = "used" if fallback_hops > 0 else "not_used"
+
+        diagnostics = {
+            "timeline": self._diagnostic_timeline(trace),
+            "candidate_counts": self._diagnostic_candidate_counts(trace),
+            "evidence_gate": {
+                "outcome": gate_outcome,
+                "reason": self._diagnostic_code(gate.get("reason")),
+            },
+            "fallback": {
+                "state": fallback_state,
+                "hops": fallback_hops,
+                "final_provider": self._diagnostic_code(runtime.get("final_provider")),
+            },
+            "provider_errors": self._diagnostic_provider_errors(trace),
+        }
+        diagnostics["trace_preview"] = self._diagnostic_trace_preview(trace)
+        return diagnostics
+
     def project_message(self, message: dict, role: str) -> dict:
         projection = {
             "id": message.get("id"),
@@ -244,8 +496,8 @@ class ChatService:
         }
         if projection["type"] == "assistant":
             projection["evidence_summary"] = self._evidence_summary(message.get("rag_trace"))
-        if role == "admin" and message.get("rag_trace") is not None:
-            projection["rag_trace"] = message["rag_trace"]
+            if role == "admin":
+                projection["retrieval_diagnostics"] = self._retrieval_diagnostics(message.get("rag_trace"))
         return projection
 
     def project_chat_result(self, result: dict, role: str) -> dict:
@@ -256,8 +508,7 @@ class ChatService:
             "message": message,
         }
         if role == "admin":
-            projection["rag_steps"] = result["rag_steps"]
-            projection["rag_trace"] = result["message"]["rag_trace"]
+            projection["retrieval_diagnostics"] = message["retrieval_diagnostics"]
         return projection
 
     async def ensure_session_id(self, session_id: str | None) -> str:
