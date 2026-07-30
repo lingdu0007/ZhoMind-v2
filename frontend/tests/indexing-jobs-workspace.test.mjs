@@ -77,7 +77,7 @@ test('System Administrator can open a separate Indexing Jobs workspace, filter l
 
   await page.getByRole('heading', { name: '构建任务' }).waitFor();
   assert.equal(await page.getByRole('link', { name: '构建任务' }).isVisible(), true);
-  assert.equal(await page.getByText('文档库').count(), 0);
+  assert.equal(await page.getByRole('link', { name: '文档库' }).isVisible(), true);
   assert.equal(await page.getByText('job-active').isVisible(), true);
   assert.equal(await page.getByText('doc-operations').isVisible(), true);
   assert.equal(await page.getByText('执行中 (running)').isVisible(), true);
