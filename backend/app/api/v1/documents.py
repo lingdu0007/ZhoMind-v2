@@ -125,6 +125,7 @@ def _serialize_document(document: Document) -> dict:
         "status": document.status,
         "chunk_strategy": document.chunk_strategy,
         "chunk_count": document.chunk_count,
+        "published_generation": document.published_generation,
         "uploaded_at": document.uploaded_at.isoformat(),
     }
 
