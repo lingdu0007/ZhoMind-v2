@@ -259,7 +259,7 @@ test('an evidence gate rejection is shown as insufficient evidence instead of a 
             const encoder = new TextEncoder();
             controller.enqueue(
               encoder.encode(
-                'event: rag_step\ndata: {"step":{"step":"retrieve","detail":{"gate_passed":false,"gate_reason":"reject_insufficient_evidence"}}}\n\n'
+                'event: evidence_summary\ndata: {"evidence_summary":{"coverage":"insufficient","source_count":0,"sources":[]}}\n\n'
               )
             );
             controller.enqueue(encoder.encode('event: done\ndata: [DONE]\n\n'));
@@ -475,4 +475,141 @@ test('a completed response remains readable without overflow at a 390-pixel view
   await page.getByText('移动端可以阅读这段完整回答。').waitFor();
   await page.getByRole('status').filter({ hasText: '已完成' }).waitFor();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+});
+
+test('a Knowledge User can inspect Evidence Summary source excerpts without exposing Retrieval Diagnostics', { timeout: 30000 }, async (t) => {
+  const { page, baseUrl } = await startConversationWorkspace(t, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/me') {
+      await route.fulfill(jsonResponse({ username: 'lin', role: 'user' }));
+      return;
+    }
+    if (path === '/api/sessions') {
+      await route.fulfill(jsonResponse({ sessions: [] }));
+      return;
+    }
+    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
+  });
+
+  await page.addInitScript(() => {
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async (input, init) => {
+      if (!String(input).includes('/api/chat/stream')) return nativeFetch(input, init);
+      const encoder = new TextEncoder();
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode('event: content\ndata: {"content":"部署前需要完成审批。"}\n\n'));
+            controller.enqueue(
+              encoder.encode(
+                'event: evidence_summary\ndata: {"evidence_summary":{"coverage":"sufficient","source_count":1,"sources":[{"source_id":"chunk-deploy-1","metadata":{"filename":"deploy-runbook.md"},"excerpt":"发布前必须由值班负责人完成变更审批。"}]}}\n\n'
+              )
+            );
+            controller.enqueue(encoder.encode('event: done\ndata: [DONE]\n\n'));
+            controller.close();
+          }
+        }),
+        { status: 200, headers: { 'Content-Type': 'text/event-stream' } }
+      );
+    };
+  });
+  await page.addInitScript(() => localStorage.setItem('access_token', 'knowledge-user-token'));
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`${baseUrl}chat`);
+  await page.getByPlaceholder('请输入需要检索的问题').fill('部署前需要做什么？');
+  await page.getByRole('button', { name: '发送' }).click();
+
+  const summary = page.getByLabel('证据摘要');
+  await summary.waitFor();
+  assert.equal(await summary.getByText('证据充分').isVisible(), true);
+  assert.equal(await summary.getByText('1 个来源').isVisible(), true);
+  assert.equal(await page.getByText('RAG Trace').count(), 0);
+
+  const sourceButton = summary.getByRole('button', { name: '查看来源 deploy-runbook.md' });
+  await sourceButton.click();
+  const excerptDrawer = page.getByRole('complementary', { name: '来源摘录' });
+  await excerptDrawer.waitFor();
+  assert.equal(await excerptDrawer.getByText('发布前必须由值班负责人完成变更审批。').isVisible(), true);
+
+  const [answerBox, drawerBox] = await Promise.all([
+    page.getByLabel('助手消息').boundingBox(),
+    excerptDrawer.boundingBox()
+  ]);
+  assert.equal(answerBox.x + answerBox.width <= drawerBox.x, true);
+
+  await page.keyboard.press('Escape');
+  await excerptDrawer.waitFor({ state: 'detached' });
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), '查看来源 deploy-runbook.md');
+
+  await page.setViewportSize({ width: 1024, height: 900 });
+  await sourceButton.click();
+  const compactDrawer = page.getByRole('complementary', { name: '来源摘录' });
+  await compactDrawer.waitFor();
+  const [compactAnswerBox, compactDrawerBox] = await Promise.all([
+    page.getByLabel('助手消息').boundingBox(),
+    compactDrawer.boundingBox()
+  ]);
+  assert.equal(compactDrawerBox.y >= compactAnswerBox.y + compactAnswerBox.height, true);
+});
+
+test('historical Evidence Summaries retain source identity and show unavailable or insufficient coverage honestly', { timeout: 30000 }, async (t) => {
+  const { page, baseUrl } = await startConversationWorkspace(t, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/me') {
+      await route.fulfill(jsonResponse({ username: 'lin', role: 'user' }));
+      return;
+    }
+    if (path === '/api/sessions' && route.request().method() === 'GET') {
+      await route.fulfill(
+        jsonResponse({ sessions: [{ session_id: 'session-evidence-history', updated_at: '2026-07-30T10:00:00Z', message_count: 4 }] })
+      );
+      return;
+    }
+    if (path === '/api/sessions/session-evidence-history') {
+      await route.fulfill(
+        jsonResponse({
+          messages: [
+            { type: 'user', content: '历史的部署问题' },
+            {
+              type: 'assistant',
+              content: '历史回答有可核对来源。',
+              evidence_summary: {
+                coverage: 'sufficient',
+                source_count: 1,
+                sources: [{ source_id: 'chunk-history-7', metadata: {}, excerpt: '历史来源摘录。' }]
+              }
+            },
+            {
+              type: 'assistant',
+              content: '历史回答没有可用来源。',
+              evidence_summary: { coverage: 'unavailable', source_count: 0, sources: [] }
+            },
+            {
+              type: 'assistant',
+              content: '历史回答证据不足。',
+              evidence_summary: { coverage: 'insufficient', source_count: 0, sources: [] }
+            }
+          ]
+        })
+      );
+      return;
+    }
+    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
+  });
+
+  await page.addInitScript(() => localStorage.setItem('access_token', 'knowledge-user-token'));
+  await page.goto(`${baseUrl}chat`);
+  await page.getByRole('complementary', { name: '最近会话' }).getByRole('button', { name: /^session-evidence-history/ }).click();
+
+  const sourceAnswer = page.getByLabel('助手消息').filter({ hasText: '历史回答有可核对来源。' });
+  const sourceButton = sourceAnswer.getByRole('button', { name: '查看来源 chunk-history-7' });
+  await sourceButton.click();
+  await page.getByRole('complementary', { name: '来源摘录' }).getByText('历史来源摘录。').waitFor();
+  await page.getByRole('button', { name: '关闭来源摘录' }).click();
+
+  const unavailableAnswer = page.getByLabel('助手消息').filter({ hasText: '历史回答没有可用来源。' });
+  const insufficientAnswer = page.getByLabel('助手消息').filter({ hasText: '历史回答证据不足。' });
+  assert.equal(await unavailableAnswer.getByText('证据不可用').isVisible(), true);
+  assert.equal(await unavailableAnswer.getByText('没有可供核对的来源摘录。').isVisible(), true);
+  assert.equal(await insufficientAnswer.getByText('证据不足', { exact: true }).isVisible(), true);
 });

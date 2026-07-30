@@ -44,6 +44,7 @@ def test_chat_fallback_to_secondary_provider(monkeypatch) -> None:
     monkeypatch.setenv("RAG_DISABLE_GATE", "true")
     monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "ark")
     monkeypatch.setenv("RAG_LLM_FALLBACK_PROVIDERS", "openai")
+    monkeypatch.setenv("ADMIN_INVITE_CODE", "provider-test-admin-code")
     get_settings.cache_clear()
 
     async def _init_db() -> None:
@@ -70,7 +71,12 @@ def test_chat_fallback_to_secondary_provider(monkeypatch) -> None:
         with TestClient(app) as client:
             reg = client.post(
                 "/api/v1/auth/register",
-                json={"username": "fallback-u", "password": "secret-123", "role": "user"},
+                json={
+                    "username": "fallback-admin",
+                    "password": "secret-123",
+                    "role": "admin",
+                    "admin_code": "provider-test-admin-code",
+                },
             )
             token = reg.json()["data"]["access_token"]
             headers = {"Authorization": f"Bearer {token}"}

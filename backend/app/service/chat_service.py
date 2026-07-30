@@ -191,6 +191,75 @@ class ChatService:
     def _runtime_trace(self, runtime_result: dict) -> dict:
         return RuntimeTraceMapper.map_runtime(runtime_result)
 
+    def _evidence_summary(self, rag_trace: dict | None) -> dict:
+        trace = rag_trace if isinstance(rag_trace, dict) else {}
+        evidence = trace.get("evidence")
+        evidence_items = evidence if isinstance(evidence, list) else []
+        gate = trace.get("gate") if isinstance(trace.get("gate"), dict) else {}
+        gate_passed = gate.get("passed")
+
+        sources: list[dict] = []
+        for index, item in enumerate(evidence_items, start=1):
+            if not isinstance(item, dict):
+                continue
+            metadata = item.get("metadata")
+            source_metadata = (
+                {
+                    key: metadata[key]
+                    for key in ("title", "filename", "source_file", "source", "document_name", "path")
+                    if isinstance(metadata, dict) and isinstance(metadata.get(key), str) and metadata[key].strip()
+                }
+                if isinstance(metadata, dict)
+                else {}
+            )
+            source_id = item.get("chunk_id") or item.get("source_id") or item.get("document_id") or f"source-{index}"
+            excerpt = item.get("content_preview") or item.get("content") or ""
+            sources.append(
+                {
+                    "source_id": str(source_id),
+                    "metadata": source_metadata,
+                    "excerpt": str(excerpt),
+                }
+            )
+
+        if gate_passed is False:
+            coverage = "insufficient"
+        elif sources:
+            coverage = "sufficient"
+        else:
+            coverage = "unavailable"
+
+        return {
+            "coverage": coverage,
+            "source_count": len(sources),
+            "sources": sources,
+        }
+
+    def project_message(self, message: dict, role: str) -> dict:
+        projection = {
+            "id": message.get("id"),
+            "type": message.get("type"),
+            "content": message.get("content") or "",
+            "timestamp": message.get("timestamp"),
+        }
+        if projection["type"] == "assistant":
+            projection["evidence_summary"] = self._evidence_summary(message.get("rag_trace"))
+        if role == "admin" and message.get("rag_trace") is not None:
+            projection["rag_trace"] = message["rag_trace"]
+        return projection
+
+    def project_chat_result(self, result: dict, role: str) -> dict:
+        message = self.project_message(result["message"], role)
+        projection = {
+            "session_id": result["session_id"],
+            "answer": message["content"],
+            "message": message,
+        }
+        if role == "admin":
+            projection["rag_steps"] = result["rag_steps"]
+            projection["rag_trace"] = result["message"]["rag_trace"]
+        return projection
+
     async def ensure_session_id(self, session_id: str | None) -> str:
         if session_id and session_id.strip():
             return session_id.strip()
@@ -210,19 +279,22 @@ class ChatService:
             )
         return items
 
-    async def get_session_messages(self, session_id: str, user_id: str) -> list[dict]:
+    async def get_session_messages(self, session_id: str, user_id: str, role: str) -> list[dict]:
         session = await self.repo.get_session(session_id=session_id, user_id=user_id)
         if session is None:
             return []
         messages = await self.repo.list_messages(session_id=session_id, user_id=user_id)
         return [
-            {
+            self.project_message(
+                {
                 "id": item.id,
                 "type": item.type,
                 "content": item.content,
                 "timestamp": item.created_at.isoformat(),
                 "rag_trace": item.rag_trace,
-            }
+                },
+                role,
+            )
             for item in messages
         ]
 

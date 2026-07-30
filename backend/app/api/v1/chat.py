@@ -41,21 +41,13 @@ async def chat(
     current_user=Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    result = await ChatService(session).run_chat(
+    service = ChatService(session)
+    result = await service.run_chat(
         user_id=current_user.username,
         question=payload.message,
         session_id=payload.session_id,
     )
-    message = result["message"]
-    return _ok(
-        {
-            "session_id": result["session_id"],
-            "answer": message["content"],
-            "message": message,
-            "rag_steps": result["rag_steps"],
-            "rag_trace": message["rag_trace"],
-        }
-    )
+    return _ok(service.project_chat_result(result, current_user.role))
 
 
 @router.post("/stream")
@@ -64,21 +56,27 @@ async def chat_stream(
     current_user=Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> StreamingResponse:
-    result = await ChatService(session).run_chat(
+    service = ChatService(session)
+    result = await service.run_chat(
         user_id=current_user.username,
         question=payload.message,
         session_id=payload.session_id,
     )
+    projected_message = service.project_message(result["message"], current_user.role)
 
     async def event_generator():
-        for step in result["rag_steps"]:
-            yield _sse_event("rag_step", {"step": step})
+        if current_user.role == "admin":
+            for step in result["rag_steps"]:
+                yield _sse_event("rag_step", {"step": step})
 
-        content = result["message"]["content"]
+        content = projected_message["content"]
         for chunk in _chunk_text(content):
             yield _sse_event("content", {"content": chunk})
 
-        yield _sse_event("trace", {"trace": result["message"]["rag_trace"]})
+        if projected_message.get("evidence_summary") is not None:
+            yield _sse_event("evidence_summary", {"evidence_summary": projected_message["evidence_summary"]})
+        if current_user.role == "admin":
+            yield _sse_event("trace", {"trace": result["message"]["rag_trace"]})
         yield _sse_event("done", "[DONE]")
 
     return StreamingResponse(

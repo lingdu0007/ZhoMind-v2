@@ -21,17 +21,30 @@ test('parse standard SSE event/data pairs without leaking event lines into conte
     'event: content\n',
     'data: {"delta":"你"}\n\n',
     'event: content\ndata: {"delta":"好"}\n\n',
+    'event: evidence_summary\ndata: {"evidence_summary":{"coverage":"sufficient","source_count":1,"sources":[]}}\n\n',
     'event: trace\ndata: {"trace":{"k":"v"}}\n\n',
     'event: done\ndata: "[DONE]"\n\n'
   ]);
 
   const types = frames.map((item) => item.type);
-  assert.deepEqual(types, ['unknown', 'rag_step', 'content', 'content', 'trace', 'done']);
+  assert.deepEqual(types, ['unknown', 'rag_step', 'content', 'content', 'evidence_summary', 'trace', 'done']);
 
   const contentChunks = frames.filter((item) => item.type === 'content').map((item) => item.content);
   assert.deepEqual(contentChunks, ['你', '好']);
   contentChunks.forEach((chunk) => {
     assert.equal(chunk.includes('event:'), false);
+  });
+});
+
+test('parse an Evidence Summary frame as structured answer support', () => {
+  const [event] = collectEvents([
+    'event: evidence_summary\n',
+    'data: {"evidence_summary":{"coverage":"unavailable","source_count":0,"sources":[]}}\n\n'
+  ]);
+
+  assert.deepEqual(event, {
+    type: 'evidence_summary',
+    evidence_summary: { coverage: 'unavailable', source_count: 0, sources: [] }
   });
 });
 

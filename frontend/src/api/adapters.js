@@ -142,6 +142,11 @@ export const streamChat = async ({ message, session_id, signal, token }, handler
       return;
     }
 
+    if (event.type === 'evidence_summary') {
+      handlers.onEvidenceSummary?.(event.evidence_summary);
+      return;
+    }
+
     if (event.type === 'rag_step') {
       handlers.onRagStep?.(event.step ?? event.data ?? event);
       return;

@@ -22,37 +22,36 @@
       <div v-if="msg.rejected" class="reject-tip">拒答原因：知识片段不足，建议补充关键词或限定范围。</div>
       <button v-if="msg.failed" type="button" class="retry-button" :disabled="retryDisabled" @click="$emit('retry', idx)">重试</button>
 
-      <div v-if="msg.rag_steps?.length" class="steps">
-        <strong>检索步骤</strong>
-        <ul>
-          <li v-for="(step, i) in msg.rag_steps" :key="i">{{ step }}</li>
+      <section v-if="msg.evidence_summary" class="evidence-summary" aria-label="证据摘要">
+        <div class="evidence-summary__heading">
+          <span>证据摘要</span>
+          <strong>{{ getEvidenceCoverageLabel(msg.evidence_summary.coverage) }}</strong>
+        </div>
+        <p class="evidence-summary__count">{{ msg.evidence_summary.source_count || 0 }} 个来源</p>
+        <ul v-if="msg.evidence_summary.sources?.length" class="evidence-summary__sources">
+          <li v-for="source in msg.evidence_summary.sources" :key="source.source_id">
+            <button
+              type="button"
+              class="evidence-summary__source"
+              :aria-label="`查看来源 ${getEvidenceSourceLabel(source)}`"
+              @click="$emit('open-source', { source, trigger: $event.currentTarget })"
+            >
+              <span>{{ getEvidenceSourceLabel(source) }}</span>
+              <span>查看摘录</span>
+            </button>
+          </li>
         </ul>
-      </div>
-
-      <div v-if="msg.rag_trace" class="trace">
-        <el-collapse>
-          <el-collapse-item title="RAG Trace" name="trace">
-            <pre>{{ formatTrace(msg.rag_trace) }}</pre>
-          </el-collapse-item>
-        </el-collapse>
-      </div>
+        <p v-else class="evidence-summary__empty">没有可供核对的来源摘录。</p>
+      </section>
     </article>
   </section>
 </template>
 
 <script setup>
 import { nextTick, ref, watch } from 'vue';
+import { getEvidenceCoverageLabel, getEvidenceSourceLabel } from '../app/evidence-summary';
 
 const listRef = ref(null);
-
-const formatTrace = (trace) => {
-  if (typeof trace === 'string') return trace;
-  try {
-    return JSON.stringify(trace, null, 2);
-  } catch {
-    return String(trace);
-  }
-};
 
 const statusClass = (status) => {
   if (!status) return '';
@@ -73,7 +72,7 @@ const props = defineProps({
   }
 });
 
-defineEmits(['retry']);
+defineEmits(['retry', 'open-source']);
 
 const scrollToBottom = async () => {
   await nextTick();
@@ -241,28 +240,79 @@ watch(
   opacity: 0.58;
 }
 
-.steps {
-  margin-top: 8px;
-  font-size: 13px;
-  color: var(--color-ink-soft);
-}
-
-.ref-title {
-  font-weight: 600;
-  margin-bottom: 4px;
-}
-
-.trace {
+.evidence-summary {
   margin-top: 12px;
-  color: var(--color-ink-soft);
+  padding: 12px 16px;
+  border-left: 3px solid var(--color-moss);
+  background: var(--color-moss-soft);
 }
 
-pre {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
+.evidence-summary__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--color-ink);
+  font-size: 13px;
+}
+
+.evidence-summary__heading strong {
+  color: var(--color-moss);
   font-size: 12px;
-  line-height: 1.5;
+}
+
+.evidence-summary__count,
+.evidence-summary__empty {
+  margin: 8px 0 0;
+  color: var(--color-ink-soft);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.evidence-summary__sources {
+  margin: 0;
+  padding: 8px 0 0;
+  list-style: none;
+}
+
+.evidence-summary__source {
+  width: 100%;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--color-moss) 28%, transparent);
+  background: transparent;
+  color: var(--color-ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  transition: transform 180ms ease-out;
+}
+
+.evidence-summary__source:hover {
+  color: var(--color-copper-strong);
+}
+
+.evidence-summary__source:active {
+  transform: translateY(1px);
+}
+
+.evidence-summary__source span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evidence-summary__source span:last-child {
+  flex: 0 0 auto;
+  color: var(--color-moss);
+  font-size: 12px;
 }
 
 @media (max-width: 640px) {

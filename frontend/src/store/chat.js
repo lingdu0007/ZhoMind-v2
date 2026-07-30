@@ -43,6 +43,7 @@ export const useChatStore = defineStore('chat', {
         role: item?.type === 'user' ? 'user' : 'assistant',
         content: item?.content || '',
         timestamp: item?.timestamp,
+        evidence_summary: item?.evidence_summary || null,
         rag_trace: item?.rag_trace || null,
         rag_steps: [],
         streaming: false,
@@ -81,6 +82,7 @@ export const useChatStore = defineStore('chat', {
       this.messages.push({
         role: 'assistant',
         content: '',
+        evidence_summary: null,
         rag_trace: null,
         rag_steps: [],
         streaming: true,
@@ -122,6 +124,16 @@ export const useChatStore = defineStore('chat', {
               if (rejectReason) {
                 assistantMsg.rejected = true;
                 assistantMsg.reject_reason = rejectReason;
+                assistantMsg.status = '证据不足，进入拒答';
+              }
+              this.streamTick += 1;
+            },
+            onEvidenceSummary: (evidenceSummary) => {
+              const assistantMsg = getAssistantMsg();
+              if (!assistantMsg) return;
+              assistantMsg.evidence_summary = evidenceSummary || null;
+              if (evidenceSummary?.coverage === 'insufficient') {
+                assistantMsg.rejected = true;
                 assistantMsg.status = '证据不足，进入拒答';
               }
               this.streamTick += 1;

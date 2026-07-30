@@ -10,6 +10,7 @@ from app.infra.db import get_db_session
 from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
+from app.repository.chat_repository import ChatRepository
 
 
 class _InMemoryRedis:
@@ -39,12 +40,13 @@ def _extract_sse_event_data(payload: str, event: str) -> str | None:
     return None
 
 
-def test_chat_response_contract_stable(monkeypatch) -> None:
+def test_administrator_chat_response_contract_preserves_retrieval_diagnostics(monkeypatch) -> None:
     db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     fake_redis = _InMemoryRedis()
 
     monkeypatch.setenv("RAG_DISABLE_GATE", "false")
+    monkeypatch.setenv("ADMIN_INVITE_CODE", "contract-admin-code")
     get_settings.cache_clear()
 
     async def _init_db() -> None:
@@ -64,7 +66,12 @@ def test_chat_response_contract_stable(monkeypatch) -> None:
         with TestClient(app) as client:
             reg = client.post(
                 "/api/v1/auth/register",
-                json={"username": "contract-u", "password": "secret-123", "role": "user"},
+                json={
+                    "username": "contract-admin",
+                    "password": "secret-123",
+                    "role": "admin",
+                    "admin_code": "contract-admin-code",
+                },
             )
             token = reg.json()["data"]["access_token"]
             headers = {"Authorization": f"Bearer {token}"}
@@ -132,4 +139,144 @@ def test_chat_response_contract_stable(monkeypatch) -> None:
     finally:
         app.dependency_overrides.clear()
         get_settings.cache_clear()
+        asyncio.run(db_engine.dispose())
+
+
+def test_knowledge_user_chat_projection_excludes_retrieval_diagnostics(monkeypatch) -> None:
+    db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    fake_redis = _InMemoryRedis()
+
+    monkeypatch.setenv("RAG_DISABLE_GATE", "false")
+    get_settings.cache_clear()
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_init_db())
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+
+    try:
+        with TestClient(app) as client:
+            registration = client.post(
+                "/api/v1/auth/register",
+                json={"username": "evidence-user", "password": "secret-123", "role": "user"},
+            )
+            token = registration.json()["data"]["access_token"]
+            headers = {"Authorization": f"Bearer {token}"}
+
+            response = client.post(
+                "/api/v1/chat",
+                headers=headers,
+                json={"message": "没有检索证据的问题", "session_id": "evidence_projection_s1"},
+            )
+            assert response.status_code == 200
+            data = response.json()["data"]
+            assert data["message"]["evidence_summary"] == {
+                "coverage": "insufficient",
+                "source_count": 0,
+                "sources": [],
+            }
+            assert "rag_steps" not in data
+            assert "rag_trace" not in data
+            assert "rag_trace" not in data["message"]
+
+            stream_response = client.post(
+                "/api/v1/chat/stream",
+                headers=headers,
+                json={"message": "流式没有检索证据的问题", "session_id": "evidence_projection_s2"},
+            )
+            assert stream_response.status_code == 200
+            assert "event: evidence_summary" in stream_response.text
+            assert "event: rag_step" not in stream_response.text
+            assert "event: trace" not in stream_response.text
+            assert "event: done" in stream_response.text
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+        asyncio.run(db_engine.dispose())
+
+
+def test_knowledge_user_session_history_projects_source_excerpts_without_trace_data() -> None:
+    db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    fake_redis = _InMemoryRedis()
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_init_db())
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    async def _seed_history() -> None:
+        async with session_factory() as session:
+            repository = ChatRepository(session)
+            chat_session = await repository.get_or_create_session("evidence_history_s1", "history-user")
+            await repository.add_message(
+                session_id=chat_session.id,
+                user_id="history-user",
+                message_type="assistant",
+                content="历史证据回答",
+                rag_trace={
+                    "gate": {"passed": True, "reason": "sufficient_evidence"},
+                    "evidence": [
+                        {
+                            "chunk_id": "chunk-deploy-7",
+                            "content_preview": "发布前由值班负责人完成变更审批。",
+                            "metadata": {
+                                "source_file": "deploy-runbook.md",
+                                "provider_error": "must not reach a Knowledge User",
+                            },
+                        }
+                    ],
+                    "runtime": {"provider_attempts": [{"error": "must not reach a Knowledge User"}]},
+                },
+            )
+            await session.commit()
+
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+
+    try:
+        with TestClient(app) as client:
+            registration = client.post(
+                "/api/v1/auth/register",
+                json={"username": "history-user", "password": "secret-123", "role": "user"},
+            )
+            token = registration.json()["data"]["access_token"]
+            asyncio.run(_seed_history())
+
+            response = client.get(
+                "/api/v1/sessions/evidence_history_s1",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert response.status_code == 200
+            message = response.json()["data"]["messages"][0]
+            assert message["evidence_summary"] == {
+                "coverage": "sufficient",
+                "source_count": 1,
+                "sources": [
+                    {
+                        "source_id": "chunk-deploy-7",
+                        "metadata": {"source_file": "deploy-runbook.md"},
+                        "excerpt": "发布前由值班负责人完成变更审批。",
+                    }
+                ],
+            }
+            assert "rag_trace" not in message
+            assert "provider_attempts" not in response.text
+            assert "provider_error" not in response.text
+    finally:
+        app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
