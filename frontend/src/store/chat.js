@@ -21,6 +21,15 @@ export const useChatStore = defineStore('chat', {
     streamTick: 0
   }),
   actions: {
+    clearWorkspaceState() {
+      this.streamController?.abort();
+      this.messages = [];
+      this.sessions = [];
+      this.activeSessionId = '';
+      this.streamController = null;
+      this.loading = false;
+      this.streamTick = 0;
+    },
     async loadSessions() {
       const data = await apiAdapter.listSessions();
       this.sessions = data?.sessions || data?.items || data?.data || [];

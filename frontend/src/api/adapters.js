@@ -1,4 +1,4 @@
-import http, { resolveApiBaseURL } from './http';
+import http, { notifyAuthInvalid, resolveApiBaseURL } from './http';
 import { createSSEParser, normalizeSSEFrame } from './sse';
 
 const unwrapData = (payload) => payload?.data ?? payload;
@@ -97,6 +97,7 @@ export const streamChat = async ({ message, session_id, signal, token }, handler
   });
 
   if (!response.ok || !response.body) {
+    if (response.status === 401) notifyAuthInvalid();
     let messageText = `流式请求失败: ${response.status}`;
     let code = '';
     let requestId = '';
