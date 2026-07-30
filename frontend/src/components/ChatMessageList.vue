@@ -1,15 +1,26 @@
 <template>
-  <div ref="listRef" class="message-list card">
-    <div v-if="messages.length === 0" class="empty">开始提问，系统会基于知识库回复。</div>
-    <article v-for="(msg, idx) in messages" :key="idx" class="msg">
+  <section ref="listRef" class="message-list" aria-label="对话内容">
+    <div v-if="messages.length === 0" class="empty">
+      <p class="empty__eyebrow">内部知识库</p>
+      <h2>从团队知识开始提问</h2>
+      <p>可查询部署规范、事故手册、产品决策和运行流程。</p>
+    </div>
+    <article
+      v-for="(msg, idx) in messages"
+      :key="idx"
+      class="msg"
+      :class="`msg--${msg.role}`"
+      :aria-label="msg.role === 'user' ? '用户消息' : '助手消息'"
+    >
       <header class="msg-head">
         <span class="role" :class="msg.role">{{ msg.role === 'user' ? '你' : '助手' }}</span>
-        <span v-if="msg.isThinking" class="status-dot">思考中...</span>
-        <span v-else-if="msg.streaming" class="status-dot">Streaming…</span>
-        <span v-else-if="msg.status" class="status-text" :class="statusClass(msg.status)">{{ msg.status }}</span>
+        <span v-if="msg.isThinking" class="status-dot" role="status">正在检索与生成回答</span>
+        <span v-else-if="msg.streaming" class="status-dot" role="status">正在生成回答</span>
+        <span v-else-if="msg.status" class="status-text" :class="statusClass(msg.status)" role="status">{{ msg.status }}</span>
       </header>
       <div class="content">{{ msg.content }}</div>
       <div v-if="msg.rejected" class="reject-tip">拒答原因：知识片段不足，建议补充关键词或限定范围。</div>
+      <button v-if="msg.failed" type="button" class="retry-button" :disabled="retryDisabled" @click="$emit('retry', idx)">重试</button>
 
       <div v-if="msg.rag_steps?.length" class="steps">
         <strong>检索步骤</strong>
@@ -26,7 +37,7 @@
         </el-collapse>
       </div>
     </article>
-  </div>
+  </section>
 </template>
 
 <script setup>
@@ -55,8 +66,14 @@ const props = defineProps({
   messages: {
     type: Array,
     default: () => []
+  },
+  retryDisabled: {
+    type: Boolean,
+    default: false
   }
 });
+
+defineEmits(['retry']);
 
 const scrollToBottom = async () => {
   await nextTick();
@@ -74,38 +91,78 @@ watch(
 
 <style scoped>
 .message-list {
-  padding: 24px;
-  min-height: 480px;
+  min-height: 468px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  max-height: calc(70vh);
+  border-top: 1px solid var(--color-rule);
+  border-bottom: 1px solid var(--color-rule);
+  max-height: min(62vh, 720px);
   overflow-y: auto;
 }
 
 .empty {
-  color: var(--text-muted);
+  margin: auto 0;
+  padding: 40px 0;
+  color: var(--color-ink-soft);
+  text-align: center;
+}
+
+.empty__eyebrow {
+  margin: 0 0 8px;
+  color: var(--color-copper-strong);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.empty h2 {
+  margin: 0;
+  color: var(--color-ink);
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.empty > p:last-child {
+  max-width: 360px;
+  margin: 12px auto 0;
+  font-size: 14px;
+  line-height: 1.75;
 }
 
 .msg {
-  border: 1px solid var(--line-soft);
-  border-radius: 18px;
-  padding: 20px;
-  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);
+  width: min(100%, 680px);
+  padding: 20px 0;
+  border-bottom: 1px solid var(--color-rule);
+}
+
+.msg--user {
+  align-self: flex-end;
+  width: min(78%, 560px);
+  margin: 16px 0 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-control);
+  background: var(--color-paper-muted);
+}
+
+.msg--assistant {
+  align-self: flex-start;
 }
 
 .role {
   font-size: 13px;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--color-ink-soft);
 }
 
 .role.user {
-  color: var(--cta);
+  color: var(--color-copper-strong);
 }
 
 .role.assistant {
-  color: var(--primary);
+  color: var(--color-moss);
 }
 
 .msg-head {
@@ -116,8 +173,10 @@ watch(
 }
 
 .content {
+  color: var(--color-ink);
   white-space: pre-wrap;
-  line-height: 1.6;
+  font-size: 15px;
+  line-height: 1.8;
 }
 
 .stream-status {
@@ -129,35 +188,63 @@ watch(
 .status-dot,
 .status-text {
   font-size: 12px;
-  color: var(--cta);
+  color: var(--color-copper-strong);
 }
 
 .status-error {
-  color: var(--danger);
+  color: var(--color-danger);
 }
 
 .status-reject {
-  color: #b45309;
+  color: var(--color-warning);
 }
 
 .status-stop {
-  color: var(--text-muted);
+  color: var(--color-ink-soft);
 }
 
 .reject-tip {
-  margin-top: 8px;
-  font-size: 12px;
-  color: #92400e;
-  background: #fffbeb;
-  border: 1px solid #fcd34d;
-  border-radius: 8px;
-  padding: 8px 10px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--color-warning);
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.retry-button {
+  min-height: 32px;
+  margin-top: 12px;
+  padding: 4px 10px;
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-control);
+  background: var(--color-paper-raised);
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: color 180ms ease-out, background-color 180ms ease-out, border-color 180ms ease-out, transform 180ms ease-out;
+}
+
+.retry-button:hover:not(:disabled) {
+  border-color: var(--color-copper);
+  color: var(--color-copper-strong);
+}
+
+.retry-button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.retry-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 
 .steps {
   margin-top: 8px;
   font-size: 13px;
-  color: var(--text-muted);
+  color: var(--color-ink-soft);
 }
 
 .ref-title {
@@ -166,7 +253,8 @@ watch(
 }
 
 .trace {
-  margin-top: 8px;
+  margin-top: 12px;
+  color: var(--color-ink-soft);
 }
 
 pre {
@@ -175,5 +263,21 @@ pre {
   word-break: break-word;
   font-size: 12px;
   line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+  .message-list {
+    min-height: 390px;
+    max-height: none;
+  }
+
+  .msg,
+  .msg--user {
+    width: 100%;
+  }
+
+  .empty {
+    padding: 32px 12px;
+  }
 }
 </style>

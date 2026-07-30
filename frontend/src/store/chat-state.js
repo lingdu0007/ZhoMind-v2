@@ -12,6 +12,7 @@ export const extractRejectReason = (step) => {
 
 export const formatStreamError = (error) => {
   if (!error) return '请求失败，请稍后重试';
+  if (typeof error === 'string') return error;
 
   const code = error.code || '';
   if (code === 'AUTH_FORBIDDEN') return '无权限执行当前问答';
@@ -21,8 +22,8 @@ export const formatStreamError = (error) => {
 };
 
 export const getDoneStatus = (assistantMsg) => {
-  if (assistantMsg?.rejected) return '已拒答（证据不足）';
-  return '';
+  if (assistantMsg?.rejected) return '证据不足';
+  return '已完成';
 };
 
 export const getProviderStatus = (trace) => {
