@@ -1,627 +1,287 @@
 <template>
-  <section class="upload-page">
-    <div class="top-bar">
-      <h1>文档上传</h1>
-      <el-button v-if="authStore.isAdmin" class="btn-ghost" @click="loadDocs">刷新</el-button>
+  <section class="document-library" aria-labelledby="document-library-title">
+    <header class="document-library__header">
+      <div>
+        <p class="document-library__eyebrow">知识库运维</p>
+        <h1 id="document-library-title">文档库</h1>
+        <p class="document-library__description">查看已上传文档，并为新的资料创建索引构建任务。</p>
+      </div>
+      <button v-if="isDesktop" class="document-library__refresh" type="button" :disabled="loading" @click="loadDocuments">
+        <RefreshCw :size="16" :class="{ 'document-library__refresh-icon--spinning': loading }" aria-hidden="true" />
+        <span>{{ loading ? '正在刷新' : '刷新' }}</span>
+      </button>
+    </header>
+
+    <div v-if="!isDesktop" class="document-library__desktop-notice" role="status">
+      <Monitor :size="18" aria-hidden="true" />
+      <p>文档库当前仅支持桌面工作区。</p>
     </div>
 
-    <div v-if="!authStore.isLoggedIn" class="card notice">请先在聊天页登录。</div>
-    <div v-else-if="!authStore.isAdmin" class="card notice">仅管理员可操作文档管理功能。</div>
     <template v-else>
       <UploadPanel @uploaded="handleUploaded" />
 
-      <div class="stat-row">
-        <div class="stat-card" v-for="stat in stats" :key="stat.label">
-          <p class="stat-label">{{ stat.label }}</p>
-          <p class="stat-value">{{ stat.value }}</p>
+      <div v-if="uploadResult" class="document-library__upload-result" role="status">
+        <CircleCheck :size="18" aria-hidden="true" />
+        <div>
+          <p>已为 {{ uploadResult.filename }} 创建初始构建任务。</p>
+          <p class="document-library__identifiers">文档 ID：{{ uploadResult.document_id || '-' }}<br />构建任务 ID：{{ uploadResult.job_id || '-' }}</p>
         </div>
-      </div>
-
-      <div class="card table-card">
-        <div class="table-header">
-          <h3>文档列表</h3>
-          <div class="table-tools">
-            <el-input v-model="keyword" class="search-input" placeholder="搜索文件" clearable />
-            <el-select v-model="batchChunkStrategy" placeholder="批量分块策略" style="width: 140px">
-              <el-option v-for="item in chunkStrategyOptions" :key="item.value" :label="item.label" :value="item.value" />
-            </el-select>
-            <el-button
-              class="btn-ghost"
-              :disabled="!selectedDocIds.length"
-              :loading="batchBuildLoading"
-              @click="handleBatchBuild"
-            >
-              批量分块({{ selectedDocIds.length }})
-            </el-button>
-            <el-button
-              class="btn-ghost danger-btn"
-              :disabled="!selectedDocIds.length"
-              :loading="batchDeleteLoading"
-              @click="handleBatchDelete"
-            >
-              批量删除({{ selectedDocIds.length }})
-            </el-button>
-            <el-button class="btn-ghost" @click="loadDocs">刷新</el-button>
-          </div>
-        </div>
-        <el-table
-          ref="docsTableRef"
-          class="table-minimal"
-          :data="filteredDocs"
-          v-loading="docsLoading"
-          row-key="document_id"
-          @selection-change="handleSelectionChange"
+        <button
+          v-if="uploadResult.job_id"
+          type="button"
+          :aria-label="`查看构建任务 ${uploadResult.job_id}`"
+          @click="openJob(uploadResult.job_id)"
         >
-          <el-table-column type="selection" width="52" :reserve-selection="true" />
-          <el-table-column prop="filename" label="文件名" min-width="220" />
-          <el-table-column prop="file_type" label="类型" width="120" />
-          <el-table-column label="大小" width="120">
-            <template #default="scope">
-              {{ formatFileSize(scope.row.file_size) }}
-            </template>
-          </el-table-column>
-          <el-table-column label="状态" width="120">
-            <template #default="scope">
-              <el-tag size="small" :type="documentStatusMeta(scope.row.status).type">
-                {{ documentStatusMeta(scope.row.status).label }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="分块策略" width="150">
-            <template #default="scope">
-              <el-select
-                size="small"
-                style="width: 120px"
-                :model-value="resolveDocumentStrategy(scope.row)"
-                @change="(value) => updateDocumentStrategy(scope.row.document_id, value)"
-              >
-                <el-option
-                  v-for="item in chunkStrategyOptions"
-                  :key="item.value"
-                  :label="item.label"
-                  :value="item.value"
-                />
-              </el-select>
-            </template>
-          </el-table-column>
-          <el-table-column prop="chunk_count" label="分块数" width="100" />
-          <el-table-column label="上传时间" width="200">
-            <template #default="scope">
-              {{ formatTime(scope.row.uploaded_at) }}
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="220" fixed="right">
-            <template #default="scope">
-              <el-button
-                link
-                type="primary"
-                :loading="Boolean(rowBuildLoadingMap[scope.row.document_id])"
-                @click="buildSingleDocument(scope.row)"
-              >
-                执行分块
-              </el-button>
-              <el-button
-                link
-                type="primary"
-                :disabled="scope.row.status !== 'ready'"
-                @click="openChunkDialog(scope.row)"
-              >
-                查看分块
-              </el-button>
-              <el-button
-                link
-                type="danger"
-                :loading="Boolean(rowDeleteLoadingMap[scope.row.document_id])"
-                @click="removeSingleDocument(scope.row)"
-              >
-                删除
-              </el-button>
-            </template>
-          </el-table-column>
-        </el-table>
+          查看构建任务
+        </button>
       </div>
 
-      <el-dialog
-        v-model="chunkDialog.visible"
-        title="分块结果"
-        width="72%"
-        :close-on-click-modal="false"
-        @closed="resetChunkDialog"
-      >
-        <div v-loading="chunkDialog.loading" class="chunk-dialog-body">
-          <div class="chunk-dialog-meta">
-            <span>文件：{{ chunkDialog.filename || '-' }}</span>
-            <span>文档ID：{{ chunkDialog.documentId || '-' }}</span>
-          </div>
+      <div class="document-library__controls" aria-label="文档库控制">
+        <label class="document-library__search" for="document-library-search">
+          <Search :size="16" aria-hidden="true" />
+          <span class="sr-only">按文件名搜索</span>
+          <input id="document-library-search" v-model="keyword" type="search" placeholder="按文件名搜索" />
+        </label>
+        <label class="document-library__filter" for="document-library-status">
+          <span>状态</span>
+          <select id="document-library-status" v-model="statusFilter" aria-label="按状态筛选">
+            <option v-for="option in statusFilterOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+          </select>
+        </label>
+        <p class="document-library__count" aria-live="polite">显示 {{ filteredDocuments.length }} 个文档</p>
+      </div>
 
-          <el-empty
-            v-if="!chunkDialog.loading && !chunkDialog.items.length"
-            description="暂无分块结果"
-            style="padding: 40px 0"
-          />
+      <p v-if="listError" class="document-library__error" role="alert">
+        <span>{{ listError }}</span>
+        <button type="button" @click="loadDocuments">重新加载</button>
+      </p>
 
-          <div v-for="item in chunkDialog.items" :key="item.chunk_id" class="chunk-item">
-            <div class="chunk-item-header">
-              <span>Chunk #{{ item.chunk_index }}</span>
-              <span>{{ item.chunk_id }}</span>
-            </div>
-            <div class="chunk-item-row">
-              <strong>content</strong>
-              <p>{{ item.content || '-' }}</p>
-            </div>
-            <div class="chunk-item-row">
-              <strong>keywords</strong>
-              <p>{{ formatList(item.keywords) }}</p>
-            </div>
-            <div class="chunk-item-row">
-              <strong>generated_questions</strong>
-              <p>{{ formatList(item.generated_questions) }}</p>
-            </div>
-            <div class="chunk-item-row">
-              <strong>metadata</strong>
-              <pre>{{ formatMetadata(item.metadata) }}</pre>
-            </div>
-          </div>
-        </div>
-
-        <template #footer>
-          <el-pagination
-            v-if="chunkDialog.total > 0"
-            background
-            layout="prev, pager, next, total"
-            :current-page="chunkDialog.page"
-            :page-size="chunkDialog.pageSize"
-            :total="chunkDialog.total"
-            @current-change="loadChunkPage"
-          />
-        </template>
-      </el-dialog>
+      <div class="document-library__table-wrap" :aria-busy="loading">
+        <table>
+          <caption class="sr-only">文档库列表</caption>
+          <thead>
+            <tr>
+              <th scope="col">文件名</th>
+              <th scope="col">类型</th>
+              <th scope="col">大小</th>
+              <th scope="col">状态</th>
+              <th scope="col">分块数</th>
+              <th scope="col">上传时间</th>
+              <th scope="col"><span class="sr-only">文档操作</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="loading && !documents.length">
+              <td colspan="7" class="document-library__state">正在加载文档库...</td>
+            </tr>
+            <tr v-else-if="!filteredDocuments.length">
+              <td colspan="7" class="document-library__state">{{ emptyStateText }}</td>
+            </tr>
+            <tr v-for="document in filteredDocuments" :key="document.document_id">
+              <td class="document-library__filename">{{ document.filename || '-' }}</td>
+              <td>{{ formatFileType(document.file_type) }}</td>
+              <td class="document-library__numeric">{{ formatFileSize(document.file_size) }}</td>
+              <td>
+                <span class="document-library__status" :class="`document-library__status--${documentStatusMeta(document.status).tone}`">
+                  {{ documentStatusMeta(document.status).label }}
+                </span>
+              </td>
+              <td class="document-library__numeric">{{ formatChunkCount(document.chunk_count) }}</td>
+              <td class="document-library__timestamp">{{ formatTime(document.uploaded_at) }}</td>
+              <td class="document-library__action">
+                <button
+                  type="button"
+                  :aria-label="`查看文档 ${document.document_id} 的构建任务`"
+                  @click="openDocumentJobs(document.document_id)"
+                >
+                  查看任务
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </template>
   </section>
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { useRouter } from 'vue-router';
+import { CircleCheck, Monitor, RefreshCw, Search } from 'lucide-vue-next';
 import UploadPanel from '../components/UploadPanel.vue';
 import { apiAdapter } from '../api/adapters';
-import { useAuthStore } from '../store/auth';
 
-const documentStatusMap = {
-  pending: { label: '待处理', type: 'info' },
-  processing: { label: '处理中', type: 'warning' },
-  ready: { label: '可检索', type: 'success' },
-  failed: { label: '构建失败', type: 'danger' },
-  deleting: { label: '删除中', type: 'warning' }
-};
-
-const chunkStrategyOptions = [
-  { value: 'padding', label: '补齐分块' },
-  { value: 'general', label: '通用分块' },
-  { value: 'book', label: '书籍分块' },
-  { value: 'paper', label: '论文分块' },
-  { value: 'resume', label: '简历分块' },
-  { value: 'table', label: '表格分块' },
-  { value: 'qa', label: '问答分块' }
+const statusFilterOptions = [
+  { value: 'all', label: '全部状态' },
+  { value: 'pending', label: '待处理' },
+  { value: 'processing', label: '处理中' },
+  { value: 'ready', label: '可检索' },
+  { value: 'failed', label: '构建失败' },
+  { value: 'deleting', label: '删除中' }
 ];
 
-const authStore = useAuthStore();
-const docsTableRef = ref(null);
-const docs = ref([]);
-const selectedDocs = ref([]);
-const docsLoading = ref(false);
-const batchBuildLoading = ref(false);
-const batchDeleteLoading = ref(false);
-const rowBuildLoadingMap = ref({});
-const rowDeleteLoadingMap = ref({});
+const documentStatuses = {
+  pending: { label: '待处理 (pending)', tone: 'neutral' },
+  processing: { label: '处理中 (processing)', tone: 'warning' },
+  ready: { label: '可检索 (ready)', tone: 'success' },
+  failed: { label: '构建失败 (failed)', tone: 'danger' },
+  deleting: { label: '删除中 (deleting)', tone: 'warning' }
+};
+
+const router = useRouter();
+const documents = ref([]);
 const keyword = ref('');
-const batchChunkStrategy = ref('general');
-const docStrategyMap = ref({});
+const statusFilter = ref('all');
+const loading = ref(false);
+const listError = ref('');
+const uploadResult = ref(null);
+const isDesktop = ref(true);
 
-const chunkDialog = ref({
-  visible: false,
-  documentId: '',
-  filename: '',
-  items: [],
-  loading: false,
-  page: 1,
-  pageSize: 5,
-  total: 0
-});
-
-const selectedDocIds = computed(() => selectedDocs.value.map((item) => item.document_id).filter(Boolean));
-
-const stats = computed(() => {
-  return [
-    { label: '文档总数', value: docs.value.length },
-    {
-      label: '总分块',
-      value: docs.value.reduce((sum, item) => sum + (item.chunk_count || 0), 0)
-    }
-  ];
-});
-
-const filteredDocs = computed(() => {
+const filteredDocuments = computed(() => {
   const query = keyword.value.trim().toLowerCase();
-  if (!query) return docs.value;
-  return docs.value.filter((doc) => doc.filename?.toLowerCase().includes(query));
+  return documents.value.filter((document) => {
+    const matchesStatus = statusFilter.value === 'all' || document.status === statusFilter.value;
+    const matchesFilename = !query || document.filename?.toLowerCase().includes(query);
+    return matchesStatus && matchesFilename;
+  });
 });
 
-const getFriendlyError = (error, fallback = '请求失败') => {
-  if (error?.status === 401) return '登录状态已失效，请重新登录';
-  if (error?.status === 403) return '仅管理员可操作文档管理功能';
-  const message = error?.message || fallback;
-  if (error?.code && !message.includes(error.code)) {
-    return `${message} (${error.code})`;
+const emptyStateText = computed(() => {
+  if (documents.value.length && (keyword.value.trim() || statusFilter.value !== 'all')) {
+    return '没有符合当前筛选条件的文档。';
   }
-  return message;
-};
+  return '当前文档库为空。';
+});
 
-const documentStatusMeta = (status) => documentStatusMap[status] || { label: status || '-', type: 'info' };
+const documentStatusMeta = (status) => documentStatuses[status] || { label: status || '-', tone: 'neutral' };
 
-const formatTime = (value) => {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString('zh-CN', { hour12: false });
-};
+const formatFileType = (fileType) => (fileType ? String(fileType).toUpperCase() : '-');
 
-const formatFileSize = (size) => {
-  if (size === null || size === undefined || Number.isNaN(Number(size))) return '-';
-  const bytes = Number(size);
+const formatFileSize = (value) => {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes)) return '-';
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 };
 
-const formatList = (list) => {
-  if (!Array.isArray(list) || !list.length) return '-';
-  return list.join('、');
+const formatChunkCount = (value) => (Number.isFinite(Number(value)) ? Number(value) : '-');
+
+const formatTime = (value) => {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date
+    .toLocaleString('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    })
+    .replaceAll('/', '-');
 };
 
-const formatMetadata = (metadata) => {
-  if (!metadata) return '{}';
-  try {
-    return JSON.stringify(metadata, null, 2);
-  } catch {
-    return String(metadata);
-  }
+const loadErrorMessage = (error) => {
+  if (error?.status === 401) return '登录状态已失效，请重新登录。';
+  if (error?.status === 403) return '当前账户无权查看文档库。';
+  return '加载文档库失败，请重新加载。';
 };
 
-const resolveDocumentStrategy = (doc) =>
-  docStrategyMap.value[doc.document_id] || doc.chunk_strategy || batchChunkStrategy.value;
+const loadDocuments = async () => {
+  if (!isDesktop.value) return;
 
-const updateDocumentStrategy = (documentId, strategy) => {
-  docStrategyMap.value[documentId] = strategy;
-};
-
-const handleSelectionChange = (rows) => {
-  selectedDocs.value = rows || [];
-};
-
-const syncLocalStateAfterDocsReload = () => {
-  const docIdSet = new Set(docs.value.map((item) => item.document_id));
-  selectedDocs.value = selectedDocs.value.filter((item) => docIdSet.has(item.document_id));
-
-  Object.keys(docStrategyMap.value).forEach((documentId) => {
-    if (!docIdSet.has(documentId)) {
-      delete docStrategyMap.value[documentId];
-    }
-  });
-
-  if (chunkDialog.value.visible && !docIdSet.has(chunkDialog.value.documentId)) {
-    resetChunkDialog();
-  }
-};
-
-const loadDocs = async () => {
-  if (!authStore.isLoggedIn || !authStore.isAdmin) return;
-  docsLoading.value = true;
+  loading.value = true;
+  listError.value = '';
   try {
     const data = await apiAdapter.listDocuments({ page: 1, page_size: 200 });
-    docs.value = data?.items || [];
-    syncLocalStateAfterDocsReload();
+    documents.value = data?.items || [];
   } catch (error) {
-    ElMessage.error(getFriendlyError(error, '加载文档列表失败'));
+    listError.value = loadErrorMessage(error);
   } finally {
-    docsLoading.value = false;
+    loading.value = false;
   }
 };
 
-const handleUploaded = async () => {
-  await loadDocs();
+const handleUploaded = async (result) => {
+  uploadResult.value = result;
+  await loadDocuments();
 };
 
-const buildSingleDocument = async (doc) => {
-  const documentId = doc?.document_id;
-  if (!documentId) return;
+const openJob = (jobId) => router.push({ name: 'indexing-jobs', query: { job: jobId } });
 
-  rowBuildLoadingMap.value[documentId] = true;
-  try {
-    await apiAdapter.buildDocument(documentId, {
-      chunk_strategy: resolveDocumentStrategy(doc)
-    });
-    ElMessage.success('单文件分块任务已入队');
-  } catch (error) {
-    ElMessage.error(getFriendlyError(error, '单文件分块失败'));
-  } finally {
-    delete rowBuildLoadingMap.value[documentId];
-  }
+const openDocumentJobs = (documentId) => router.push({ name: 'indexing-jobs', query: { document: documentId } });
+
+const updateViewportScope = () => {
+  const wasDesktop = isDesktop.value;
+  isDesktop.value = window.innerWidth >= 768;
+  if (!wasDesktop && isDesktop.value) loadDocuments();
 };
 
-const handleBatchBuild = async () => {
-  if (!selectedDocIds.value.length) {
-    ElMessage.warning('请先选择文档');
-    return;
-  }
+onMounted(() => {
+  updateViewportScope();
+  window.addEventListener('resize', updateViewportScope);
+  if (isDesktop.value) loadDocuments();
+});
 
-  batchBuildLoading.value = true;
-  try {
-    const response = await apiAdapter.batchBuildDocuments({
-      document_ids: selectedDocIds.value,
-      chunk_strategy: batchChunkStrategy.value
-    });
-    const items = response?.items || [];
-    ElMessage.success(`批量分块已入队 ${items.length} 个任务`);
-  } catch (error) {
-    ElMessage.error(getFriendlyError(error, '批量分块失败'));
-  } finally {
-    batchBuildLoading.value = false;
-  }
-};
-
-const doBatchDelete = async (documentIds, confirmText) => {
-  if (!documentIds.length) return;
-
-  await ElMessageBox.confirm(confirmText, '提示', { type: 'warning' });
-
-  const response = await apiAdapter.batchDeleteDocuments({ document_ids: documentIds });
-  const successIds = response?.success_ids || [];
-  const failedItems = response?.failed_items || [];
-
-  if (successIds.length) {
-    docsTableRef.value?.clearSelection();
-    selectedDocs.value = [];
-    ElMessage.success(`已删除 ${successIds.length} 个文档`);
-  }
-
-  if (failedItems.length) {
-    const detail = failedItems
-      .slice(0, 3)
-      .map((item) => `${item.document_id}: ${item.message}`)
-      .join('；');
-    ElMessage.warning(`部分删除失败：${detail}${failedItems.length > 3 ? '；...' : ''}`);
-  }
-
-  await loadDocs();
-};
-
-const handleBatchDelete = async () => {
-  if (!selectedDocIds.value.length) {
-    ElMessage.warning('请先选择文档');
-    return;
-  }
-
-  batchDeleteLoading.value = true;
-  try {
-    await doBatchDelete(selectedDocIds.value, `确认删除已选 ${selectedDocIds.value.length} 个文档？`);
-  } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error(getFriendlyError(error, '批量删除失败'));
-    }
-  } finally {
-    batchDeleteLoading.value = false;
-  }
-};
-
-const removeSingleDocument = async (doc) => {
-  const documentId = doc?.document_id;
-  if (!documentId) return;
-
-  rowDeleteLoadingMap.value[documentId] = true;
-  try {
-    await doBatchDelete([documentId], `确认删除文档 ${doc.filename}？`);
-  } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error(getFriendlyError(error, '删除文档失败'));
-    }
-  } finally {
-    delete rowDeleteLoadingMap.value[documentId];
-  }
-};
-
-const resetChunkDialog = () => {
-  chunkDialog.value = {
-    ...chunkDialog.value,
-    visible: false,
-    documentId: '',
-    filename: '',
-    items: [],
-    loading: false,
-    page: 1,
-    total: 0
-  };
-};
-
-const loadChunkPage = async (page = 1) => {
-  if (!chunkDialog.value.documentId) return;
-  chunkDialog.value = {
-    ...chunkDialog.value,
-    page,
-    loading: true
-  };
-
-  try {
-    const data = await apiAdapter.getDocumentChunks(chunkDialog.value.documentId, {
-      page,
-      page_size: chunkDialog.value.pageSize
-    });
-    chunkDialog.value = {
-      ...chunkDialog.value,
-      items: data?.items || [],
-      page: data?.pagination?.page || page,
-      total: data?.pagination?.total || 0
-    };
-  } catch (error) {
-    chunkDialog.value = {
-      ...chunkDialog.value,
-      items: [],
-      total: 0
-    };
-    if (error?.status === 409 || error?.code === 'DOC_CHUNK_RESULT_NOT_READY') {
-      ElMessage.warning('分块结果未就绪，请稍后再试');
-      return;
-    }
-    ElMessage.error(getFriendlyError(error, '加载分块结果失败'));
-  } finally {
-    chunkDialog.value = {
-      ...chunkDialog.value,
-      loading: false
-    };
-  }
-};
-
-const openChunkDialog = async (doc) => {
-  if (doc?.status !== 'ready') {
-    ElMessage.warning('文档未就绪，暂不可查看分块结果');
-    return;
-  }
-
-  chunkDialog.value = {
-    ...chunkDialog.value,
-    visible: true,
-    documentId: doc.document_id,
-    filename: doc.filename,
-    items: [],
-    page: 1,
-    total: 0
-  };
-  await loadChunkPage(1);
-};
-
-onMounted(loadDocs);
+onBeforeUnmount(() => window.removeEventListener('resize', updateViewportScope));
 </script>
 
 <style scoped>
-.upload-page {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.table-card {
-  margin-top: 16px;
-}
-
-.table-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 24px;
-  border-bottom: 1px solid var(--line-soft);
-  gap: 12px;
-}
-
-.table-header h3 {
-  margin: 0;
-}
-
-.table-tools {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.search-input {
-  width: 220px;
-}
-
-.danger-btn {
-  border-color: rgba(220, 38, 38, 0.2);
-  color: #dc2626;
-}
-
-.chunk-dialog-body {
-  max-height: 60vh;
-  overflow-y: auto;
-  padding-right: 8px;
-}
-
-.chunk-dialog-meta {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 13px;
-  color: var(--text-soft);
-  margin-bottom: 12px;
-}
-
-.chunk-item {
-  border: 1px solid var(--line-soft);
-  border-radius: 12px;
-  padding: 12px;
-  margin-bottom: 12px;
-  background: #fff;
-}
-
-.chunk-item-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 12px;
-  color: var(--text-soft);
-  margin-bottom: 8px;
-}
-
-.chunk-item-row {
-  margin-bottom: 8px;
-}
-
-.chunk-item-row strong {
-  display: block;
-  font-size: 12px;
-  margin-bottom: 4px;
-}
-
-.chunk-item-row p {
-  margin: 0;
-  line-height: 1.6;
-  word-break: break-word;
-}
-
-.chunk-item-row pre {
-  margin: 0;
-  background: var(--bg-shell);
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
-  padding: 8px;
-  overflow-x: auto;
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-@media (max-width: 900px) {
-  .table-header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .table-tools {
-    width: 100%;
-    justify-content: flex-start;
-  }
-
-  .search-input {
-    width: 100%;
-  }
-
-  .chunk-dialog-meta {
-    flex-direction: column;
-  }
-}
+.document-library { max-width: 1280px; margin: 0 auto; }
+.document-library__header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-5); padding-bottom: var(--space-5); border-bottom: 1px solid var(--color-rule); }
+.document-library__eyebrow { margin: 0 0 var(--space-2); color: var(--color-moss); font-size: 12px; font-weight: 600; }
+.document-library h1 { margin: 0; font-family: var(--font-display); font-size: 26px; font-weight: 600; line-height: 1.3; }
+.document-library__description { max-width: 620px; margin: var(--space-2) 0 0; color: var(--color-ink-soft); font-size: 14px; line-height: 1.7; }
+.document-library__refresh, .document-library__error button, .document-library__upload-result button, .document-library__action button { min-height: 32px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--color-rule); border-radius: var(--radius-control); background: var(--color-paper-raised); color: var(--color-ink); font: inherit; font-size: 13px; cursor: pointer; }
+.document-library__refresh { min-width: 82px; padding: 0 var(--space-3); }
+.document-library__refresh:disabled { cursor: wait; opacity: 0.65; }
+.document-library__refresh:not(:disabled):hover, .document-library__error button:hover, .document-library__upload-result button:hover, .document-library__action button:hover { border-color: var(--color-copper); color: var(--color-copper-strong); }
+.document-library__refresh:not(:disabled):active, .document-library__error button:active, .document-library__upload-result button:active, .document-library__action button:active { background: var(--color-paper-muted); }
+.document-library__refresh-icon--spinning { animation: document-library-spin 0.9s linear infinite; }
+.document-library__desktop-notice, .document-library__error, .document-library__upload-result { display: flex; align-items: center; gap: var(--space-3); margin: var(--space-5) 0 0; padding: var(--space-3) var(--space-4); border-left: 3px solid var(--color-warning); background: var(--color-warning-soft); color: var(--color-warning); font-size: 13px; line-height: 1.5; }
+.document-library__desktop-notice p, .document-library__upload-result p { margin: 0; }
+.document-library__error { border-left-color: var(--color-danger); background: var(--color-danger-soft); color: var(--color-danger); }
+.document-library__error button { margin-left: auto; padding: 0 var(--space-2); border-color: currentColor; background: transparent; color: inherit; }
+.document-library__upload-result { align-items: flex-start; border-left-color: var(--color-moss); background: var(--color-moss-soft); color: var(--color-moss); }
+.document-library__upload-result > div { min-width: 0; }
+.document-library__identifiers { margin-top: var(--space-1) !important; font-family: var(--font-mono); font-size: 12px; }
+.document-library__upload-result button { margin-left: auto; flex: 0 0 auto; padding: 0 var(--space-3); border-color: currentColor; background: transparent; color: inherit; }
+.document-library__controls { display: flex; align-items: center; gap: var(--space-3); min-height: 64px; padding: var(--space-4) 0; }
+.document-library__search { display: flex; width: min(360px, 45%); min-width: 220px; align-items: center; gap: var(--space-2); padding: 0 var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-control); background: var(--color-paper-raised); color: var(--color-ink-soft); }
+.document-library__search:focus-within { border-color: var(--color-copper); }
+.document-library__search input { width: 100%; min-width: 0; height: 32px; border: 0; background: transparent; color: var(--color-ink); font-size: 13px; }
+.document-library__filter { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--color-ink-soft); font-size: 13px; }
+.document-library__filter select { min-height: 34px; border: 1px solid var(--color-rule); border-radius: var(--radius-control); background: var(--color-paper-raised); color: var(--color-ink); padding: 0 var(--space-2); }
+.document-library__filter select:hover { border-color: var(--color-copper); }
+.document-library__filter select:active { background: var(--color-paper-muted); }
+.document-library__count { margin: 0 0 0 auto; color: var(--color-ink-soft); font-size: 13px; white-space: nowrap; }
+.document-library__table-wrap { overflow-x: auto; border-top: 1px solid var(--color-rule); border-bottom: 1px solid var(--color-rule); background: var(--color-paper-raised); }
+.document-library table { width: 100%; min-width: 1080px; border-collapse: collapse; table-layout: fixed; }
+.document-library th, .document-library td { padding: 13px 12px; border-bottom: 1px solid var(--color-rule); color: var(--color-ink); font-size: 13px; line-height: 1.45; text-align: left; vertical-align: middle; }
+.document-library th { position: sticky; top: 0; z-index: 1; background: var(--color-paper-muted); color: var(--color-ink-soft); font-size: 12px; font-weight: 600; }
+.document-library tbody tr:last-child td { border-bottom: 0; }
+.document-library th:nth-child(1) { width: 25%; }
+.document-library th:nth-child(2) { width: 9%; }
+.document-library th:nth-child(3) { width: 11%; }
+.document-library th:nth-child(4) { width: 16%; }
+.document-library th:nth-child(5) { width: 10%; }
+.document-library th:nth-child(6) { width: 19%; }
+.document-library th:nth-child(7) { width: 10%; }
+.document-library__filename { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.document-library__numeric, .document-library__timestamp { font-family: var(--font-mono); font-size: 12px; }
+.document-library__timestamp { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.document-library__status { display: inline-flex; min-width: 124px; align-items: center; justify-content: center; padding: 3px 6px; border: 1px solid currentColor; border-radius: 3px; font-size: 12px; white-space: nowrap; }
+.document-library__status--neutral { color: var(--color-ink-soft); }
+.document-library__status--warning { color: var(--color-warning); }
+.document-library__status--success { color: var(--color-moss); }
+.document-library__status--danger { color: var(--color-danger); }
+.document-library__action { text-align: right; }
+.document-library__action button { min-width: 72px; padding: 0 var(--space-2); }
+.document-library__state { height: 192px; color: var(--color-ink-soft); text-align: center; }
+@keyframes document-library-spin { to { transform: rotate(360deg); } }
+@media (max-width: 1024px) { .document-library__header { gap: var(--space-4); } }
 </style>

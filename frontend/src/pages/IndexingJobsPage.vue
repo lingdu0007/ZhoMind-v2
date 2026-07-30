@@ -29,6 +29,15 @@
         <p class="indexing-jobs__count" aria-live="polite">显示 {{ filteredJobs.length }} 个任务</p>
       </div>
 
+      <p v-if="focusedJobId" class="indexing-jobs__scope" role="status">
+        正在查看任务 {{ focusedJobId }}。
+        <button type="button" @click="clearFocus">显示全部任务</button>
+      </p>
+      <p v-else-if="focusedDocumentId" class="indexing-jobs__scope" role="status">
+        正在查看文档 {{ focusedDocumentId }} 的构建任务。
+        <button type="button" @click="clearFocus">显示全部任务</button>
+      </p>
+
       <p v-if="listError" class="indexing-jobs__error" role="alert">
         <span>{{ listError }}</span>
         <button type="button" @click="loadJobs">重新加载</button>
@@ -98,6 +107,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { Monitor, RefreshCw, XCircle } from 'lucide-vue-next';
 import { apiAdapter } from '../api/adapters';
 
@@ -110,6 +120,9 @@ const filterOptions = [
   { value: 'active', label: '仅进行中' },
   { value: 'terminal', label: '仅已结束' }
 ];
+
+const route = useRoute();
+const router = useRouter();
 
 const statusMetadata = {
   queued: { label: '排队中 (queued)', tone: 'neutral' },
@@ -140,10 +153,16 @@ const isDesktop = ref(true);
 const isActive = ref(true);
 const pollingTimers = new Map();
 
+const focusedJobId = computed(() => (typeof route.query.job === 'string' ? route.query.job : ''));
+const focusedDocumentId = computed(() => (typeof route.query.document === 'string' ? route.query.document : ''));
+
 const filteredJobs = computed(() => {
-  if (filterMode.value === 'active') return jobs.value.filter((job) => ACTIVE_JOB_STATUSES.includes(job.status));
-  if (filterMode.value === 'terminal') return jobs.value.filter((job) => TERMINAL_JOB_STATUSES.includes(job.status));
-  return jobs.value;
+  let items = jobs.value;
+  if (focusedJobId.value) items = items.filter((job) => job.job_id === focusedJobId.value);
+  else if (focusedDocumentId.value) items = items.filter((job) => job.document_id === focusedDocumentId.value);
+  if (filterMode.value === 'active') return items.filter((job) => ACTIVE_JOB_STATUSES.includes(job.status));
+  if (filterMode.value === 'terminal') return items.filter((job) => TERMINAL_JOB_STATUSES.includes(job.status));
+  return items;
 });
 
 const emptyStateText = computed(() => {
@@ -245,7 +264,14 @@ const loadJobs = async () => {
   listError.value = '';
   try {
     const data = await apiAdapter.listDocumentJobs({ page: 1, page_size: 100 });
-    jobs.value = sortByUpdatedAtDesc(data?.items || []);
+    const loadedJobs = data?.items || [];
+    if (focusedJobId.value) {
+      const focusedJob = await apiAdapter.getDocumentJob(focusedJobId.value);
+      const existingIndex = loadedJobs.findIndex((job) => job.job_id === focusedJob?.job_id);
+      if (existingIndex >= 0) loadedJobs[existingIndex] = { ...loadedJobs[existingIndex], ...focusedJob };
+      else if (focusedJob?.job_id) loadedJobs.push(focusedJob);
+    }
+    jobs.value = sortByUpdatedAtDesc(loadedJobs);
     scheduleActiveJobs();
   } catch (error) {
     listError.value = getFriendlyError(error, '加载构建任务失败，请重新加载。');
@@ -276,6 +302,8 @@ const cancelJob = async (job) => {
     delete cancellationLoading.value[job.job_id];
   }
 };
+
+const clearFocus = () => router.replace({ name: 'indexing-jobs' });
 
 const updateViewportScope = () => {
   const wasDesktop = isDesktop.value;
@@ -320,10 +348,14 @@ onBeforeUnmount(() => {
 .indexing-jobs__filter-option input:checked + span { background: var(--color-paper-muted); color: var(--color-ink); font-weight: 600; }
 .indexing-jobs__filter-option input:focus-visible + span, .indexing-jobs__refresh:focus-visible, .indexing-jobs__error button:focus-visible, .indexing-jobs__action button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 .indexing-jobs__count { margin: 0; color: var(--color-ink-soft); font-size: 13px; }
-.indexing-jobs__error, .indexing-jobs__success, .indexing-jobs__desktop-notice { display: flex; align-items: center; gap: var(--space-3); margin: 0 0 var(--space-4); padding: var(--space-3) var(--space-4); border-left: 3px solid var(--color-danger); background: var(--color-danger-soft); color: var(--color-danger); font-size: 13px; line-height: 1.5; }
+.indexing-jobs__error, .indexing-jobs__success, .indexing-jobs__desktop-notice, .indexing-jobs__scope { display: flex; align-items: center; gap: var(--space-3); margin: 0 0 var(--space-4); padding: var(--space-3) var(--space-4); border-left: 3px solid var(--color-danger); background: var(--color-danger-soft); color: var(--color-danger); font-size: 13px; line-height: 1.5; }
 .indexing-jobs__error span, .indexing-jobs__desktop-notice p { margin: 0; }
 .indexing-jobs__error button { margin-left: auto; padding: 0 var(--space-2); border-color: currentColor; background: transparent; color: inherit; }
 .indexing-jobs__success { border-left-color: var(--color-moss); background: var(--color-moss-soft); color: var(--color-moss); }
+.indexing-jobs__scope { border-left-color: var(--color-moss); background: var(--color-moss-soft); color: var(--color-moss); }
+.indexing-jobs__scope button { margin-left: auto; min-height: 28px; padding: 0 var(--space-2); border: 1px solid currentColor; border-radius: var(--radius-control); background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer; }
+.indexing-jobs__scope button:hover { background: var(--color-paper-raised); }
+.indexing-jobs__scope button:active { background: var(--color-paper-muted); }
 .indexing-jobs__desktop-notice { align-items: flex-start; margin-top: var(--space-5); border-left-color: var(--color-warning); background: var(--color-warning-soft); color: var(--color-warning); }
 .indexing-jobs__table-wrap { overflow-x: auto; border-top: 1px solid var(--color-rule); border-bottom: 1px solid var(--color-rule); background: var(--color-paper-raised); }
 .indexing-jobs table { width: 100%; min-width: 1120px; border-collapse: collapse; table-layout: fixed; }

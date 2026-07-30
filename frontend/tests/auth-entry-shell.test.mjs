@@ -187,7 +187,7 @@ test('sign-in derives the System Administrator role from the identity endpoint w
   await page.waitForURL(/\/chat$/);
   assert.equal(await page.getByText('系统管理员').isVisible(), true);
   assert.equal(await page.getByRole('link', { name: '对话工作区' }).count(), 1);
-  assert.equal(await page.getByRole('link', { name: '文档库' }).count(), 0);
+  assert.equal(await page.getByRole('link', { name: '文档库' }).count(), 1);
   assert.equal(await page.getByRole('link', { name: '构建任务' }).count(), 1);
   assert.equal(await page.getByRole('link', { name: '系统设置' }).count(), 0);
 });
