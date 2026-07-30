@@ -3,6 +3,7 @@ import { createRouter, createWebHistory } from 'vue-router';
 import AuthEntryPage from '../pages/AuthEntryPage.vue';
 import ChatPage from '../pages/ChatPage.vue';
 import UploadPage from '../pages/UploadPage.vue';
+import IndexingJobsPage from '../pages/IndexingJobsPage.vue';
 import ConfigPage from '../pages/ConfigPage.vue';
 import { clearProtectedSession } from './protected-session';
 import { useAuthStore } from '../store/auth';
@@ -12,6 +13,7 @@ const routes = [
   { path: '/auth', name: 'authentication-entry', component: AuthEntryPage, meta: { public: true } },
   { path: '/chat', name: 'chat', component: ChatPage, meta: { requiresAuth: true } },
   { path: '/documents', name: 'documents', component: UploadPage, meta: { requiresAuth: true, requiresAdmin: true } },
+  { path: '/jobs', name: 'indexing-jobs', component: IndexingJobsPage, meta: { requiresAuth: true, requiresAdmin: true } },
   { path: '/config', name: 'config', component: ConfigPage, meta: { requiresAuth: true, requiresAdmin: true, unavailable: true } }
 ];
 
