@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test:unit": "node --test tests/chat-state.test.mjs tests/evidence-summary.test.mjs tests/path-config.test.mjs tests/sse-parser.test.mjs",
-    "test:browser": "npm run build && node --test tests/auth-entry-shell.test.mjs tests/conversation-workspace.test.mjs",
+    "test:browser": "npm run build && node --test tests/auth-entry-shell.test.mjs tests/conversation-workspace.test.mjs tests/indexing-jobs-workspace.test.mjs",
     "test": "npm run test:unit && npm run test:browser"
   },
   "dependencies": {

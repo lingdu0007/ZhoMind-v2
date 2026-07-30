@@ -11,6 +11,16 @@
           <MessageCircle :size="20" aria-hidden="true" />
           <span>对话工作区</span>
         </RouterLink>
+        <RouterLink
+          v-if="authStore.isAdmin"
+          class="workbench-shell__nav-item"
+          to="/jobs"
+          title="构建任务"
+          aria-label="构建任务"
+        >
+          <ClipboardList :size="20" aria-hidden="true" />
+          <span>构建任务</span>
+        </RouterLink>
       </nav>
 
       <div class="workbench-shell__identity">
@@ -32,7 +42,7 @@
 <script setup>
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { LogOut, MessageCircle } from 'lucide-vue-next';
+import { ClipboardList, LogOut, MessageCircle } from 'lucide-vue-next';
 import { clearProtectedSession } from './protected-session';
 import { useAuthStore } from '../store/auth';
 
@@ -180,6 +190,7 @@ const signOut = async () => {
 @media (max-width: 640px) {
   .workbench-shell {
     grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .workbench-shell__rail {
@@ -194,6 +205,7 @@ const signOut = async () => {
 
   .workbench-shell__nav {
     margin-left: auto;
+    flex-direction: row;
   }
 
   .workbench-shell__identity {

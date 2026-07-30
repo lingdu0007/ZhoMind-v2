@@ -2,7 +2,7 @@
   <section class="upload-page">
     <div class="top-bar">
       <h1>文档上传</h1>
-      <el-button v-if="authStore.isAdmin" class="btn-ghost" @click="refreshAll">刷新</el-button>
+      <el-button v-if="authStore.isAdmin" class="btn-ghost" @click="loadDocs">刷新</el-button>
     </div>
 
     <div v-if="!authStore.isLoggedIn" class="card notice">请先在聊天页登录。</div>
@@ -14,61 +14,6 @@
         <div class="stat-card" v-for="stat in stats" :key="stat.label">
           <p class="stat-label">{{ stat.label }}</p>
           <p class="stat-value">{{ stat.value }}</p>
-        </div>
-      </div>
-
-      <div class="card table-card">
-        <div class="table-header">
-          <h3>构建任务（最近）</h3>
-          <el-button class="btn-ghost" @click="loadJobs">刷新任务</el-button>
-        </div>
-
-        <div class="job-table-wrap">
-          <el-table class="table-minimal" :data="jobs" empty-text="暂无任务">
-            <el-table-column prop="job_id" label="任务ID" min-width="220" show-overflow-tooltip />
-            <el-table-column prop="document_id" label="文档ID" min-width="220" show-overflow-tooltip />
-            <el-table-column label="状态" width="120">
-              <template #default="scope">
-                <el-tag size="small" :type="jobStatusMeta(scope.row.status).type">
-                  {{ jobStatusMeta(scope.row.status).label }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="阶段" width="140">
-              <template #default="scope">
-                {{ jobStageLabel(scope.row.stage) }}
-              </template>
-            </el-table-column>
-            <el-table-column label="进度" width="180">
-              <template #default="scope">
-                <el-progress :percentage="Number(scope.row.progress || 0)" :stroke-width="10" />
-              </template>
-            </el-table-column>
-            <el-table-column label="信息" min-width="180" show-overflow-tooltip>
-              <template #default="scope">
-                {{ scope.row.message || '-' }}
-              </template>
-            </el-table-column>
-            <el-table-column label="更新时间" width="200" show-overflow-tooltip>
-              <template #default="scope">
-                {{ formatTime(scope.row.updated_at) }}
-              </template>
-            </el-table-column>
-            <el-table-column label="操作" width="120">
-              <template #default="scope">
-                <el-button
-                  v-if="canCancelJob(scope.row)"
-                  link
-                  type="warning"
-                  :loading="Boolean(jobCancelLoadingMap[scope.row.job_id])"
-                  @click="cancelJob(scope.row)"
-                >
-                  取消任务
-                </el-button>
-                <span v-else>-</span>
-              </template>
-            </el-table-column>
-          </el-table>
         </div>
       </div>
 
@@ -236,13 +181,11 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import UploadPanel from '../components/UploadPanel.vue';
 import { apiAdapter } from '../api/adapters';
 import { useAuthStore } from '../store/auth';
-
-const TERMINAL_JOB_STATUS = ['succeeded', 'failed', 'canceled'];
 
 const documentStatusMap = {
   pending: { label: '待处理', type: 'info' },
@@ -250,23 +193,6 @@ const documentStatusMap = {
   ready: { label: '可检索', type: 'success' },
   failed: { label: '构建失败', type: 'danger' },
   deleting: { label: '删除中', type: 'warning' }
-};
-
-const jobStatusMap = {
-  queued: { label: '排队中', type: 'info' },
-  running: { label: '执行中', type: 'warning' },
-  succeeded: { label: '已成功', type: 'success' },
-  failed: { label: '失败', type: 'danger' },
-  canceled: { label: '已取消', type: 'info' }
-};
-
-const jobStageMap = {
-  queued: '排队中',
-  uploaded: '已上传',
-  parsing: '解析中',
-  chunking: '分块中',
-  completed: '已完成',
-  failed: '失败'
 };
 
 const chunkStrategyOptions = [
@@ -282,14 +208,12 @@ const chunkStrategyOptions = [
 const authStore = useAuthStore();
 const docsTableRef = ref(null);
 const docs = ref([]);
-const jobs = ref([]);
 const selectedDocs = ref([]);
 const docsLoading = ref(false);
 const batchBuildLoading = ref(false);
 const batchDeleteLoading = ref(false);
 const rowBuildLoadingMap = ref({});
 const rowDeleteLoadingMap = ref({});
-const jobCancelLoadingMap = ref({});
 const keyword = ref('');
 const batchChunkStrategy = ref('general');
 const docStrategyMap = ref({});
@@ -305,19 +229,15 @@ const chunkDialog = ref({
   total: 0
 });
 
-const pollingTimers = new Map();
-
 const selectedDocIds = computed(() => selectedDocs.value.map((item) => item.document_id).filter(Boolean));
 
 const stats = computed(() => {
-  const queuedOrRunning = jobs.value.filter((item) => ['queued', 'running'].includes(item.status)).length;
   return [
     { label: '文档总数', value: docs.value.length },
     {
       label: '总分块',
       value: docs.value.reduce((sum, item) => sum + (item.chunk_count || 0), 0)
-    },
-    { label: '进行中任务', value: queuedOrRunning }
+    }
   ];
 });
 
@@ -338,8 +258,6 @@ const getFriendlyError = (error, fallback = '请求失败') => {
 };
 
 const documentStatusMeta = (status) => documentStatusMap[status] || { label: status || '-', type: 'info' };
-const jobStatusMeta = (status) => jobStatusMap[status] || { label: status || '-', type: 'info' };
-const jobStageLabel = (stage) => jobStageMap[stage] || stage || '-';
 
 const formatTime = (value) => {
   if (!value) return '-';
@@ -369,91 +287,6 @@ const formatMetadata = (metadata) => {
   } catch {
     return String(metadata);
   }
-};
-
-const sortByUpdatedAtDesc = (items) =>
-  [...items].sort((a, b) => new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime());
-
-const mergeJob = (job) => {
-  if (!job?.job_id) return;
-  const index = jobs.value.findIndex((item) => item.job_id === job.job_id);
-  if (index >= 0) {
-    jobs.value[index] = { ...jobs.value[index], ...job };
-  } else {
-    jobs.value.unshift(job);
-  }
-  jobs.value = sortByUpdatedAtDesc(jobs.value).slice(0, 20);
-};
-
-const canCancelJob = (job) => ['queued', 'running'].includes(job?.status);
-
-const clearPolling = (jobId) => {
-  const timer = pollingTimers.get(jobId);
-  if (timer) {
-    clearTimeout(timer);
-    pollingTimers.delete(jobId);
-  }
-};
-
-const clearAllPolling = () => {
-  pollingTimers.forEach((timer) => clearTimeout(timer));
-  pollingTimers.clear();
-};
-
-const schedulePoll = (jobId, delayMs = 2000) => {
-  clearPolling(jobId);
-  const timer = setTimeout(() => pollJob(jobId), delayMs);
-  pollingTimers.set(jobId, timer);
-};
-
-const pollJob = async (jobId) => {
-  if (!jobId || !authStore.isLoggedIn || !authStore.isAdmin) return;
-
-  try {
-    const job = await apiAdapter.getDocumentJob(jobId);
-    mergeJob(job);
-
-    if (TERMINAL_JOB_STATUS.includes(job?.status)) {
-      clearPolling(jobId);
-      if (job.status === 'succeeded') {
-        await loadDocs();
-      }
-      return;
-    }
-
-    schedulePoll(jobId, job?.status === 'queued' ? 4000 : 2000);
-  } catch (error) {
-    clearPolling(jobId);
-    if (error?.status !== 404) {
-      ElMessage.error(getFriendlyError(error, `任务 ${jobId} 查询失败`));
-    }
-  }
-};
-
-const enqueueJob = (item, fallbackDocumentId = '') => {
-  const jobId = item?.job_id;
-  if (!jobId) return;
-
-  mergeJob({
-    job_id: jobId,
-    document_id: item?.document_id || fallbackDocumentId,
-    status: item?.status || 'queued',
-    stage: item?.stage || 'queued',
-    progress: item?.progress || 0,
-    message: item?.message || '',
-    updated_at: item?.updated_at || new Date().toISOString()
-  });
-  schedulePoll(jobId, 1000);
-};
-
-const dropJobsByDocumentIds = (documentIds = []) => {
-  const idSet = new Set(documentIds);
-  jobs.value.forEach((job) => {
-    if (idSet.has(job.document_id)) {
-      clearPolling(job.job_id);
-    }
-  });
-  jobs.value = jobs.value.filter((job) => !idSet.has(job.document_id));
 };
 
 const resolveDocumentStrategy = (doc) =>
@@ -496,45 +329,8 @@ const loadDocs = async () => {
   }
 };
 
-const loadJobs = async () => {
-  if (!authStore.isLoggedIn || !authStore.isAdmin) return;
-  try {
-    const data = await apiAdapter.listDocumentJobs({ page: 1, page_size: 20 });
-    jobs.value = sortByUpdatedAtDesc(data?.items || []).slice(0, 20);
-
-    clearAllPolling();
-    jobs.value.forEach((job) => {
-      if (canCancelJob(job)) {
-        schedulePoll(job.job_id, job.status === 'queued' ? 4000 : 2000);
-      }
-    });
-  } catch (error) {
-    ElMessage.error(getFriendlyError(error, '加载任务列表失败'));
-  }
-};
-
-const refreshAll = async () => {
-  await Promise.all([loadDocs(), loadJobs()]);
-};
-
-const handleUploaded = async (payload) => {
-  const jobId = payload?.job_id;
-  if (!jobId) {
-    ElMessage.warning('上传成功，但未获取到任务ID');
-    await loadDocs();
-    return;
-  }
-
-  enqueueJob(
-    {
-      job_id: payload.job_id,
-      document_id: payload.document_id,
-      status: 'queued',
-      stage: 'queued',
-      progress: 0
-    },
-    payload?.document_id
-  );
+const handleUploaded = async () => {
+  await loadDocs();
 };
 
 const buildSingleDocument = async (doc) => {
@@ -543,10 +339,9 @@ const buildSingleDocument = async (doc) => {
 
   rowBuildLoadingMap.value[documentId] = true;
   try {
-    const response = await apiAdapter.buildDocument(documentId, {
+    await apiAdapter.buildDocument(documentId, {
       chunk_strategy: resolveDocumentStrategy(doc)
     });
-    enqueueJob(response, documentId);
     ElMessage.success('单文件分块任务已入队');
   } catch (error) {
     ElMessage.error(getFriendlyError(error, '单文件分块失败'));
@@ -568,7 +363,6 @@ const handleBatchBuild = async () => {
       chunk_strategy: batchChunkStrategy.value
     });
     const items = response?.items || [];
-    items.forEach((item) => enqueueJob(item, item.document_id));
     ElMessage.success(`批量分块已入队 ${items.length} 个任务`);
   } catch (error) {
     ElMessage.error(getFriendlyError(error, '批量分块失败'));
@@ -587,7 +381,6 @@ const doBatchDelete = async (documentIds, confirmText) => {
   const failedItems = response?.failed_items || [];
 
   if (successIds.length) {
-    dropJobsByDocumentIds(successIds);
     docsTableRef.value?.clearSelection();
     selectedDocs.value = [];
     ElMessage.success(`已删除 ${successIds.length} 个文档`);
@@ -635,20 +428,6 @@ const removeSingleDocument = async (doc) => {
     }
   } finally {
     delete rowDeleteLoadingMap.value[documentId];
-  }
-};
-
-const cancelJob = async (job) => {
-  if (!canCancelJob(job)) return;
-  jobCancelLoadingMap.value[job.job_id] = true;
-  try {
-    await apiAdapter.cancelDocumentJob(job.job_id);
-    ElMessage.success('取消任务请求已提交');
-    await loadJobs();
-  } catch (error) {
-    ElMessage.error(getFriendlyError(error, '取消任务失败'));
-  } finally {
-    delete jobCancelLoadingMap.value[job.job_id];
   }
 };
 
@@ -721,11 +500,7 @@ const openChunkDialog = async (doc) => {
   await loadChunkPage(1);
 };
 
-onMounted(refreshAll);
-
-onBeforeUnmount(() => {
-  clearAllPolling();
-});
+onMounted(loadDocs);
 </script>
 
 <style scoped>
@@ -737,16 +512,6 @@ onBeforeUnmount(() => {
 
 .table-card {
   margin-top: 16px;
-}
-
-.job-table-wrap {
-  width: 100%;
-  padding: 0 24px 24px;
-  overflow-x: auto;
-}
-
-.job-table-wrap :deep(.el-table) {
-  width: 100%;
 }
 
 .table-header {
