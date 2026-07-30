@@ -466,6 +466,7 @@ def test_documents_and_jobs_flow(monkeypatch) -> None:
             assert first_doc["status"] == "ready"
             assert first_doc["chunk_strategy"] == "general"
             assert first_doc["chunk_count"] > 0
+            assert first_doc["published_generation"] == 1
             upload_chunk_count = first_doc["chunk_count"]
 
             get_job_response = client.get(f"/api/v1/documents/jobs/{job_id}", headers=headers)
@@ -509,6 +510,7 @@ def test_documents_and_jobs_flow(monkeypatch) -> None:
                 assert rebuilt_doc_during_pending["status"] == "pending"
                 assert rebuilt_doc_during_pending["chunk_strategy"] == "general"
                 assert rebuilt_doc_during_pending["chunk_count"] == upload_chunk_count
+                assert rebuilt_doc_during_pending["published_generation"] == 1
 
                 not_ready_chunk_response = client.get(
                     f"/api/v1/documents/{document_id}/chunks?page=1&page_size=5",
