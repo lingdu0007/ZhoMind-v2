@@ -135,12 +135,12 @@ as_root test -f "$DEPLOY_APP_DIR/.env" || fail "missing server runtime configura
 
 source_directory="$DEPLOY_APP_DIR/source"
 bundle=/tmp/zhomind.bundle
-if [[ -d "$source_directory/.git" ]]; then
+if as_root test -d "$source_directory/.git"; then
   as_root git -C "$source_directory" diff --quiet
   as_root git -C "$source_directory" diff --cached --quiet
   as_root git -C "$source_directory" fetch "$bundle" "$DEPLOY_GIT_REF:$DEPLOY_GIT_REF"
 else
-  [[ ! -e "$source_directory" ]] || fail "refusing to replace a non-Git source directory: $source_directory"
+  as_root test ! -e "$source_directory" || fail "refusing to replace a non-Git source directory: $source_directory"
   as_root git clone --branch "${DEPLOY_GIT_REF#refs/heads/}" "$bundle" "$source_directory"
 fi
 as_root git -C "$source_directory" checkout --detach "$SOURCE_REVISION"
