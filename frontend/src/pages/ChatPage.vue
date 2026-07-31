@@ -383,6 +383,12 @@ onMounted(loadSessions);
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .evidence-excerpt {
+    animation: none;
+  }
+}
+
 @media (max-width: 1180px) {
   .conversation-workspace {
     display: block;
