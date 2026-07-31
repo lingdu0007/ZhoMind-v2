@@ -6,7 +6,7 @@
         <h1 id="document-library-title">文档库</h1>
         <p class="document-library__description">查看已上传文档，并为新的资料创建索引构建任务。</p>
       </div>
-      <button v-if="isDesktop" class="document-library__refresh" type="button" :disabled="loading" @click="loadDocuments">
+      <button v-if="isDesktop" class="document-library__refresh" type="button" :disabled="loading || isBatchActionLoading" @click="loadDocuments">
         <RefreshCw :size="16" :class="{ 'document-library__refresh-icon--spinning': loading }" aria-hidden="true" />
         <span>{{ loading ? '正在刷新' : '刷新' }}</span>
       </button>
@@ -51,18 +51,61 @@
         <p class="document-library__count" aria-live="polite">显示 {{ filteredDocuments.length }} 个文档</p>
       </div>
 
+      <div class="document-library__batch-controls" aria-label="批量文档操作">
+        <p class="document-library__selection-count" aria-live="polite">已选择 {{ selectedDocumentCount }} 个文档</p>
+        <button
+          type="button"
+          :disabled="!hasSelectedDocuments || isInventoryInteractionBlocked"
+          :aria-busy="batchAction === 'build'"
+          @click="openBatchRebuild"
+        >
+          <RefreshCw v-if="batchAction === 'build'" :size="15" class="document-library__refresh-icon--spinning" aria-hidden="true" />
+          <span>批量重新构建</span>
+        </button>
+        <button
+          type="button"
+          class="document-library__batch-delete"
+          :disabled="!hasSelectedDocuments || isInventoryInteractionBlocked"
+          :aria-busy="batchAction === 'delete'"
+          @click="confirmBatchDelete"
+        >
+          <RefreshCw v-if="batchAction === 'delete'" :size="15" class="document-library__refresh-icon--spinning" aria-hidden="true" />
+          <span>批量删除</span>
+        </button>
+      </div>
+
       <p v-if="listError" class="document-library__error" role="alert">
         <span>{{ listError }}</span>
         <button type="button" @click="loadDocuments">重新加载</button>
       </p>
       <p v-if="deleteSuccess" class="document-library__success" role="status">{{ deleteSuccess }}</p>
       <p v-if="deleteError" class="document-library__error" role="alert">{{ deleteError }}</p>
+      <p v-if="batchError" class="document-library__error" role="alert">{{ batchError }}</p>
+      <div v-if="batchResult" class="document-library__batch-result" :class="`document-library__batch-result--${batchResult.tone}`" role="status">
+        <p>{{ batchResult.summary }}</p>
+        <button v-if="batchResult.hasJobs" type="button" @click="openIndexingJobs">前往构建任务</button>
+        <ul v-if="batchResult.failedItems.length">
+          <li v-for="failure in batchResult.failedItems" :key="`${failure.documentId}-${failure.message}`">
+            文档 {{ failure.label }}：{{ failure.message }}
+          </li>
+        </ul>
+      </div>
 
       <div class="document-library__table-wrap" :aria-busy="loading">
         <table>
           <caption class="sr-only">文档库列表</caption>
           <thead>
             <tr>
+              <th scope="col" class="document-library__selection-cell">
+                <input
+                  type="checkbox"
+                  aria-label="选择当前筛选的所有文档"
+                  :checked="areAllFilteredDocumentsSelected"
+                  :indeterminate="hasPartialFilteredSelection"
+                  :disabled="!filteredDocuments.length || isInventoryInteractionBlocked"
+                  @change="toggleFilteredDocumentSelection($event.target.checked)"
+                />
+              </th>
               <th scope="col">文件名</th>
               <th scope="col">类型</th>
               <th scope="col">大小</th>
@@ -74,12 +117,21 @@
           </thead>
           <tbody>
             <tr v-if="loading && !documents.length">
-              <td colspan="7" class="document-library__state">正在加载文档库...</td>
+              <td colspan="8" class="document-library__state">正在加载文档库...</td>
             </tr>
             <tr v-else-if="!filteredDocuments.length">
-              <td colspan="7" class="document-library__state">{{ emptyStateText }}</td>
+              <td colspan="8" class="document-library__state">{{ emptyStateText }}</td>
             </tr>
             <tr v-for="document in filteredDocuments" :key="document.document_id">
+              <td class="document-library__selection-cell">
+                <input
+                  type="checkbox"
+                  :aria-label="`选中文档 ${document.document_id}`"
+                  :checked="isDocumentSelected(document.document_id)"
+                  :disabled="isInventoryInteractionBlocked"
+                  @change="toggleDocumentSelection(document.document_id, $event.target.checked)"
+                />
+              </td>
               <td class="document-library__filename">{{ document.filename || '-' }}</td>
               <td>{{ formatFileType(document.file_type) }}</td>
               <td class="document-library__numeric">{{ formatFileSize(document.file_size) }}</td>
@@ -260,6 +312,50 @@
         </button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="batchRebuildDialogVisible"
+      class="document-library__rebuild-dialog"
+      width="min(92vw, 560px)"
+      :close-on-click-modal="false"
+      @closed="resetBatchRebuild"
+    >
+      <template #header>
+        <div>
+          <p class="document-library__dialog-eyebrow">批量重建</p>
+          <h2>重新构建 {{ selectedDocumentCount }} 个文档</h2>
+        </div>
+      </template>
+
+      <div class="document-library__rebuild-form">
+        <p class="document-library__rebuild-document">已选择 {{ selectedDocumentCount }} 个当前文档。</p>
+        <p v-if="selectedPublishedDocumentCount" class="document-library__rebuild-continuity">
+          其中 {{ selectedPublishedDocumentCount }} 个文档的当前已发布版本将在新任务运行时继续用于检索；候选分块尚未发布。
+        </p>
+        <label for="batch-document-rebuild-strategy">
+          <span>重建分块策略</span>
+          <select id="batch-document-rebuild-strategy" v-model="batchRebuildStrategy" aria-label="批量重建分块策略" :disabled="isInventoryInteractionBlocked">
+            <option v-for="strategy in supportedRebuildStrategies" :key="strategy.value" :value="strategy.value">
+              {{ strategy.label }}
+            </option>
+          </select>
+        </label>
+        <p class="document-library__rebuild-help">策略选项与服务端当前接受的批量重建契约保持一致。</p>
+        <p v-if="batchRebuildError" class="document-library__rebuild-error" role="alert">{{ batchRebuildError }}</p>
+      </div>
+
+      <template #footer>
+        <button type="button" class="document-library__dialog-button" :disabled="isInventoryInteractionBlocked" @click="batchRebuildDialogVisible = false">取消</button>
+        <button
+          type="button"
+          class="document-library__dialog-button document-library__dialog-button--primary"
+          :disabled="!hasSelectedDocuments || isInventoryInteractionBlocked"
+          @click="submitBatchRebuild"
+        >
+          {{ isBatchActionLoading ? '正在创建' : `创建 ${selectedDocumentCount} 个重建任务` }}
+        </button>
+      </template>
+    </el-dialog>
   </section>
 </template>
 
@@ -311,6 +407,13 @@ const rebuildJobs = ref({});
 const deletionLoading = ref({});
 const deleteSuccess = ref('');
 const deleteError = ref('');
+const selectedDocumentIds = ref([]);
+const batchAction = ref('');
+const batchError = ref('');
+const batchResult = ref(null);
+const batchRebuildDialogVisible = ref(false);
+const batchRebuildStrategy = ref('general');
+const batchRebuildError = ref('');
 
 const CHUNK_PAGE_SIZE = 10;
 const supportedRebuildStrategies = [
@@ -328,6 +431,35 @@ const filteredDocuments = computed(() => {
     return matchesStatus && matchesFilename;
   });
 });
+
+const selectedDocuments = computed(() => {
+  const selectedIds = new Set(selectedDocumentIds.value);
+  return documents.value.filter((document) => selectedIds.has(document.document_id));
+});
+
+const selectedDocumentCount = computed(() => selectedDocuments.value.length);
+
+const hasSelectedDocuments = computed(() => selectedDocumentCount.value > 0);
+
+const selectedPublishedDocumentCount = computed(() =>
+  selectedDocuments.value.filter((document) => hasPublishedGeneration(document)).length
+);
+
+const selectedFilteredDocumentCount = computed(() =>
+  filteredDocuments.value.filter((document) => isDocumentSelected(document.document_id)).length
+);
+
+const areAllFilteredDocumentsSelected = computed(() =>
+  filteredDocuments.value.length > 0 && selectedFilteredDocumentCount.value === filteredDocuments.value.length
+);
+
+const hasPartialFilteredSelection = computed(() =>
+  selectedFilteredDocumentCount.value > 0 && selectedFilteredDocumentCount.value < filteredDocuments.value.length
+);
+
+const isBatchActionLoading = computed(() => Boolean(batchAction.value));
+
+const isInventoryInteractionBlocked = computed(() => loading.value || isBatchActionLoading.value);
 
 const emptyStateText = computed(() => {
   if (documents.value.length && (keyword.value.trim() || statusFilter.value !== 'all')) {
@@ -391,6 +523,33 @@ const canInspectChunks = (document) => document.status === 'ready' && hasPublish
 const canRebuild = (document) => ['ready', 'failed'].includes(document.status);
 
 const canDelete = (document) => document.status !== 'deleting';
+
+const isDocumentSelected = (documentId) => selectedDocumentIds.value.includes(documentId);
+
+const toggleDocumentSelection = (documentId, selected) => {
+  if (isInventoryInteractionBlocked.value) return;
+
+  const nextIds = new Set(selectedDocumentIds.value);
+  if (selected) nextIds.add(documentId);
+  else nextIds.delete(documentId);
+  selectedDocumentIds.value = [...nextIds];
+};
+
+const toggleFilteredDocumentSelection = (selected) => {
+  if (isInventoryInteractionBlocked.value) return;
+
+  const nextIds = new Set(selectedDocumentIds.value);
+  for (const document of filteredDocuments.value) {
+    if (selected) nextIds.add(document.document_id);
+    else nextIds.delete(document.document_id);
+  }
+  selectedDocumentIds.value = [...nextIds];
+};
+
+const reconcileSelection = (inventory) => {
+  const validIds = new Set(inventory.map((document) => document.document_id));
+  selectedDocumentIds.value = selectedDocumentIds.value.filter((documentId) => validIds.has(documentId));
+};
 
 const rebuildJobFor = (document) => rebuildJobs.value[document.document_id] || null;
 
@@ -546,8 +705,167 @@ const deleteDocument = async (document) => {
   }
 };
 
+const documentLabel = (documentId, documentSnapshot = selectedDocuments.value) => {
+  const document = documentSnapshot.find((item) => item.document_id === documentId) || documents.value.find((item) => item.document_id === documentId);
+  return document?.filename || documentId;
+};
+
+const batchFailureItems = (responseItems, expectedIds, handledIds, fallbackMessage, documentSnapshot) => {
+  const failures = Array.isArray(responseItems)
+    ? responseItems
+        .filter((item) => item?.document_id)
+        .map((item) => ({
+          documentId: item.document_id,
+          label: documentLabel(item.document_id, documentSnapshot),
+          message: item.message || fallbackMessage
+        }))
+    : [];
+  const failureIds = new Set(failures.map((item) => item.documentId));
+
+  for (const documentId of expectedIds) {
+    if (!handledIds.has(documentId) && !failureIds.has(documentId)) {
+      failures.push({
+        documentId,
+        label: documentLabel(documentId, documentSnapshot),
+        message: fallbackMessage
+      });
+    }
+  }
+  return failures;
+};
+
+const openBatchRebuild = () => {
+  if (!hasSelectedDocuments.value || isInventoryInteractionBlocked.value) return;
+
+  batchRebuildStrategy.value = 'general';
+  batchRebuildError.value = '';
+  batchRebuildDialogVisible.value = true;
+};
+
+const resetBatchRebuild = () => {
+  batchRebuildError.value = '';
+};
+
+const submitBatchRebuild = async () => {
+  if (!hasSelectedDocuments.value || isInventoryInteractionBlocked.value) return;
+
+  const targetDocuments = [...selectedDocuments.value];
+  const targetIds = targetDocuments.map((document) => document.document_id);
+  batchAction.value = 'build';
+  batchError.value = '';
+  batchResult.value = null;
+  batchRebuildError.value = '';
+  try {
+    const result = await apiAdapter.batchBuildDocuments({
+      document_ids: targetIds,
+      chunk_strategy: batchRebuildStrategy.value
+    });
+    const jobs = Array.isArray(result?.items)
+      ? result.items.filter((job) => targetIds.includes(job?.document_id) && job?.job_id)
+      : [];
+    const acceptedIds = new Set(jobs.map((job) => job.document_id));
+    const failedItems = batchFailureItems(
+      result?.failed_items,
+      targetIds,
+      acceptedIds,
+      '服务端未返回可用的构建任务。',
+      targetDocuments
+    );
+
+    if (jobs.length) {
+      rebuildJobs.value = {
+        ...rebuildJobs.value,
+        ...Object.fromEntries(
+          jobs.map((job) => {
+            const document = targetDocuments.find((item) => item.document_id === job.document_id);
+            return [
+              job.document_id,
+              {
+                jobId: job.job_id,
+                hasPublishedChunks: hasPublishedGeneration(document),
+                publishedChunkCount: Number(document?.chunk_count) || 0
+              }
+            ];
+          })
+        )
+      };
+      documents.value = documents.value.map((document) =>
+        acceptedIds.has(document.document_id) ? { ...document, status: 'pending' } : document
+      );
+    }
+
+    batchResult.value = {
+      tone: failedItems.length ? 'warning' : 'success',
+      summary: jobs.length
+        ? `已为 ${jobs.length} 个文档创建重建任务。`
+        : '服务端未创建任何重建任务。',
+      hasJobs: jobs.length > 0,
+      failedItems
+    };
+    batchRebuildDialogVisible.value = false;
+  } catch (error) {
+    batchRebuildError.value = rebuildErrorMessage(error);
+  } finally {
+    batchAction.value = '';
+  }
+};
+
+const confirmBatchDelete = async () => {
+  if (!hasSelectedDocuments.value || isInventoryInteractionBlocked.value) return;
+
+  const targetDocuments = [...selectedDocuments.value];
+  const targetIds = targetDocuments.map((document) => document.document_id);
+  try {
+    await ElMessageBox.confirm(`确认删除已选择的 ${targetIds.length} 个文档？此操作不能撤销。`, '批量删除文档', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消'
+    });
+  } catch {
+    return;
+  }
+
+  batchAction.value = 'delete';
+  batchError.value = '';
+  batchResult.value = null;
+  try {
+    const result = await apiAdapter.batchDeleteDocuments({ document_ids: targetIds });
+    const successIds = new Set(
+      (Array.isArray(result?.success_ids) ? result.success_ids : []).filter((documentId) => targetIds.includes(documentId))
+    );
+    const failedItems = batchFailureItems(
+      result?.failed_items,
+      targetIds,
+      successIds,
+      '服务端未确认删除，请刷新后重试。',
+      targetDocuments
+    );
+
+    if (successIds.size) {
+      documents.value = documents.value.filter((document) => !successIds.has(document.document_id));
+      rebuildJobs.value = Object.fromEntries(
+        Object.entries(rebuildJobs.value).filter(([documentId]) => !successIds.has(documentId))
+      );
+      reconcileSelection(documents.value);
+    }
+
+    batchResult.value = {
+      tone: failedItems.length ? 'warning' : 'success',
+      summary: successIds.size
+        ? `已由服务端确认删除 ${successIds.size} 个文档。`
+        : '服务端未确认删除任何文档。',
+      hasJobs: false,
+      failedItems
+    };
+  } catch (error) {
+    batchError.value = `批量删除失败：${deleteErrorMessage(error)}`;
+  } finally {
+    batchAction.value = '';
+  }
+};
+
 const loadDocuments = async () => {
-  if (!isDesktop.value) return;
+  if (!isDesktop.value || isBatchActionLoading.value) return;
 
   loading.value = true;
   listError.value = '';
@@ -555,6 +873,7 @@ const loadDocuments = async () => {
     const data = await apiAdapter.listDocuments({ page: 1, page_size: 200 });
     const items = Array.isArray(data?.items) ? data.items : [];
     documents.value = items;
+    reconcileSelection(items);
     rebuildJobs.value = Object.fromEntries(
       Object.entries(rebuildJobs.value).filter(([documentId]) => {
         const document = items.find((item) => item.document_id === documentId);
@@ -577,6 +896,8 @@ const openJob = (jobId) => router.push({ name: 'indexing-jobs', query: { job: jo
 
 const openDocumentJobs = (documentId) => router.push({ name: 'indexing-jobs', query: { document: documentId } });
 
+const openIndexingJobs = () => router.push({ name: 'indexing-jobs' });
+
 const updateViewportScope = () => {
   const wasDesktop = isDesktop.value;
   isDesktop.value = window.innerWidth >= 768;
@@ -598,12 +919,12 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateViewportScope))
 .document-library__eyebrow { margin: 0 0 var(--space-2); color: var(--color-moss); font-size: 12px; font-weight: 600; }
 .document-library h1 { margin: 0; font-family: var(--font-display); font-size: 26px; font-weight: 600; line-height: 1.3; }
 .document-library__description { max-width: 620px; margin: var(--space-2) 0 0; color: var(--color-ink-soft); font-size: 14px; line-height: 1.7; }
-.document-library__refresh, .document-library__error button, .document-library__upload-result button, .document-library__action button { min-height: 32px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--color-rule); border-radius: var(--radius-control); background: var(--color-paper-raised); color: var(--color-ink); font: inherit; font-size: 13px; cursor: pointer; }
+.document-library__refresh, .document-library__error button, .document-library__upload-result button, .document-library__action button, .document-library__batch-controls button, .document-library__batch-result button { min-height: 32px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--color-rule); border-radius: var(--radius-control); background: var(--color-paper-raised); color: var(--color-ink); font: inherit; font-size: 13px; cursor: pointer; }
 .document-library__refresh { min-width: 82px; padding: 0 var(--space-3); }
 .document-library__refresh:disabled { cursor: wait; opacity: 0.65; }
-.document-library__refresh:not(:disabled):hover, .document-library__error button:not(:disabled):hover, .document-library__upload-result button:not(:disabled):hover, .document-library__action button:not(:disabled):hover { border-color: var(--color-copper); color: var(--color-copper-strong); }
-.document-library__refresh:not(:disabled):active, .document-library__error button:not(:disabled):active, .document-library__upload-result button:not(:disabled):active, .document-library__action button:not(:disabled):active { background: var(--color-paper-muted); }
-.document-library__error button:disabled, .document-library__upload-result button:disabled, .document-library__action button:disabled, .document-library__rebuild-status button:disabled, .document-library__chunks-error button:disabled, .document-library__chunk-pagination button:disabled { cursor: not-allowed; opacity: 0.55; }
+.document-library__refresh:not(:disabled):hover, .document-library__error button:not(:disabled):hover, .document-library__upload-result button:not(:disabled):hover, .document-library__action button:not(:disabled):hover, .document-library__batch-controls button:not(:disabled):hover, .document-library__batch-result button:not(:disabled):hover { border-color: var(--color-copper); color: var(--color-copper-strong); }
+.document-library__refresh:not(:disabled):active, .document-library__error button:not(:disabled):active, .document-library__upload-result button:not(:disabled):active, .document-library__action button:not(:disabled):active, .document-library__batch-controls button:not(:disabled):active, .document-library__batch-result button:not(:disabled):active { background: var(--color-paper-muted); }
+.document-library__error button:disabled, .document-library__upload-result button:disabled, .document-library__action button:disabled, .document-library__batch-controls button:disabled, .document-library__rebuild-status button:disabled, .document-library__chunks-error button:disabled, .document-library__chunk-pagination button:disabled { cursor: not-allowed; opacity: 0.55; }
 .document-library__refresh-icon--spinning { animation: document-library-spin 0.9s linear infinite; }
 .document-library__desktop-notice, .document-library__error, .document-library__success, .document-library__upload-result { display: flex; align-items: center; gap: var(--space-3); margin: var(--space-5) 0 0; padding: var(--space-3) var(--space-4); border-left: 3px solid var(--color-warning); background: var(--color-warning-soft); color: var(--color-warning); font-size: 13px; line-height: 1.5; }
 .document-library__desktop-notice p, .document-library__upload-result p { margin: 0; }
@@ -623,18 +944,32 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateViewportScope))
 .document-library__filter select:hover { border-color: var(--color-copper); }
 .document-library__filter select:active { background: var(--color-paper-muted); }
 .document-library__count { margin: 0 0 0 auto; color: var(--color-ink-soft); font-size: 13px; white-space: nowrap; }
+.document-library__batch-controls { display: flex; min-height: 56px; align-items: center; gap: var(--space-2); padding: var(--space-3) 0; border-top: 1px solid var(--color-rule); border-bottom: 1px solid var(--color-rule); }
+.document-library__selection-count { min-width: 112px; margin: 0 auto 0 0; color: var(--color-ink-soft); font-size: 13px; white-space: nowrap; }
+.document-library__batch-controls button { min-width: 116px; padding: 0 var(--space-3); }
+.document-library__batch-controls .document-library__batch-delete { border-color: var(--color-danger); color: var(--color-danger); }
+.document-library__batch-result { display: flex; align-items: flex-start; gap: var(--space-3); margin: var(--space-4) 0 0; padding: var(--space-3) var(--space-4); border-left: 3px solid var(--color-moss); background: var(--color-moss-soft); color: var(--color-moss); font-size: 13px; line-height: 1.5; }
+.document-library__batch-result--warning { border-left-color: var(--color-warning); background: var(--color-warning-soft); color: var(--color-warning); }
+.document-library__batch-result p, .document-library__batch-result ul { margin: 0; }
+.document-library__batch-result ul { min-width: 0; padding-left: 16px; }
+.document-library__batch-result li + li { margin-top: var(--space-1); }
+.document-library__batch-result button { flex: 0 0 auto; margin-left: auto; padding: 0 var(--space-3); border-color: currentColor; background: transparent; color: inherit; }
 .document-library__table-wrap { overflow-x: auto; border-top: 1px solid var(--color-rule); border-bottom: 1px solid var(--color-rule); background: var(--color-paper-raised); }
-.document-library table { width: 100%; min-width: 1080px; border-collapse: collapse; table-layout: fixed; }
+.document-library table { width: 100%; min-width: 1160px; border-collapse: collapse; table-layout: fixed; }
 .document-library th, .document-library td { padding: 13px 12px; border-bottom: 1px solid var(--color-rule); color: var(--color-ink); font-size: 13px; line-height: 1.45; text-align: left; vertical-align: middle; }
 .document-library th { position: sticky; top: 0; z-index: 1; background: var(--color-paper-muted); color: var(--color-ink-soft); font-size: 12px; font-weight: 600; }
 .document-library tbody tr:last-child td { border-bottom: 0; }
-.document-library th:nth-child(1) { width: 22%; }
-.document-library th:nth-child(2) { width: 8%; }
-.document-library th:nth-child(3) { width: 10%; }
-.document-library th:nth-child(4) { width: 22%; }
-.document-library th:nth-child(5) { width: 8%; }
-.document-library th:nth-child(6) { width: 15%; }
-.document-library th:nth-child(7) { width: 15%; }
+.document-library th:nth-child(1) { width: 5%; }
+.document-library th:nth-child(2) { width: 20%; }
+.document-library th:nth-child(3) { width: 8%; }
+.document-library th:nth-child(4) { width: 10%; }
+.document-library th:nth-child(5) { width: 22%; }
+.document-library th:nth-child(6) { width: 8%; }
+.document-library th:nth-child(7) { width: 14%; }
+.document-library th:nth-child(8) { width: 13%; }
+.document-library__selection-cell { text-align: center !important; }
+.document-library__selection-cell input { width: 16px; height: 16px; margin: 0; accent-color: var(--color-copper); cursor: pointer; }
+.document-library__selection-cell input:disabled { cursor: wait; }
 .document-library__filename { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .document-library__numeric, .document-library__timestamp { font-family: var(--font-mono); font-size: 12px; }
 .document-library__timestamp { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

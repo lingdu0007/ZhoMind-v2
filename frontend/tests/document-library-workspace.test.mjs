@@ -952,3 +952,292 @@ test('System Administrator confirms document deletion and keeps a document visib
     'DELETE /api/documents/protected-notes.md'
   ]);
 });
+
+test('batch selection survives filtering and removes only records absent from a confirmed refresh', { timeout: 30000 }, async (t) => {
+  let inventory = [documents[0], documents[2], documents[3]];
+  const { page, baseUrl } = await startDocumentLibrary(t, async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+
+    if (path === '/api/auth/me') {
+      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin' }));
+      return;
+    }
+    if (path === '/api/documents' && request.method() === 'GET') {
+      await route.fulfill(jsonResponse({ items: inventory }));
+      return;
+    }
+    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
+  });
+
+  await authenticateAdmin(page);
+  await page.goto(`${baseUrl}documents`);
+  await page.getByRole('heading', { name: '文档库' }).waitFor();
+
+  assert.equal(await page.getByRole('button', { name: '批量重新构建' }).isDisabled(), true);
+  assert.equal(await page.getByRole('button', { name: '批量删除' }).isDisabled(), true);
+
+  await page.getByLabel('选中文档 doc-ready').check();
+  await page.getByText('已选择 1 个文档').waitFor();
+  assert.equal(await page.getByRole('button', { name: '批量重新构建' }).isDisabled(), false);
+
+  await page.getByLabel('按状态筛选').selectOption('ready');
+  assert.equal(await page.getByLabel('选中文档 doc-ready').isChecked(), true);
+  assert.equal(await page.getByText('已选择 1 个文档').isVisible(), true);
+
+  await page.getByLabel('按状态筛选').selectOption('all');
+  await page.getByLabel('选中文档 doc-failed').check();
+  await page.getByText('已选择 2 个文档').waitFor();
+
+  inventory = [documents[0], documents[3]];
+  await page.getByRole('button', { name: '刷新' }).click();
+  await page.getByText('已选择 1 个文档').waitFor();
+  assert.equal(await page.getByLabel('选中文档 doc-ready').count(), 0);
+  assert.equal(await page.getByLabel('选中文档 doc-failed').isChecked(), true);
+});
+
+test('a pending refresh blocks batch actions until stale document selection is reconciled', { timeout: 30000 }, async (t) => {
+  let listReads = 0;
+  let releaseRefresh;
+  const refreshResponse = new Promise((resolve) => {
+    releaseRefresh = resolve;
+  });
+  const { page, baseUrl } = await startDocumentLibrary(t, async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+
+    if (path === '/api/auth/me') {
+      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin' }));
+      return;
+    }
+    if (path === '/api/documents' && request.method() === 'GET') {
+      listReads += 1;
+      if (listReads === 1) {
+        await route.fulfill(jsonResponse({ items: [documents[2]] }));
+        return;
+      }
+      await refreshResponse;
+      await route.fulfill(jsonResponse({ items: [] }));
+      return;
+    }
+    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
+  });
+
+  await authenticateAdmin(page);
+  await page.goto(`${baseUrl}documents`);
+  await page.getByRole('heading', { name: '文档库' }).waitFor();
+  await page.getByLabel('选中文档 doc-ready').check();
+  await page.getByRole('button', { name: '刷新' }).click();
+  await page.getByText('正在刷新').waitFor();
+  assert.equal(await page.getByRole('button', { name: '批量重新构建' }).isDisabled(), true);
+  assert.equal(await page.getByRole('button', { name: '批量删除' }).isDisabled(), true);
+  assert.equal(await page.getByLabel('选中文档 doc-ready').isDisabled(), true);
+
+  releaseRefresh();
+  await page.getByText('当前文档库为空。').waitFor();
+  assert.equal(await page.getByText('已选择 0 个文档').isVisible(), true);
+});
+
+test('batch rebuild submits only supported strategies, keeps published generations available, and hands off to Indexing Jobs', { timeout: 30000 }, async (t) => {
+  const rebuildRequests = [];
+  const batchDocuments = [
+    {
+      document_id: 'doc-batch-first',
+      filename: 'published-first.md',
+      file_type: 'md',
+      file_size: 1024,
+      status: 'ready',
+      chunk_count: 8,
+      published_generation: 2,
+      uploaded_at: '2026-07-30T13:00:00Z'
+    },
+    {
+      document_id: 'doc-batch-second',
+      filename: 'published-second.md',
+      file_type: 'md',
+      file_size: 2048,
+      status: 'ready',
+      chunk_count: 12,
+      published_generation: 4,
+      uploaded_at: '2026-07-30T13:01:00Z'
+    }
+  ];
+  const { page, baseUrl } = await startDocumentLibrary(t, async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+
+    if (path === '/api/auth/me') {
+      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin' }));
+      return;
+    }
+    if (path === '/api/documents' && request.method() === 'GET') {
+      await route.fulfill(jsonResponse({ items: batchDocuments }));
+      return;
+    }
+    if (path === '/api/documents/batch-build' && request.method() === 'POST') {
+      const payload = request.postDataJSON();
+      rebuildRequests.push(payload);
+      await route.fulfill(
+        jsonResponse({
+          items: payload.document_ids.map((documentId) => ({
+            job_id: `job-${documentId}`,
+            document_id: documentId,
+            status: 'queued',
+            stage: 'queued',
+            progress: 0,
+            message: 'queued for rebuild',
+            updated_at: '2026-07-30T13:02:00Z'
+          }))
+        })
+      );
+      return;
+    }
+    if (path === '/api/documents/jobs' && request.method() === 'GET') {
+      await route.fulfill(jsonResponse({ items: [] }));
+      return;
+    }
+    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
+  });
+
+  await authenticateAdmin(page);
+  await page.goto(`${baseUrl}documents`);
+  await page.getByRole('heading', { name: '文档库' }).waitFor();
+  const batchControlsBox = await page.getByLabel('批量文档操作').boundingBox();
+
+  await page.getByLabel('选中文档 doc-batch-first').check();
+  await page.getByLabel('选中文档 doc-batch-second').check();
+  await page.getByRole('button', { name: '批量重新构建' }).click();
+  await page.getByRole('heading', { name: '重新构建 2 个文档' }).waitFor();
+  assert.deepEqual(
+    await page.getByLabel('批量重建分块策略').locator('option').evaluateAll((options) => options.map((option) => option.value)),
+    ['general', 'paper', 'qa']
+  );
+  assert.equal(
+    await page.getByText('其中 2 个文档的当前已发布版本将在新任务运行时继续用于检索；候选分块尚未发布。').isVisible(),
+    true
+  );
+
+  await page.getByLabel('批量重建分块策略').selectOption('qa');
+  await page.getByRole('button', { name: '创建 2 个重建任务' }).click();
+  await page.getByText('已为 2 个文档创建重建任务。').waitFor();
+  assert.deepEqual(rebuildRequests, [
+    { document_ids: ['doc-batch-first', 'doc-batch-second'], chunk_strategy: 'qa' }
+  ]);
+  assert.equal(await page.getByText('已创建重建任务 job-doc-batch-first。').isVisible(), true);
+  assert.equal(await page.getByText('已创建重建任务 job-doc-batch-second。').isVisible(), true);
+  assert.equal(await page.getByText('当前已发布版本的 8 个分块仍可用于检索；候选分块尚未发布。').isVisible(), true);
+  assert.equal(await page.getByText('当前已发布版本的 12 个分块仍可用于检索；候选分块尚未发布。').isVisible(), true);
+
+  const resultControlsBox = await page.getByLabel('批量文档操作').boundingBox();
+  assert.equal(resultControlsBox.width, batchControlsBox.width);
+  assert.equal(resultControlsBox.height, batchControlsBox.height);
+
+  await page.getByRole('button', { name: '前往构建任务' }).click();
+  await page.waitForURL(/\/jobs$/);
+  await page.getByRole('heading', { name: '构建任务' }).waitFor();
+});
+
+test('batch deletion confirms the selected count, reports partial failures, and retains inventory on request failure', { timeout: 30000 }, async (t) => {
+  let releaseFirstDeleteRequested;
+  const firstDeleteRequested = new Promise((resolve) => {
+    releaseFirstDeleteRequested = resolve;
+  });
+  let releaseFirstDeleteResponse;
+  const firstDeleteResponse = new Promise((resolve) => {
+    releaseFirstDeleteResponse = resolve;
+  });
+  const batchDeleteRequests = [];
+  const batchDocuments = [
+    {
+      document_id: 'doc-batch-remove',
+      filename: 'remove-after-confirmation.md',
+      file_type: 'md',
+      file_size: 1024,
+      status: 'ready',
+      chunk_count: 8,
+      uploaded_at: '2026-07-30T14:00:00Z'
+    },
+    {
+      document_id: 'doc-batch-retain',
+      filename: 'retain-after-partial-failure.md',
+      file_type: 'md',
+      file_size: 1024,
+      status: 'failed',
+      chunk_count: 0,
+      uploaded_at: '2026-07-30T14:01:00Z'
+    },
+    {
+      document_id: 'doc-batch-request-failure',
+      filename: 'retain-after-request-failure.md',
+      file_type: 'md',
+      file_size: 1024,
+      status: 'ready',
+      chunk_count: 2,
+      uploaded_at: '2026-07-30T14:02:00Z'
+    }
+  ];
+  const { page, baseUrl } = await startDocumentLibrary(t, async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+
+    if (path === '/api/auth/me') {
+      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin' }));
+      return;
+    }
+    if (path === '/api/documents' && request.method() === 'GET') {
+      await route.fulfill(jsonResponse({ items: batchDocuments }));
+      return;
+    }
+    if (path === '/api/documents/batch-delete' && request.method() === 'POST') {
+      batchDeleteRequests.push(request.postDataJSON());
+      if (batchDeleteRequests.length === 1) {
+        releaseFirstDeleteRequested();
+        await firstDeleteResponse;
+        await route.fulfill(
+          jsonResponse({
+            success_ids: ['doc-batch-remove'],
+            failed_items: [{ document_id: 'doc-batch-retain', message: '文档正在保留以供调查。' }]
+          })
+        );
+        return;
+      }
+      await route.fulfill(jsonResponse({ message: 'document service unavailable' }, 503));
+      return;
+    }
+    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
+  });
+
+  await authenticateAdmin(page);
+  await page.goto(`${baseUrl}documents`);
+  await page.getByRole('heading', { name: '文档库' }).waitFor();
+
+  await page.getByLabel('选中文档 doc-batch-remove').check();
+  await page.getByLabel('选中文档 doc-batch-retain').check();
+  await page.getByRole('button', { name: '批量删除' }).click();
+  await page.getByRole('dialog').getByText('确认删除已选择的 2 个文档？此操作不能撤销。').waitFor();
+  await page.getByRole('dialog').getByRole('button', { name: '删除', exact: true }).click();
+  await firstDeleteRequested;
+  assert.equal(await page.getByRole('button', { name: '批量删除' }).isDisabled(), true);
+  assert.equal(await page.getByRole('cell', { name: 'remove-after-confirmation.md' }).isVisible(), true);
+
+  releaseFirstDeleteResponse();
+  await page.getByText('已由服务端确认删除 1 个文档。').waitFor();
+  assert.equal(await page.getByRole('cell', { name: 'remove-after-confirmation.md' }).count(), 0);
+  assert.equal(await page.getByRole('cell', { name: 'retain-after-partial-failure.md' }).isVisible(), true);
+  assert.equal(await page.getByText('文档 retain-after-partial-failure.md：文档正在保留以供调查。').isVisible(), true);
+  assert.equal(await page.getByText('已选择 1 个文档').isVisible(), true);
+  assert.equal(await page.getByLabel('选中文档 doc-batch-retain').isChecked(), true);
+
+  await page.getByLabel('选中文档 doc-batch-request-failure').check();
+  await page.getByRole('button', { name: '批量删除' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: '删除', exact: true }).click();
+  await page.getByRole('alert').waitFor();
+  assert.equal(await page.getByRole('alert').innerText(), '批量删除失败：请稍后重试。');
+  assert.equal(await page.getByRole('cell', { name: 'retain-after-partial-failure.md' }).isVisible(), true);
+  assert.equal(await page.getByRole('cell', { name: 'retain-after-request-failure.md' }).isVisible(), true);
+  assert.equal(await page.getByText('已选择 2 个文档').isVisible(), true);
+  assert.deepEqual(batchDeleteRequests, [
+    { document_ids: ['doc-batch-remove', 'doc-batch-retain'] },
+    { document_ids: ['doc-batch-retain', 'doc-batch-request-failure'] }
+  ]);
+});
