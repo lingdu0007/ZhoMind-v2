@@ -54,7 +54,7 @@ test('System Administrator saves and applies a dirty draft without optimisticall
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin' }));
+      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin', capabilities: { system_settings: true } }));
       return;
     }
     if (path === '/api/settings/draft' && request.method() === 'GET') {
@@ -182,7 +182,7 @@ test('System Administrator sees a failed application after refresh and can retry
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin' }));
+      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin', capabilities: { system_settings: true } }));
       return;
     }
     if (path === '/api/settings/draft' && request.method() === 'GET') {
@@ -236,7 +236,7 @@ test('settings draft validation keeps edits visible and exposes field-level feed
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin' }));
+      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin', capabilities: { system_settings: true } }));
       return;
     }
     if (path === '/api/settings/draft' && request.method() === 'GET') {
@@ -278,7 +278,7 @@ test('Knowledge User is redirected before the gated settings draft can load', { 
     const path = new URL(request.url()).pathname;
     requests.push(`${request.method()} ${path}`);
     if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'knowledge-user', role: 'user' }));
+      await route.fulfill(jsonResponse({ username: 'knowledge-user', role: 'user', capabilities: { system_settings: false } }));
       return;
     }
     if (path === '/api/sessions') {
@@ -303,7 +303,7 @@ test('System Settings keeps its desktop-only boundary explicit on a mobile viewp
     async (route) => {
       const path = new URL(route.request().url()).pathname;
       if (path === '/api/auth/me') {
-        await route.fulfill(jsonResponse({ username: 'operator', role: 'admin' }));
+        await route.fulfill(jsonResponse({ username: 'operator', role: 'admin', capabilities: { system_settings: true } }));
         return;
       }
       if (path === '/api/settings/draft') {

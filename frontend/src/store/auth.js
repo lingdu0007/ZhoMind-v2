@@ -5,6 +5,7 @@ export const useAuthStore = defineStore('auth', {
   state: () => ({
     username: '',
     role: '',
+    capabilities: { system_settings: false },
     token: localStorage.getItem('access_token') || '',
     loading: false,
     status: localStorage.getItem('access_token') ? 'resolving' : 'anonymous'
@@ -12,6 +13,8 @@ export const useAuthStore = defineStore('auth', {
   getters: {
     isLoggedIn: (state) => state.status === 'authenticated' && Boolean(state.token),
     isAdmin: (state) => state.status === 'authenticated' && state.role === 'admin',
+    canAccessSystemSettings: (state) =>
+      state.status === 'authenticated' && state.role === 'admin' && state.capabilities.system_settings,
     isResolving: (state) => state.status === 'resolving'
   },
   actions: {
@@ -22,6 +25,7 @@ export const useAuthStore = defineStore('auth', {
       this.token = token;
       this.username = '';
       this.role = '';
+      this.capabilities = { system_settings: false };
       this.status = 'resolving';
 
       localStorage.setItem('access_token', token);
@@ -37,6 +41,7 @@ export const useAuthStore = defineStore('auth', {
 
       this.username = username;
       this.role = role;
+      this.capabilities = { system_settings: identity?.capabilities?.system_settings === true };
       this.status = 'authenticated';
 
       localStorage.setItem('username', username);
@@ -46,6 +51,7 @@ export const useAuthStore = defineStore('auth', {
       this.token = '';
       this.username = '';
       this.role = '';
+      this.capabilities = { system_settings: false };
       this.status = 'anonymous';
       localStorage.removeItem('access_token');
       localStorage.removeItem('username');

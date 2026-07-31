@@ -18,7 +18,7 @@ const routes = [
     path: '/config',
     name: 'config',
     component: ConfigPage,
-    meta: { requiresAuth: true, requiresAdmin: true }
+    meta: { requiresAuth: true, requiresAdmin: true, requiresSystemSettings: true }
   }
 ];
 
@@ -51,6 +51,10 @@ router.beforeEach(async (to) => {
 
   if (to.meta.requiresAdmin && !authStore.isAdmin) {
     return { name: 'chat', query: { notice: 'admin-required' } };
+  }
+
+  if (to.meta.requiresSystemSettings && !authStore.canAccessSystemSettings) {
+    return { name: 'chat', query: { notice: 'settings-unavailable' } };
   }
 
   return true;

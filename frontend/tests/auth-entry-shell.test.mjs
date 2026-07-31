@@ -169,7 +169,7 @@ test('sign-in derives the System Administrator role from the identity endpoint w
       return;
     }
     if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin' }));
+      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin', capabilities: { system_settings: true } }));
       return;
     }
     if (path === '/api/sessions') {
@@ -190,6 +190,37 @@ test('sign-in derives the System Administrator role from the identity endpoint w
   assert.equal(await page.getByRole('link', { name: '文档库' }).count(), 1);
   assert.equal(await page.getByRole('link', { name: '构建任务' }).count(), 1);
   assert.equal(await page.getByRole('link', { name: '系统设置' }).count(), 1);
+});
+
+test('a System Administrator cannot discover or directly load System Settings when the server disables its lifecycle', { timeout: 30000 }, async (t) => {
+  const requests = [];
+  const { page, baseUrl } = await startBrowserApp(t, async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    requests.push(`${request.method()} ${path}`);
+
+    if (path === '/api/auth/me') {
+      await route.fulfill(
+        jsonResponse({ username: 'operator', role: 'admin', capabilities: { system_settings: false } })
+      );
+      return;
+    }
+
+    if (path === '/api/sessions') {
+      await route.fulfill(jsonResponse({ sessions: [] }));
+      return;
+    }
+
+    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
+  });
+
+  await page.addInitScript(() => localStorage.setItem('access_token', 'admin-token'));
+  await page.goto(`${baseUrl}config`);
+
+  await page.waitForURL(/\/chat\?notice=settings-unavailable$/);
+  assert.equal(await page.getByRole('heading', { name: '系统设置' }).count(), 0);
+  assert.equal(await page.getByRole('link', { name: '系统设置' }).count(), 0);
+  assert.equal(requests.some((request) => request.includes('/api/settings/')), false);
 });
 
 test('an invalid stored session returns to Authentication Entry without protected state', { timeout: 30000 }, async (t) => {
