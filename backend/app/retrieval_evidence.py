@@ -5,6 +5,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from hashlib import sha256
 import json
 from pathlib import Path
 import secrets
@@ -244,7 +245,8 @@ class RetrievalEvidenceSmoke:
         return missing
 
     async def _create_admin_and_login(self) -> str:
-        username = f"retrieval-evidence-{self._run_id[:12]}"
+        # Prefixes such as production- make the first characters identical across runs.
+        username = f"retrieval-evidence-{sha256(self._run_id.encode('utf-8')).hexdigest()[:24]}"
         password = secrets.token_urlsafe(24)
         await self._expect_ok(
             "administrator_registration",
