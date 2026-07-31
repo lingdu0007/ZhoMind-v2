@@ -189,7 +189,7 @@ test('sign-in derives the System Administrator role from the identity endpoint w
   assert.equal(await page.getByRole('link', { name: '对话工作区' }).count(), 1);
   assert.equal(await page.getByRole('link', { name: '文档库' }).count(), 1);
   assert.equal(await page.getByRole('link', { name: '构建任务' }).count(), 1);
-  assert.equal(await page.getByRole('link', { name: '系统设置' }).count(), 0);
+  assert.equal(await page.getByRole('link', { name: '系统设置' }).count(), 1);
 });
 
 test('an invalid stored session returns to Authentication Entry without protected state', { timeout: 30000 }, async (t) => {
