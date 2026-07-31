@@ -6,6 +6,7 @@ import UploadPage from '../pages/UploadPage.vue';
 import IndexingJobsPage from '../pages/IndexingJobsPage.vue';
 import ConfigPage from '../pages/ConfigPage.vue';
 import { clearProtectedSession } from './protected-session';
+import { systemSettingsDraftEnabled } from './system-settings-draft';
 import { useAuthStore } from '../store/auth';
 
 const routes = [
@@ -14,7 +15,12 @@ const routes = [
   { path: '/chat', name: 'chat', component: ChatPage, meta: { requiresAuth: true } },
   { path: '/documents', name: 'documents', component: UploadPage, meta: { requiresAuth: true, requiresAdmin: true } },
   { path: '/jobs', name: 'indexing-jobs', component: IndexingJobsPage, meta: { requiresAuth: true, requiresAdmin: true } },
-  { path: '/config', name: 'config', component: ConfigPage, meta: { requiresAuth: true, requiresAdmin: true, unavailable: true } }
+  {
+    path: '/config',
+    name: 'config',
+    component: ConfigPage,
+    meta: { requiresAuth: true, requiresAdmin: true, requiresSettingsDraft: true }
+  }
 ];
 
 const router = createRouter({
@@ -48,7 +54,7 @@ router.beforeEach(async (to) => {
     return { name: 'chat', query: { notice: 'admin-required' } };
   }
 
-  if (to.meta.unavailable) {
+  if (to.meta.requiresSettingsDraft && !systemSettingsDraftEnabled) {
     return { name: 'chat' };
   }
 

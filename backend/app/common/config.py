@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = Field(120, alias="JWT_EXPIRE_MINUTES")
     admin_invite_code: str = Field("", alias="ADMIN_INVITE_CODE")
     redis_url: str = Field("redis://localhost:6379/0", alias="REDIS_URL")
+    system_settings_draft_enabled: bool = Field(False, alias="SYSTEM_SETTINGS_DRAFT_ENABLED")
+    system_settings_encryption_key: str = Field("", alias="SYSTEM_SETTINGS_ENCRYPTION_KEY")
 
     # LLM / ARK
     ark_api_key: str = Field("", alias="ARK_API_KEY")

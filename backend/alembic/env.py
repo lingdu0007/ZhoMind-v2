@@ -13,6 +13,7 @@ from app.common.config import get_settings
 from app.model.base import Base
 from app.model.chat import ChatMessage, ChatSession
 from app.model.document import Document, DocumentChunk, DocumentJob
+from app.model.system_settings import SystemSettingsDraft, SystemSettingsState
 from app.model.user import User
 
 config = context.config

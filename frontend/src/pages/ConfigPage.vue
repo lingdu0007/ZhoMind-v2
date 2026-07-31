@@ -1,189 +1,526 @@
 <template>
-  <section class="config-page">
-    <div class="top-bar">
-      <h1>配置页</h1>
-      <div class="top-actions">
-        <el-button class="btn-ghost" @click="load">重置</el-button>
-        <el-button type="primary" :loading="configStore.loading" @click="save">保存全部</el-button>
+  <section class="system-settings" aria-labelledby="system-settings-title">
+    <header class="system-settings__header">
+      <div>
+        <p class="system-settings__eyebrow">系统运维</p>
+        <h1 id="system-settings-title">系统设置</h1>
+        <p class="system-settings__description">编辑服务端保存的草稿。保存不会修改当前运行系统。</p>
       </div>
+    </header>
+
+    <div v-if="!isDesktop" class="system-settings__desktop-notice" role="status">
+      <Monitor :size="18" aria-hidden="true" />
+      <p>系统设置当前仅支持桌面工作区。</p>
     </div>
 
-    <div class="config-grid">
-      <div class="card config-card">
-        <header>
-          <h3>模型配置</h3>
-          <p>LLM / Embedding / Rerank</p>
-        </header>
-        <el-form label-width="120px">
-          <el-form-item label="LLM 模型">
-            <el-input v-model="configStore.config.llm_model" />
-          </el-form-item>
-          <el-form-item label="Embedding">
-            <el-input v-model="configStore.config.embedding_model" />
-          </el-form-item>
-          <el-form-item label="Rerank">
-            <el-input v-model="configStore.config.rerank_model" />
-          </el-form-item>
-        </el-form>
-        <footer>
-          <small v-if="savedAt">已保存 · {{ savedAt }}</small>
+    <template v-else>
+      <p v-if="loadError" class="system-settings__error" role="alert">
+        <span>{{ loadError }}</span>
+        <button type="button" @click="loadDraft">重新加载</button>
+      </p>
+      <p v-if="saveMessage" class="system-settings__success" role="status">{{ saveMessage }}</p>
+      <p v-if="saveError" class="system-settings__error" role="alert">{{ saveError }}</p>
+
+      <form v-if="!loadError" class="system-settings__form" :aria-busy="loading" @submit.prevent="saveDraft">
+        <section class="system-settings__section" aria-labelledby="model-provider-title">
+          <div class="system-settings__section-heading">
+            <h2 id="model-provider-title">模型与提供方</h2>
+            <p>仅保存待审核的模型与提供方草稿。</p>
+          </div>
+          <div class="system-settings__fields">
+            <label :class="{ 'system-settings__field--changed': isChanged('model_provider') }" class="system-settings__field">
+              <span>模型提供方</span>
+              <select v-model="draft.model_provider" aria-label="模型提供方">
+                <option value="ark">Ark</option>
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic</option>
+              </select>
+              <small v-if="isChanged('model_provider')">模型提供方已修改</small>
+              <small v-if="fieldErrors.model_provider" class="system-settings__field-error">{{ fieldErrors.model_provider }}</small>
+            </label>
+            <label :class="{ 'system-settings__field--changed': isChanged('llm_model') }" class="system-settings__field">
+              <span>语言模型</span>
+              <input v-model="draft.llm_model" type="text" autocomplete="off" />
+              <small v-if="isChanged('llm_model')">语言模型已修改</small>
+              <small v-if="fieldErrors.llm_model" class="system-settings__field-error">{{ fieldErrors.llm_model }}</small>
+            </label>
+            <label :class="{ 'system-settings__field--changed': isChanged('embedding_model') }" class="system-settings__field">
+              <span>嵌入模型</span>
+              <input v-model="draft.embedding_model" type="text" autocomplete="off" />
+              <small v-if="isChanged('embedding_model')">嵌入模型已修改</small>
+              <small v-if="fieldErrors.embedding_model" class="system-settings__field-error">{{ fieldErrors.embedding_model }}</small>
+            </label>
+          </div>
+        </section>
+
+        <section class="system-settings__section" aria-labelledby="retrieval-strategy-title">
+          <div class="system-settings__section-heading">
+            <h2 id="retrieval-strategy-title">检索策略</h2>
+            <p>当前运行路径只接受迁移检索策略；草稿不会改变线上检索。</p>
+          </div>
+          <div class="system-settings__fields">
+            <label :class="{ 'system-settings__field--changed': isChanged('retrieval_strategy') }" class="system-settings__field">
+              <span>检索策略</span>
+              <select v-model="draft.retrieval_strategy" aria-label="检索策略">
+                <option value="migration">迁移检索</option>
+              </select>
+              <small v-if="isChanged('retrieval_strategy')">检索策略已修改</small>
+              <small v-if="fieldErrors.retrieval_strategy" class="system-settings__field-error">{{ fieldErrors.retrieval_strategy }}</small>
+            </label>
+            <label :class="{ 'system-settings__field--changed': isChanged('retrieval_top_k') }" class="system-settings__field">
+              <span>候选数量</span>
+              <input v-model.number="draft.retrieval_top_k" type="number" min="1" max="20" />
+              <small v-if="isChanged('retrieval_top_k')">候选数量已修改</small>
+              <small v-if="fieldErrors.retrieval_top_k" class="system-settings__field-error">{{ fieldErrors.retrieval_top_k }}</small>
+            </label>
+            <label :class="{ 'system-settings__field--changed': isChanged('score_threshold') }" class="system-settings__field">
+              <span>相似度阈值</span>
+              <input v-model.number="draft.score_threshold" type="number" min="0" max="1" step="0.01" />
+              <small v-if="isChanged('score_threshold')">相似度阈值已修改</small>
+              <small v-if="fieldErrors.score_threshold" class="system-settings__field-error">{{ fieldErrors.score_threshold }}</small>
+            </label>
+          </div>
+        </section>
+
+        <section class="system-settings__section" aria-labelledby="storage-index-title">
+          <div class="system-settings__section-heading">
+            <h2 id="storage-index-title">存储与索引</h2>
+            <p>保存连接目标与索引名称，运行时尚未读取此草稿。</p>
+          </div>
+          <div class="system-settings__fields">
+            <label :class="{ 'system-settings__field--changed': isChanged('milvus_uri') }" class="system-settings__field">
+              <span>Milvus URI</span>
+              <input v-model="draft.milvus_uri" type="url" autocomplete="off" />
+              <small v-if="isChanged('milvus_uri')">Milvus URI 已修改</small>
+              <small v-if="fieldErrors.milvus_uri" class="system-settings__field-error">{{ fieldErrors.milvus_uri }}</small>
+            </label>
+            <label :class="{ 'system-settings__field--changed': isChanged('index_name') }" class="system-settings__field">
+              <span>索引名称</span>
+              <input v-model="draft.index_name" type="text" autocomplete="off" />
+              <small v-if="isChanged('index_name')">索引名称已修改</small>
+              <small v-if="fieldErrors.index_name" class="system-settings__field-error">{{ fieldErrors.index_name }}</small>
+            </label>
+          </div>
+        </section>
+
+        <section class="system-settings__section" aria-labelledby="security-runtime-title">
+          <div class="system-settings__section-heading">
+            <h2 id="security-runtime-title">安全与运行时</h2>
+            <p>敏感值只可替换，读取时不会返回原始内容。</p>
+          </div>
+          <div class="system-settings__fields">
+            <label :class="{ 'system-settings__field--changed': Boolean(providerApiKey) }" class="system-settings__field">
+              <span>Provider API 密钥</span>
+              <input v-model="providerApiKey" type="password" autocomplete="new-password" placeholder="仅在替换时填写" />
+              <small v-if="providerApiKeyConfigured">Provider API 密钥已配置，内容已隐藏。</small>
+              <small v-else>尚未配置 Provider API 密钥。</small>
+              <small v-if="providerApiKey">Provider API 密钥已修改</small>
+              <small v-if="fieldErrors.provider_api_key" class="system-settings__field-error">{{ fieldErrors.provider_api_key }}</small>
+            </label>
+            <label :class="{ 'system-settings__field--changed': isChanged('runtime_timeout_ms') }" class="system-settings__field">
+              <span>运行时超时（毫秒）</span>
+              <input v-model.number="draft.runtime_timeout_ms" type="number" min="1000" max="60000" step="1000" />
+              <small v-if="isChanged('runtime_timeout_ms')">运行时超时已修改</small>
+              <small v-if="fieldErrors.runtime_timeout_ms" class="system-settings__field-error">{{ fieldErrors.runtime_timeout_ms }}</small>
+            </label>
+          </div>
+        </section>
+
+        <footer class="system-settings__state-bar" aria-label="草稿状态">
+          <div class="system-settings__state-copy">
+            <strong>{{ dirty ? '存在未保存的草稿修改' : '草稿与已保存版本一致' }}</strong>
+            <span>{{ savedVersionLabel }}</span>
+            <span>{{ activeVersionLabel }}</span>
+            <span>{{ lastModifiedLabel }}</span>
+          </div>
+          <div class="system-settings__state-actions">
+            <button type="button" :disabled="loading || !dirty" @click="resetDraft">重置到已保存草稿</button>
+            <button class="system-settings__save" type="submit" :disabled="loading || !dirty">
+              {{ loading ? '正在保存' : '保存草稿' }}
+            </button>
+          </div>
+          <p>仅保存草稿，不会修改运行系统。</p>
         </footer>
-      </div>
-
-      <div class="card config-card">
-        <header>
-          <h3>检索参数</h3>
-          <p>TopK / 阈值 / 混合权重</p>
-        </header>
-        <div class="slider-row">
-          <label>Top K</label>
-          <el-input-number v-model="configStore.config.top_k" :min="1" :max="50" />
-        </div>
-        <div class="slider-row">
-          <label>相似度阈值</label>
-          <el-slider v-model="configStore.config.score_threshold" :min="0" :max="1" :step="0.01" />
-        </div>
-        <div class="slider-row">
-          <label>Dense 权重</label>
-          <el-slider v-model="configStore.config.hybrid_dense_weight" :min="0" :max="1" :step="0.01" />
-        </div>
-        <div class="slider-row">
-          <label>Sparse 权重</label>
-          <el-slider v-model="configStore.config.hybrid_sparse_weight" :min="0" :max="1" :step="0.01" />
-        </div>
-        <p class="ratio">当前：Dense {{ denseLabel }} · Sparse {{ sparseLabel }}</p>
-      </div>
-
-      <div class="card config-card">
-        <header>
-          <h3>存储配置</h3>
-          <el-tag type="success">手动管理</el-tag>
-        </header>
-        <el-form label-width="120px">
-          <el-form-item label="Milvus URI">
-            <div class="input-copy">
-              <el-input v-model="configStore.config.milvus_uri" />
-              <el-button text @click="copy(configStore.config.milvus_uri)">复制</el-button>
-            </div>
-          </el-form-item>
-          <el-form-item label="Redis URL">
-            <div class="input-copy">
-              <el-input v-model="configStore.config.redis_url" />
-              <el-button text @click="copy(configStore.config.redis_url)">复制</el-button>
-            </div>
-          </el-form-item>
-          <el-form-item label="BM25 路径">
-            <el-input v-model="configStore.config.storage_path" />
-          </el-form-item>
-        </el-form>
-      </div>
-
-      <div class="card config-card">
-        <header>
-          <h3>安全 & API</h3>
-          <p>硅基流动密钥 / 回调 / 限流</p>
-        </header>
-        <el-form label-width="120px">
-          <el-form-item label="API Key">
-            <div class="input-copy">
-              <el-input v-model="configStore.config.silicon_api_key" type="password" show-password />
-              <el-button text @click="copy(configStore.config.silicon_api_key)">复制</el-button>
-            </div>
-          </el-form-item>
-          <el-form-item label="回调 URL">
-            <el-input v-model="configStore.config.callback_url" />
-          </el-form-item>
-          <el-form-item label="限流（次/分）">
-            <el-input-number v-model="configStore.config.rate_limit_per_minute" :min="1" :max="500" />
-          </el-form-item>
-        </el-form>
-      </div>
-    </div>
+      </form>
+    </template>
   </section>
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue';
-import { ElMessage } from 'element-plus';
-import { useConfigStore } from '../store/config';
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { Monitor } from 'lucide-vue-next';
 
-const configStore = useConfigStore();
-const savedAt = ref('');
+import { apiAdapter } from '../api/adapters';
 
-const denseLabel = computed(() => configStore.config.hybrid_dense_weight?.toFixed(2) ?? '0.00');
-const sparseLabel = computed(() => configStore.config.hybrid_sparse_weight?.toFixed(2) ?? '0.00');
+const DESKTOP_MIN_WIDTH = 641;
+const emptyDraft = () => ({
+  model_provider: 'ark',
+  llm_model: '',
+  embedding_model: '',
+  retrieval_strategy: 'migration',
+  retrieval_top_k: 8,
+  score_threshold: 0.3,
+  milvus_uri: '',
+  index_name: 'zhomind_docs',
+  runtime_timeout_ms: 8000
+});
 
-const load = async () => {
+const draft = reactive(emptyDraft());
+const savedDraft = ref(emptyDraft());
+const providerApiKey = ref('');
+const providerApiKeyConfigured = ref(false);
+const savedVersion = ref(null);
+const activeVersion = ref(null);
+const lastModified = ref(null);
+const loading = ref(true);
+const loadError = ref('');
+const saveError = ref('');
+const saveMessage = ref('');
+const fieldErrors = reactive({});
+const isDesktop = ref(window.innerWidth >= DESKTOP_MIN_WIDTH);
+
+const dirty = computed(() => JSON.stringify(draft) !== JSON.stringify(savedDraft.value) || Boolean(providerApiKey.value));
+const savedVersionLabel = computed(() => (savedVersion.value === null ? '尚未保存草稿版本' : `已保存版本 ${savedVersion.value}`));
+const activeVersionLabel = computed(() => (activeVersion.value === null ? '尚无生效版本' : `生效版本 ${activeVersion.value}`));
+const lastModifiedLabel = computed(() => {
+  if (!lastModified.value) return '尚无修改记录';
+  return `最后修改：${lastModified.value.actor} · ${formatTimestamp(lastModified.value.at)}`;
+});
+
+const cloneDraft = (source) => ({
+  model_provider: source.model_provider,
+  llm_model: source.llm_model,
+  embedding_model: source.embedding_model,
+  retrieval_strategy: source.retrieval_strategy,
+  retrieval_top_k: source.retrieval_top_k,
+  score_threshold: source.score_threshold,
+  milvus_uri: source.milvus_uri,
+  index_name: source.index_name,
+  runtime_timeout_ms: source.runtime_timeout_ms
+});
+
+const clearFieldErrors = () => {
+  Object.keys(fieldErrors).forEach((field) => delete fieldErrors[field]);
+};
+
+const applyDraftResponse = (data) => {
+  const nextDraft = cloneDraft(data.draft);
+  Object.assign(draft, nextDraft);
+  savedDraft.value = cloneDraft(nextDraft);
+  providerApiKey.value = '';
+  providerApiKeyConfigured.value = Boolean(data.draft.provider_api_key?.configured);
+  savedVersion.value = data.saved_version;
+  activeVersion.value = data.active_version;
+  lastModified.value = data.last_modified;
+  clearFieldErrors();
+};
+
+const isChanged = (field) => draft[field] !== savedDraft.value[field];
+
+const loadDraft = async () => {
+  loading.value = true;
+  loadError.value = '';
+  saveError.value = '';
   try {
-    await configStore.fetchConfig();
-    ElMessage.success('配置已加载');
+    applyDraftResponse(await apiAdapter.getSystemSettingsDraft());
   } catch (error) {
-    ElMessage.error(error.message || '加载配置失败');
+    loadError.value = error.status === 404 ? '服务端尚未开启系统设置草稿。' : '加载系统设置草稿失败，请重新加载。';
+  } finally {
+    loading.value = false;
   }
 };
 
-const save = async () => {
+const resetDraft = () => {
+  Object.assign(draft, cloneDraft(savedDraft.value));
+  providerApiKey.value = '';
+  saveError.value = '';
+  clearFieldErrors();
+};
+
+const saveDraft = async () => {
+  loading.value = true;
+  saveError.value = '';
+  saveMessage.value = '';
+  clearFieldErrors();
   try {
-    await configStore.saveConfig();
-    savedAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false });
-    ElMessage.success('配置保存成功');
+    const saved = await apiAdapter.saveSystemSettingsDraft({
+      ...cloneDraft(draft),
+      provider_api_key: providerApiKey.value || null
+    });
+    applyDraftResponse(saved);
+    saveMessage.value = `草稿已保存为版本 ${saved.saved_version}。`;
   } catch (error) {
-    ElMessage.error(error.message || '保存配置失败');
+    Object.assign(fieldErrors, error.detail?.fields || {});
+    saveError.value = '草稿未保存，请修正标记字段后重试。';
+  } finally {
+    loading.value = false;
   }
 };
 
-const copy = async (text) => {
-  if (!text) return;
-  try {
-    await navigator.clipboard.writeText(text);
-    ElMessage.success('已复制');
-  } catch {
-    ElMessage.warning('复制失败，请手动选择');
-  }
+const formatTimestamp = (value) => {
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) return '时间不可用';
+  return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', hour12: false }).format(timestamp);
 };
 
-onMounted(load);
+const updateViewport = () => {
+  isDesktop.value = window.innerWidth >= DESKTOP_MIN_WIDTH;
+};
+
+onMounted(() => {
+  window.addEventListener('resize', updateViewport);
+  loadDraft();
+});
+
+onBeforeUnmount(() => window.removeEventListener('resize', updateViewport));
 </script>
 
 <style scoped>
-.config-page {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+.system-settings {
+  width: min(1100px, 100%);
+  margin: 0 auto;
 }
 
-.top-actions {
+.system-settings__header {
   display: flex;
-  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 28px;
+  border-bottom: 1px solid var(--color-rule);
 }
 
-.config-card footer {
-  display: flex;
-  justify-content: flex-end;
-  color: var(--text-muted);
+.system-settings__eyebrow {
+  margin: 0 0 8px;
+  color: var(--color-moss);
+  font-size: 12px;
+  font-weight: 700;
 }
 
-.slider-row {
-  display: flex;
-  align-items: center;
-  gap: 16px;
+.system-settings h1,
+.system-settings h2,
+.system-settings p {
+  margin-top: 0;
 }
 
-.slider-row label {
-  width: 120px;
+.system-settings h1,
+.system-settings h2 {
+  font-family: var(--font-display);
+  font-weight: 600;
+}
+
+.system-settings h1 {
+  margin-bottom: 10px;
+  font-size: 26px;
+  color: var(--color-ink);
+}
+
+.system-settings h2 {
+  margin-bottom: 5px;
+  font-size: 18px;
+  color: var(--color-ink);
+}
+
+.system-settings__description,
+.system-settings__section-heading p {
+  margin-bottom: 0;
+  color: var(--color-ink-soft);
   font-size: 14px;
-  color: var(--text-muted);
+  line-height: 1.6;
 }
 
-.ratio {
-  margin: 8px 0 0;
+.system-settings__form {
+  padding-bottom: 28px;
+}
+
+.system-settings__section {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.7fr) minmax(0, 1.5fr);
+  gap: 40px;
+  padding: 32px 0;
+  border-bottom: 1px solid var(--color-rule);
+}
+
+.system-settings__fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.system-settings__field {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  color: var(--color-ink-soft);
   font-size: 13px;
-  color: var(--text-muted);
+  font-weight: 600;
 }
 
-.input-copy {
+.system-settings__field input,
+.system-settings__field select {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--color-paper-raised);
+  color: var(--color-ink);
+  font: inherit;
+  font-weight: 400;
+  padding: 8px 10px;
+}
+
+.system-settings__field input:focus-visible,
+.system-settings__field select:focus-visible,
+.system-settings__state-actions button:focus-visible,
+.system-settings__error button:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.system-settings__field--changed input,
+.system-settings__field--changed select {
+  border-color: var(--color-copper);
+}
+
+.system-settings__field input:not(:disabled):hover,
+.system-settings__field select:not(:disabled):hover {
+  border-color: var(--color-copper);
+}
+
+.system-settings__field input:not(:disabled):active,
+.system-settings__field select:not(:disabled):active {
+  background: var(--color-paper-muted);
+}
+
+.system-settings__field small {
+  color: var(--color-ink-soft);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.system-settings__field-error {
+  color: var(--color-danger) !important;
+}
+
+.system-settings__state-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px 28px;
+  margin-top: 24px;
+  padding: 16px 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--color-paper-raised);
+  box-shadow: 0 -4px 14px rgb(48 40 30 / 6%);
+}
+
+.system-settings__state-copy,
+.system-settings__state-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 9px 14px;
+}
+
+.system-settings__state-copy strong {
+  color: var(--color-ink);
+  font-size: 14px;
+}
+
+.system-settings__state-copy span {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.system-settings__state-copy span,
+.system-settings__state-bar p {
+  color: var(--color-ink-soft);
+  font-size: 12px;
+}
+
+.system-settings__state-bar p {
+  grid-column: 1 / -1;
+  margin-bottom: 0;
+}
+
+.system-settings__state-actions button,
+.system-settings__error button {
+  min-height: 36px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 10px;
+}
+
+.system-settings__state-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.system-settings__state-actions button:not(:disabled):hover,
+.system-settings__error button:hover {
+  border-color: var(--color-copper);
+  color: var(--color-copper-strong);
+}
+
+.system-settings__state-actions button:not(:disabled):active,
+.system-settings__error button:active {
+  background: var(--color-paper-muted);
+}
+
+.system-settings__state-actions .system-settings__save {
+  border-color: var(--color-copper);
+  background: var(--color-copper);
+  color: var(--color-paper-raised);
+}
+
+.system-settings__state-actions .system-settings__save:not(:disabled):hover,
+.system-settings__state-actions .system-settings__save:not(:disabled):active {
+  border-color: var(--color-copper-strong);
+  background: var(--color-copper-strong);
+  color: var(--color-paper-raised);
+}
+
+.system-settings__error,
+.system-settings__success,
+.system-settings__desktop-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 20px 0 0;
+  padding: 11px 13px;
+  border-left: 3px solid var(--color-warning);
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+  font-size: 13px;
+}
+
+.system-settings__success {
+  border-color: var(--color-moss);
+  background: var(--color-moss-soft);
+  color: var(--color-moss);
+}
+
+.system-settings__desktop-notice p {
+  margin-bottom: 0;
+}
+
+@media (max-width: 900px) {
+  .system-settings__section {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+}
+
+@media (max-width: 640px) {
+  .system-settings__header {
+    padding-bottom: 20px;
+  }
 }
 </style>
