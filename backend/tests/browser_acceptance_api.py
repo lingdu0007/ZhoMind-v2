@@ -58,8 +58,11 @@ async def _seed_test_data() -> None:
     ready_documents = [
         ("browser-evidence", "browser-evidence.md", "部署前需要完成变更审批。"),
         ("browser-inspection", "browser-inspection.md", "已发布分块可用于检查部署审批记录。"),
+        ("browser-single-delete", "browser-single-delete.md", "单个删除验收文档。"),
         ("browser-batch-first", "browser-batch-first.md", "第一份批量构建文档。"),
         ("browser-batch-second", "browser-batch-second.md", "第二份批量构建文档。"),
+        ("browser-batch-partial-first", "browser-batch-partial-first.md", "批量删除部分失败的并发文档。"),
+        ("browser-batch-partial-second", "browser-batch-partial-second.md", "批量删除成功文档。"),
     ]
     async with SessionLocal() as session:
         for document_id, filename, content in ready_documents:

@@ -1031,5 +1031,8 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateViewportScope))
 .document-library__dialog-button--primary:not(:disabled):active { background: var(--color-ink); border-color: var(--color-ink); color: var(--color-paper-raised); }
 .document-library__dialog-button:disabled { cursor: wait; opacity: 0.65; }
 @keyframes document-library-spin { to { transform: rotate(360deg); } }
-@media (max-width: 1024px) { .document-library__header { gap: var(--space-4); } }
+@media (max-width: 1024px) {
+  .document-library__header { gap: var(--space-4); }
+  .document-library table { min-width: 0; }
+}
 </style>
