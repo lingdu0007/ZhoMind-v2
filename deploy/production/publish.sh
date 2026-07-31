@@ -2,41 +2,31 @@
 set -euo pipefail
 
 repository_root=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)
-runtime_env="$repository_root/.env"
+
+# Deployment target values are supplied only for this invocation, never via .env.
 
 fail() {
   printf '%s\n' "$*" >&2
   exit 1
 }
 
-load_env() {
-  local line key value
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ -z "$line" || "$line" == \#* ]] && continue
-    [[ "$line" == *=* ]] || fail "invalid .env line: $line"
-    key=${line%%=*}
-    value=${line#*=}
-    [[ "$key" =~ ^[A-Z][A-Z0-9_]*$ ]] || fail "invalid .env variable name: $key"
-    export "$key=$value"
-  done < "$runtime_env"
-}
-
 require_value() {
   local name=$1
-  [[ -n "${!name:-}" ]] || fail "missing required .env value: $name"
+  [[ -n "${!name:-}" ]] || fail "missing required deployment value: $name"
 }
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "required command is unavailable: $1"
 }
 
-[[ -f "$runtime_env" ]] || fail "missing ignored runtime configuration: $runtime_env"
-load_env
+DEPLOY_SSH_PORT=${DEPLOY_SSH_PORT:-22}
+DEPLOY_APP_DIR=${DEPLOY_APP_DIR:-/opt/zhomind-v2}
+DEPLOY_GIT_REF=${DEPLOY_GIT_REF:-refs/heads/experiment/retrieval-evidence}
+DEPLOY_CONFIGURE_UFW=${DEPLOY_CONFIGURE_UFW:-false}
 
 for variable in \
   DEPLOY_HOST DEPLOY_SSH_USER DEPLOY_SSH_IDENTITY_FILE DEPLOY_SSH_HOST_KEY_SHA256 \
-  DEPLOY_APP_DIR DEPLOY_GIT_REF DEPLOY_CADDY_SITE_ADDRESS JWT_SECRET ADMIN_INVITE_CODE \
-  SYSTEM_SETTINGS_ENCRYPTION_KEY POSTGRES_PASSWORD MINIO_ROOT_USER MINIO_ROOT_PASSWORD; do
+  DEPLOY_CADDY_SITE_ADDRESS; do
   require_value "$variable"
 done
 
@@ -45,18 +35,12 @@ done
 [[ "$DEPLOY_SSH_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || fail "DEPLOY_SSH_USER contains unsupported characters"
 [[ "$DEPLOY_APP_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]] || fail "DEPLOY_APP_DIR must be an absolute path without spaces"
 [[ "$DEPLOY_GIT_REF" =~ ^refs/heads/[A-Za-z0-9._/-]+$ ]] || fail "DEPLOY_GIT_REF contains unsupported characters"
-[[ "${DEPLOY_CONFIGURE_UFW:-true}" == "true" || "${DEPLOY_CONFIGURE_UFW:-true}" == "false" ]] || \
+[[ "$DEPLOY_CONFIGURE_UFW" == "true" || "$DEPLOY_CONFIGURE_UFW" == "false" ]] || \
   fail "DEPLOY_CONFIGURE_UFW must be true or false"
 [[ "$DEPLOY_CADDY_SITE_ADDRESS" != *://* && "$DEPLOY_CADDY_SITE_ADDRESS" != */* ]] || \
   fail "DEPLOY_CADDY_SITE_ADDRESS must be a DNS name, without a scheme or path"
 [[ "$DEPLOY_CADDY_SITE_ADDRESS" =~ ^[A-Za-z0-9.-]+$ && "$DEPLOY_CADDY_SITE_ADDRESS" == *.* ]] || \
   fail "DEPLOY_CADDY_SITE_ADDRESS must be a DNS name"
-[[ "$POSTGRES_PASSWORD" =~ ^[A-Za-z0-9_-]{24,}$ ]] || \
-  fail "POSTGRES_PASSWORD must have at least 24 letters, digits, _ or - characters"
-[[ "$MINIO_ROOT_USER" =~ ^[A-Za-z0-9_-]{3,}$ ]] || \
-  fail "MINIO_ROOT_USER must have at least 3 letters, digits, _ or - characters"
-[[ "$MINIO_ROOT_PASSWORD" =~ ^[A-Za-z0-9_-]{24,}$ ]] || \
-  fail "MINIO_ROOT_PASSWORD must have at least 24 letters, digits, _ or - characters"
 [[ -f "$DEPLOY_SSH_IDENTITY_FILE" ]] || fail "DEPLOY_SSH_IDENTITY_FILE does not exist"
 [[ "$DEPLOY_GIT_REF" == refs/heads/* ]] || fail "DEPLOY_GIT_REF must name a local branch"
 git -C "$repository_root" show-ref --verify --quiet "$DEPLOY_GIT_REF" || \
@@ -103,10 +87,10 @@ scp_options=(
 )
 remote_target="$DEPLOY_SSH_USER@$DEPLOY_HOST"
 
-scp "${scp_options[@]}" "$bundle" "$runtime_env" "$remote_target:/tmp/"
+scp "${scp_options[@]}" "$bundle" "$remote_target:/tmp/"
 
 ssh "${ssh_options[@]}" "$remote_target" \
-  "DEPLOY_APP_DIR='$DEPLOY_APP_DIR' DEPLOY_GIT_REF='$DEPLOY_GIT_REF' DEPLOY_CONFIGURE_UFW='${DEPLOY_CONFIGURE_UFW:-true}' SOURCE_REVISION='$source_revision' bash -s" <<'REMOTE_SCRIPT'
+  "DEPLOY_APP_DIR='$DEPLOY_APP_DIR' DEPLOY_GIT_REF='$DEPLOY_GIT_REF' DEPLOY_CONFIGURE_UFW='$DEPLOY_CONFIGURE_UFW' DEPLOY_CADDY_SITE_ADDRESS='$DEPLOY_CADDY_SITE_ADDRESS' SOURCE_REVISION='$source_revision' bash -s" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
 fail() {
@@ -144,7 +128,7 @@ if [[ "$DEPLOY_CONFIGURE_UFW" == "true" ]]; then
 fi
 
 as_root install -d -m 0750 "$DEPLOY_APP_DIR"
-as_root install -m 0600 /tmp/.env "$DEPLOY_APP_DIR/.env"
+[[ -f "$DEPLOY_APP_DIR/.env" ]] || fail "missing server runtime configuration: $DEPLOY_APP_DIR/.env"
 
 source_directory="$DEPLOY_APP_DIR/source"
 bundle=/tmp/zhomind.bundle
@@ -160,11 +144,11 @@ as_root git -C "$source_directory" checkout --detach "$SOURCE_REVISION"
 as_root git -C "$source_directory" diff --quiet
 as_root git -C "$source_directory" diff --cached --quiet
 
-compose=(as_root docker compose --env-file "$DEPLOY_APP_DIR/.env" -f "$source_directory/deploy/production/compose.yml")
+compose=(as_root env DEPLOY_CADDY_SITE_ADDRESS="$DEPLOY_CADDY_SITE_ADDRESS" docker compose --env-file "$DEPLOY_APP_DIR/.env" -f "$source_directory/deploy/production/compose.yml")
 "${compose[@]}" up -d --build --remove-orphans
 "${compose[@]}" ps
 
-as_root rm -f /tmp/zhomind.bundle /tmp/.env
+as_root rm -f /tmp/zhomind.bundle
 REMOTE_SCRIPT
 
 ssh "${ssh_options[@]}" "$remote_target" \

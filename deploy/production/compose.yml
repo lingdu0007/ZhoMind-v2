@@ -1,4 +1,4 @@
-name: ${DEPLOY_COMPOSE_PROJECT:-zhomind}
+name: zhomind
 
 services:
   postgres:

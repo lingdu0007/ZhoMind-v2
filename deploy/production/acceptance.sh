@@ -28,7 +28,7 @@ require_value() {
 [[ -n "${SOURCE_REVISION:-}" ]] || fail "SOURCE_REVISION is required"
 load_env
 
-for variable in ADMIN_INVITE_CODE DEPLOY_COMPOSE_PROJECT; do
+for variable in ADMIN_INVITE_CODE; do
   require_value "$variable"
 done
 
@@ -43,7 +43,7 @@ as_root() {
 command -v openssl >/dev/null 2>&1 || fail "openssl is required for acceptance credentials"
 
 source_directory="$DEPLOY_APP_DIR/source"
-compose=(as_root docker compose --env-file "$DEPLOY_APP_DIR/.env" -f "$source_directory/deploy/production/compose.yml")
+compose=(as_root env DEPLOY_CADDY_SITE_ADDRESS="$DEPLOY_CADDY_SITE_ADDRESS" docker compose --env-file "$DEPLOY_APP_DIR/.env" -f "$source_directory/deploy/production/compose.yml")
 
 for service in postgres redis etcd minio milvus backend caddy; do
   "${compose[@]}" ps --status running --services | grep -Fqx "$service" || fail "service is not running: $service"
