@@ -1,13 +1,29 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { chromium } from 'playwright';
 import { createServer, preview } from 'vite';
+
+const artifactRoot = resolve(
+  process.env.ZHOMIND_BROWSER_ARTIFACT_DIR || join(process.cwd(), 'test-artifacts', 'production-acceptance')
+);
+await mkdir(artifactRoot, { recursive: true });
+const artifactRunDirectory = await mkdtemp(join(artifactRoot, 'run-'));
+let artifactSequence = 0;
+
+const captureWorkspaceArtifacts = async (page, label, payload) => {
+  const artifactName = `${String(++artifactSequence).padStart(3, '0')}-${label}`;
+  const screenshotPath = join(artifactRunDirectory, `${artifactName}.png`);
+  const geometryPath = join(artifactRunDirectory, `${artifactName}.json`);
+  const screenshot = await page.screenshot({ path: screenshotPath, animations: 'disabled' });
+  await writeFile(geometryPath, `${JSON.stringify(payload, null, 2)}\n`);
+  return { screenshot, geometryPath };
+};
 
 const reservePort = () =>
   new Promise((resolvePort, reject) => {
@@ -91,7 +107,8 @@ const startWorkbench = async (t, { built, viewport = { width: 1440, height: 900 
   if (!built) await server.listen();
 
   const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage({ viewport });
+  const context = await browser.newContext({ viewport });
+  const page = await context.newPage();
   page.setDefaultTimeout(4000);
 
   t.after(async () => {
@@ -142,7 +159,7 @@ const readStableRegions = async (page) =>
       });
   });
 
-const assertRenderedWorkspace = async (page) => {
+const assertRenderedWorkspace = async (page, artifactLabel = 'workspace') => {
   await page.evaluate(() => document.fonts?.ready);
   await page.waitForTimeout(500);
   const initialRegions = await readStableRegions(page);
@@ -205,6 +222,8 @@ const assertRenderedWorkspace = async (page) => {
     };
   });
 
+  const artifact = await captureWorkspaceArtifacts(page, artifactLabel, { initialRegions, geometry });
+
   assert.equal(geometry.hasPrimaryContent, true);
   assert.ok(geometry.primaryWidth > 0 && geometry.primaryHeight > 0);
   assert.equal(geometry.pageFitsViewport, true);
@@ -212,10 +231,10 @@ const assertRenderedWorkspace = async (page) => {
   assert.deepEqual(geometry.escapedControls, []);
   assert.deepEqual(geometry.clippedText, []);
   assert.deepEqual(geometry.overlappingText, []);
-  const screenshot = await page.screenshot({ animations: 'disabled' });
-  assert.ok(screenshot.byteLength > 1000);
+  assert.ok(artifact.screenshot.byteLength > 1000);
   await page.waitForTimeout(300);
   const settledRegions = await readStableRegions(page);
+  await writeFile(artifact.geometryPath, `${JSON.stringify({ initialRegions, geometry, settledRegions }, null, 2)}\n`);
   assert.equal(settledRegions.length, initialRegions.length);
   settledRegions.forEach((region, index) => {
     const initial = initialRegions[index];
@@ -243,7 +262,7 @@ for (const runtime of [
     await diagnostics.getByText('检索诊断', { exact: true }).click();
     await diagnostics.getByText('候选数', { exact: true }).waitFor();
     assert.equal(await diagnostics.getByText('候选数', { exact: true }).isVisible(), true);
-    await assertRenderedWorkspace(page);
+    await assertRenderedWorkspace(page, `admin-${runtime.built ? 'built' : 'development'}-chat`);
 
     await page.getByRole('link', { name: '文档库' }).click();
     await page.getByRole('heading', { name: '文档库' }).waitFor();
@@ -266,6 +285,37 @@ for (const runtime of [
     await page.getByText('已发布分块可用于检查部署审批记录。').waitFor();
     await page.keyboard.press('Escape');
     await page.getByRole('heading', { name: '已发布分块' }).waitFor({ state: 'detached' });
+
+    await page.getByRole('button', { name: '删除文档 browser-single-delete' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: '删除', exact: true }).click();
+    await page.getByText('文档 browser-single-delete.md 已由服务端确认删除。').waitFor();
+    assert.equal(await page.getByRole('cell', { name: 'browser-single-delete.md' }).count(), 0);
+
+    await page.getByLabel('选中文档 browser-batch-partial-first').check();
+    await page.getByLabel('选中文档 browser-batch-partial-second').check();
+    const concurrentAdministratorPage = await page.context().newPage();
+    concurrentAdministratorPage.setDefaultTimeout(4000);
+    try {
+      await concurrentAdministratorPage.goto(`${baseUrl}documents`);
+      await concurrentAdministratorPage.getByRole('heading', { name: '文档库' }).waitFor();
+      await concurrentAdministratorPage.getByRole('button', { name: '删除文档 browser-batch-partial-first' }).click();
+      await concurrentAdministratorPage.getByRole('dialog').getByRole('button', { name: '删除', exact: true }).click();
+      await concurrentAdministratorPage.getByText('文档 browser-batch-partial-first.md 已由服务端确认删除。').waitFor();
+    } finally {
+      await concurrentAdministratorPage.close();
+    }
+
+    await page.getByRole('button', { name: '批量删除' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: '删除', exact: true }).click();
+    await page.getByText('已由服务端确认删除 1 个文档。').waitFor();
+    assert.equal(await page.getByRole('cell', { name: 'browser-batch-partial-second.md' }).count(), 0);
+    assert.equal(await page.getByRole('cell', { name: 'browser-batch-partial-first.md' }).isVisible(), true);
+    assert.equal(
+      await page.getByText('文档 browser-batch-partial-first.md：document not found').isVisible(),
+      true
+    );
+    await assertRenderedWorkspace(page, `admin-${runtime.built ? 'built' : 'development'}-partial-delete`);
+    await page.getByLabel('选中文档 browser-batch-partial-first').uncheck();
 
     await page.getByRole('button', { name: '重新构建文档 browser-inspection' }).click();
     await page.getByRole('heading', { name: '重新构建文档' }).waitFor();
@@ -296,6 +346,18 @@ for (const runtime of [
     await page.getByText('设置已生效。').waitFor({ timeout: 8000 });
     assert.equal(await page.getByText('生效版本 2').isVisible(), true);
     await assertRenderedWorkspace(page);
+
+    await page.setViewportSize({ width: 1024, height: 900 });
+    for (const workspace of [
+      { path: 'documents', title: '文档库', notice: '文档库当前仅支持桌面工作区。' },
+      { path: 'jobs', title: '构建任务', notice: '构建任务当前仅支持桌面工作区。' },
+      { path: 'config', title: '系统设置', notice: '系统设置当前仅支持桌面工作区。' }
+    ]) {
+      await page.goto(`${baseUrl}${workspace.path}`);
+      await page.getByRole('heading', { name: workspace.title }).waitFor();
+      assert.equal(await page.getByText(workspace.notice).count(), 0);
+      await assertRenderedWorkspace(page, `admin-${runtime.built ? 'built' : 'development'}-compact-${workspace.path}`);
+    }
 
     await page.setViewportSize({ width: 390, height: 844 });
     for (const workspace of [

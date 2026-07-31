@@ -384,5 +384,16 @@ onBeforeUnmount(() => {
 .indexing-jobs__terminal-label { color: var(--color-ink-soft); font-size: 12px; white-space: nowrap; }
 .indexing-jobs__state { height: 192px; color: var(--color-ink-soft); text-align: center; }
 @keyframes indexing-jobs-spin { to { transform: rotate(360deg); } }
-@media (max-width: 1024px) { .indexing-jobs__header { gap: var(--space-4); } }
+@media (max-width: 1024px) {
+  .indexing-jobs__header { gap: var(--space-4); }
+  .indexing-jobs table { min-width: 0; }
+  .indexing-jobs th:nth-child(1), .indexing-jobs th:nth-child(2) { width: 8%; }
+  .indexing-jobs th:nth-child(3) { width: 18%; }
+  .indexing-jobs th:nth-child(4) { width: 15%; }
+  .indexing-jobs th:nth-child(5) { width: 19%; }
+  .indexing-jobs th:nth-child(6) { width: 10%; }
+  .indexing-jobs th:nth-child(7) { width: 11%; }
+  .indexing-jobs th:nth-child(8) { width: 11%; }
+  .indexing-jobs td:nth-child(4) { overflow-wrap: anywhere; }
+}
 </style>

@@ -37,6 +37,7 @@ frontend/.vite/
 
 # Frontend build outputs
 frontend/dist/
+frontend/test-artifacts/
 
 # Package manager caches
 .npm-cache/
