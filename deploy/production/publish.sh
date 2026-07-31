@@ -128,7 +128,10 @@ if [[ "$DEPLOY_CONFIGURE_UFW" == "true" ]]; then
 fi
 
 as_root install -d -m 0750 "$DEPLOY_APP_DIR"
-[[ -f "$DEPLOY_APP_DIR/.env" ]] || fail "missing server runtime configuration: $DEPLOY_APP_DIR/.env"
+# The application directory is intentionally root-owned and not traversable by
+# the deployment user, so this check must use the same privilege boundary as
+# the subsequent Compose invocation.
+as_root test -f "$DEPLOY_APP_DIR/.env" || fail "missing server runtime configuration: $DEPLOY_APP_DIR/.env"
 
 source_directory="$DEPLOY_APP_DIR/source"
 bundle=/tmp/zhomind.bundle
