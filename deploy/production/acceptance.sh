@@ -6,6 +6,14 @@ fail() {
   exit 1
 }
 
+as_root() {
+  if [[ $(id -u) -eq 0 ]]; then
+    "$@"
+  else
+    sudo -n "$@"
+  fi
+}
+
 load_env() {
   local line key value
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -15,7 +23,7 @@ load_env() {
     value=${line#*=}
     [[ "$key" =~ ^[A-Z][A-Z0-9_]*$ ]] || fail "invalid .env variable name: $key"
     export "$key=$value"
-  done < "$DEPLOY_APP_DIR/.env"
+  done < <(as_root cat "$DEPLOY_APP_DIR/.env")
 }
 
 require_value() {
@@ -31,14 +39,6 @@ load_env
 for variable in ADMIN_INVITE_CODE; do
   require_value "$variable"
 done
-
-as_root() {
-  if [[ $(id -u) -eq 0 ]]; then
-    "$@"
-  else
-    sudo -n "$@"
-  fi
-}
 
 command -v openssl >/dev/null 2>&1 || fail "openssl is required for acceptance credentials"
 
