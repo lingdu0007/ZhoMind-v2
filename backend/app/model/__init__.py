@@ -1,5 +1,15 @@
 from app.model.chat import ChatMessage, ChatSession
 from app.model.document import Document, DocumentChunk, DocumentJob
+from app.model.system_settings import SystemSettingsDraft, SystemSettingsState
 from app.model.user import User
 
-__all__ = ["User", "Document", "DocumentJob", "DocumentChunk", "ChatSession", "ChatMessage"]
+__all__ = [
+    "User",
+    "Document",
+    "DocumentJob",
+    "DocumentChunk",
+    "ChatSession",
+    "ChatMessage",
+    "SystemSettingsDraft",
+    "SystemSettingsState",
+]

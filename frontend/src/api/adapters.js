@@ -80,6 +80,16 @@ export const apiAdapter = {
   async cancelDocumentJob(jobId) {
     const { data } = await http.post(`/documents/jobs/${encodeURIComponent(jobId)}/cancel`);
     return unwrapData(data);
+  },
+
+  // System Settings drafts (admin, gated)
+  async getSystemSettingsDraft() {
+    const { data } = await http.get('/settings/draft');
+    return unwrapData(data);
+  },
+  async saveSystemSettingsDraft(payload) {
+    const { data } = await http.put('/settings/draft', payload);
+    return unwrapData(data);
   }
 };
 

@@ -31,6 +31,16 @@
           <ClipboardList :size="20" aria-hidden="true" />
           <span>构建任务</span>
         </RouterLink>
+        <RouterLink
+          v-if="authStore.isAdmin && systemSettingsDraftEnabled"
+          class="workbench-shell__nav-item"
+          to="/config"
+          title="系统设置"
+          aria-label="系统设置"
+        >
+          <Settings2 :size="20" aria-hidden="true" />
+          <span>系统设置</span>
+        </RouterLink>
       </nav>
 
       <div class="workbench-shell__identity">
@@ -52,8 +62,9 @@
 <script setup>
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ClipboardList, LibraryBig, LogOut, MessageCircle } from 'lucide-vue-next';
+import { ClipboardList, LibraryBig, LogOut, MessageCircle, Settings2 } from 'lucide-vue-next';
 import { clearProtectedSession } from './protected-session';
+import { systemSettingsDraftEnabled } from './system-settings-draft';
 import { useAuthStore } from '../store/auth';
 
 const authStore = useAuthStore();
