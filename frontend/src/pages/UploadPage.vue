@@ -985,7 +985,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateViewportScope))
 .document-library__rebuild-status button { min-height: auto; margin-top: var(--space-2); padding: 0; border: 0; background: transparent; color: var(--color-copper-strong); font: inherit; text-decoration: underline; cursor: pointer; }
 .document-library__rebuild-status button:hover { color: var(--color-copper); }
 .document-library__rebuild-status button:active { color: var(--color-ink); }
-.document-library__action { display: flex; justify-content: flex-end; gap: var(--space-2); text-align: right; }
+.document-library__action { display: flex; min-width: 0; flex-wrap: wrap; justify-content: flex-start; gap: var(--space-2); text-align: left; }
 .document-library__action button { min-width: 72px; padding: 0 var(--space-2); }
 .document-library__action .document-library__icon-action { width: 32px; min-width: 32px; padding: 0; }
 .document-library__action .document-library__icon-action--danger { border-color: var(--color-danger); color: var(--color-danger); }
