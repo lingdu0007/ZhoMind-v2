@@ -1,136 +1,121 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { mkdtemp, rm } from 'node:fs/promises';
+import net from 'node:net';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { chromium } from 'playwright';
 import { createServer, preview } from 'vite';
 
-const jsonResponse = (data, status = 200) => ({
-  status,
-  contentType: 'application/json',
-  body: JSON.stringify({ data })
+const reservePort = () =>
+  new Promise((resolvePort, reject) => {
+    const listener = net.createServer();
+    listener.once('error', reject);
+    listener.listen(0, '127.0.0.1', () => {
+      const address = listener.address();
+      listener.close((error) => (error ? reject(error) : resolvePort(address.port)));
+    });
+  });
+
+const startApiEnvironment = async (t) => {
+  const tempDirectory = await mkdtemp(join(tmpdir(), 'zhomind-browser-api-'));
+  const port = await reservePort();
+  const baseUrl = `http://127.0.0.1:${port}/api/v1`;
+  const backendDirectory = resolve(process.cwd(), '../backend');
+  const output = [];
+  const apiProcess = spawn('uv', ['run', 'python', 'tests/browser_acceptance_api.py', '--host', '127.0.0.1', '--port', String(port)], {
+    cwd: backendDirectory,
+    env: {
+      ...process.env,
+      PYTHONPATH: backendDirectory,
+      DATABASE_URL: `sqlite+aiosqlite:///${join(tempDirectory, 'acceptance.db')}`,
+      JWT_SECRET: 'browser-acceptance-secret',
+      ADMIN_INVITE_CODE: 'browser-acceptance-admin',
+      SYSTEM_SETTINGS_DRAFT_ENABLED: 'true',
+      SYSTEM_SETTINGS_APPLICATION_ENABLED: 'true',
+      SYSTEM_SETTINGS_ENCRYPTION_KEY: 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=',
+      DENSE_EMBEDDING_DIM: '0',
+      EMBEDDING_API_KEY: '',
+      EMBEDDING_BASE_URL: '',
+      EMBEDDING_MODEL: '',
+      MILVUS_URI: '',
+      MILVUS_TOKEN: '',
+      RAG_PRIMARY_LLM_PROVIDER: 'browser-acceptance',
+      RAG_LLM_FALLBACK_PROVIDERS: ''
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  apiProcess.stdout.on('data', (chunk) => output.push(chunk.toString()));
+  apiProcess.stderr.on('data', (chunk) => output.push(chunk.toString()));
+
+  t.after(async () => {
+    if (apiProcess.exitCode === null) {
+      apiProcess.kill('SIGTERM');
+      await Promise.race([once(apiProcess, 'exit'), new Promise((resolveWait) => setTimeout(resolveWait, 5000))]);
+    }
+    await rm(tempDirectory, { recursive: true, force: true });
+  });
+
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${baseUrl}/health`);
+      if (response.ok) return { baseUrl, port };
+    } catch {
+      // The runner has not bound its socket yet.
+    }
+    if (apiProcess.exitCode !== null) break;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+  }
+
+  throw new Error(`isolated application API environment did not become healthy:\n${output.join('')}`);
+};
+
+test('production browser acceptance starts an isolated application API environment', { timeout: 30000 }, async (t) => {
+  const api = await startApiEnvironment(t);
+  const response = await fetch(`${api.baseUrl}/health`);
+
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).data.status, 'up');
 });
 
-const requestPath = (url) => new URL(url).pathname.replace(/^\/api(?:\/v1)?/, '');
-
-const systemSettingsDraft = {
-  draft: {
-    model_provider: 'ark',
-    llm_model: 'Qwen/Qwen3-32B',
-    embedding_model: 'BAAI/bge-m3',
-    retrieval_strategy: 'migration',
-    retrieval_top_k: 8,
-    score_threshold: 0.3,
-    milvus_uri: 'http://milvus.internal:19530',
-    index_name: 'zhomind_docs',
-    runtime_timeout_ms: 8000,
-    provider_api_key: { configured: true }
-  },
-  saved_version: 2,
-  active_version: 2,
-  last_modified: { actor: 'operator', at: '2026-07-31T10:15:00Z' },
-  application_state: 'active',
-  application: { version: 2, actor: 'operator', at: '2026-07-31T10:15:00Z', message: 'settings version is active' }
-};
-
-const sessions = [{ session_id: 'session-acceptance', updated_at: '2026-07-31T10:15:00Z', message_count: 2 }];
-
-const installStreamingResponse = async (page) => {
-  await page.addInitScript(() => {
-    const nativeFetch = window.fetch.bind(window);
-    window.fetch = async (input, init) => {
-      if (!String(input).includes('/chat/stream')) return nativeFetch(input, init);
-
-      const encoder = new TextEncoder();
-      return new Response(
-        new ReadableStream({
-          start(controller) {
-            controller.enqueue(encoder.encode('event: content\ndata: {"content":"部署前需要完成变更审批。"}\n\n'));
-            controller.enqueue(
-              encoder.encode(
-                'event: evidence_summary\ndata: {"evidence_summary":{"coverage":"sufficient","source_count":1,"sources":[{"source_id":"chunk-deploy-1","metadata":{"filename":"deploy-runbook.md"},"excerpt":"发布前必须由值班负责人完成变更审批。"}]}}\n\n'
-              )
-            );
-            controller.enqueue(
-              encoder.encode(
-                'event: retrieval_diagnostics\ndata: {"retrieval_diagnostics":{"timeline":[{"step":"retrieve"}],"candidate_counts":{"retrieved":1,"reranked":1},"evidence_gate":{"outcome":"passed","reason":"sufficient_evidence"},"fallback":{"state":"not_used","hops":0,"final_provider":null},"provider_errors":[],"trace_preview":"raw trace remains administrator-only"}}\n\n'
-              )
-            );
-            controller.enqueue(encoder.encode('event: done\ndata: [DONE]\n\n'));
-            controller.close();
-          }
-        }),
-        { status: 200, headers: { 'Content-Type': 'text/event-stream' } }
-      );
-    };
-  });
-};
-
-const startWorkbench = async (
-  t,
-  { built, role = 'admin', viewport = { width: 1440, height: 900 }, conversationSessions = sessions }
-) => {
-  const port = 44000 + Math.floor(Math.random() * 1000);
+const startWorkbench = async (t, { built, viewport = { width: 1440, height: 900 } }) => {
+  const api = await startApiEnvironment(t);
+  const previousProxyTarget = process.env.ZHOMIND_API_PROXY_TARGET;
+  process.env.ZHOMIND_API_PROXY_TARGET = `http://127.0.0.1:${api.port}`;
   const server = built
-    ? await preview({ preview: { host: '127.0.0.1', port, strictPort: true } })
-    : await createServer({ server: { host: '127.0.0.1', port, strictPort: true } });
+    ? await preview({ preview: { host: '127.0.0.1', port: 0, strictPort: true } })
+    : await createServer({ server: { host: '127.0.0.1', port: 0, strictPort: true } });
   if (!built) await server.listen();
 
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport });
   page.setDefaultTimeout(4000);
 
-  await page.route((url) => url.pathname.startsWith('/api/'), async (route) => {
-    const request = route.request();
-    const path = requestPath(request.url());
-
-    if (path === '/auth/login') {
-      await route.fulfill(jsonResponse({ access_token: 'admin-token' }));
-      return;
-    }
-    if (path === '/auth/me') {
-      await route.fulfill(
-        jsonResponse({
-          username: role === 'admin' ? 'operator' : 'knowledge-user',
-          role,
-          capabilities: { system_settings: role === 'admin' }
-        })
-      );
-      return;
-    }
-    if (path === '/sessions') {
-      await route.fulfill(jsonResponse({ sessions: conversationSessions }));
-      return;
-    }
-    if (path === '/documents') {
-      await route.fulfill(jsonResponse({ items: [] }));
-      return;
-    }
-    if (path === '/documents/jobs') {
-      await route.fulfill(jsonResponse({ items: [] }));
-      return;
-    }
-    if (path === '/settings/draft') {
-      await route.fulfill(jsonResponse(systemSettingsDraft));
-      return;
-    }
-
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${request.method()} ${path}` }, 404));
-  });
-
   t.after(async () => {
     await browser.close();
     await server.close();
+    if (previousProxyTarget === undefined) delete process.env.ZHOMIND_API_PROXY_TARGET;
+    else process.env.ZHOMIND_API_PROXY_TARGET = previousProxyTarget;
   });
 
-  return { page, baseUrl: server.resolvedUrls.local[0] };
+  return { page, baseUrl: server.resolvedUrls.local[0], api };
 };
 
-const signIn = async (page, baseUrl, username) => {
+const register = async (page, baseUrl, { username, role }) => {
   await page.goto(`${baseUrl}auth`);
   await page.getByRole('heading', { name: '身份验证' }).waitFor();
   assert.equal(await page.getByRole('navigation').count(), 0);
+  await page.getByRole('tab', { name: '注册' }).click();
   await page.getByLabel('用户名').fill(username);
   await page.getByLabel('密码').fill('safe-password');
-  await page.getByRole('button', { name: '登录' }).click();
+  if (role === 'admin') {
+    await page.getByRole('radio', { name: '系统管理员' }).check();
+    await page.getByLabel('管理员邀请码').fill('browser-acceptance-admin');
+  }
+  await page.getByRole('button', { name: '完成注册' }).click();
   await page.waitForURL(/\/chat$/);
   await page.getByRole('heading', { name: '对话工作区' }).waitFor();
 };
@@ -248,9 +233,8 @@ for (const runtime of [
 ]) {
   test(`System Administrator completes the authorized workspace journey on ${runtime.name}`, { timeout: 30000 }, async (t) => {
     const { page, baseUrl } = await startWorkbench(t, runtime);
-    await installStreamingResponse(page);
 
-    await signIn(page, baseUrl, 'operator');
+    await register(page, baseUrl, { username: 'operator', role: 'admin' });
     await page.getByPlaceholder('请输入需要检索的问题').fill('部署前需要做什么？');
     await page.getByRole('button', { name: '发送' }).click();
     const diagnostics = page.getByLabel('检索诊断');
@@ -261,15 +245,57 @@ for (const runtime of [
     assert.equal(await diagnostics.getByText('候选数', { exact: true }).isVisible(), true);
     await assertRenderedWorkspace(page);
 
-    for (const workspace of [
-      { link: '文档库', heading: '文档库' },
-      { link: '构建任务', heading: '构建任务' },
-      { link: '系统设置', heading: '系统设置' }
-    ]) {
-      await page.getByRole('link', { name: workspace.link }).click();
-      await page.getByRole('heading', { name: workspace.heading }).waitFor();
-      await assertRenderedWorkspace(page);
-    }
+    await page.getByRole('link', { name: '文档库' }).click();
+    await page.getByRole('heading', { name: '文档库' }).waitFor();
+    await page.getByLabel('选择文档').setInputFiles({
+      name: 'browser-upload.md',
+      mimeType: 'text/markdown',
+      buffer: Buffer.from('上传文档也需要完成变更审批。')
+    });
+    await page.getByRole('button', { name: '上传文档' }).click();
+    await page.getByText(/文档 ID：/).waitFor();
+    await page.getByText(/构建任务 ID：/).waitFor();
+    await page.getByRole('button', { name: /查看构建任务/ }).click();
+    await page.waitForURL(/\/jobs\?job=/);
+    await page.getByRole('heading', { name: '构建任务' }).waitFor();
+
+    await page.getByRole('link', { name: '文档库' }).click();
+    await page.getByRole('heading', { name: '文档库' }).waitFor();
+    await page.getByRole('button', { name: '查看文档 browser-inspection 的已发布分块' }).click();
+    await page.getByRole('heading', { name: '已发布分块' }).waitFor();
+    await page.getByText('已发布分块可用于检查部署审批记录。').waitFor();
+    await page.keyboard.press('Escape');
+    await page.getByRole('heading', { name: '已发布分块' }).waitFor({ state: 'detached' });
+
+    await page.getByRole('button', { name: '重新构建文档 browser-inspection' }).click();
+    await page.getByRole('heading', { name: '重新构建文档' }).waitFor();
+    await page.getByLabel('重建分块策略').selectOption('paper');
+    await page.getByRole('button', { name: '创建重建任务' }).click();
+    await page.getByText(/^已创建重建任务 /).waitFor();
+
+    await page.getByLabel('选中文档 browser-batch-first').check();
+    await page.getByLabel('选中文档 browser-batch-second').check();
+    await page.getByRole('button', { name: '批量重新构建' }).click();
+    await page.getByRole('heading', { name: '重新构建 2 个文档' }).waitFor();
+    await page.getByLabel('批量重建分块策略').selectOption('qa');
+    await page.getByRole('button', { name: '创建 2 个重建任务' }).click();
+    await page.getByText('已为 2 个文档创建重建任务。').waitFor();
+    await assertRenderedWorkspace(page);
+    await page.getByRole('button', { name: '前往构建任务' }).click();
+    await page.waitForURL(/\/jobs$/);
+    await page.getByRole('heading', { name: '构建任务' }).waitFor();
+    await page.getByRole('button', { name: '取消任务 job-browser-cancelable' }).click();
+    await page.getByText('任务 job-browser-cancelable 的取消结果已由服务端确认。').waitFor();
+    assert.equal(await page.getByText('已取消 (canceled)').isVisible(), true);
+    await assertRenderedWorkspace(page);
+
+    await page.getByRole('link', { name: '系统设置' }).click();
+    await page.getByRole('heading', { name: '系统设置' }).waitFor();
+    await page.getByLabel('语言模型').fill('Qwen/Qwen3-14B');
+    await page.getByRole('button', { name: '保存并应用' }).click();
+    await page.getByText('设置已生效。').waitFor({ timeout: 8000 });
+    assert.equal(await page.getByText('生效版本 2').isVisible(), true);
+    await assertRenderedWorkspace(page);
 
     await page.setViewportSize({ width: 390, height: 844 });
     for (const workspace of [
@@ -284,17 +310,21 @@ for (const runtime of [
   });
 
   test(`Knowledge User keeps Conversation Workspace usable and protected on ${runtime.name}`, { timeout: 30000 }, async (t) => {
-    const { page, baseUrl } = await startWorkbench(t, { ...runtime, role: 'user' });
-    await installStreamingResponse(page);
+    const { page, baseUrl } = await startWorkbench(t, runtime);
 
-    await signIn(page, baseUrl, 'knowledge-user');
+    await register(page, baseUrl, { username: 'knowledge-user', role: 'user' });
     assert.equal(await page.getByRole('link', { name: '文档库' }).count(), 0);
     assert.equal(await page.getByRole('link', { name: '构建任务' }).count(), 0);
     assert.equal(await page.getByRole('link', { name: '系统设置' }).count(), 0);
+    const documentsStatus = await page.evaluate(async () => {
+      const token = localStorage.getItem('access_token');
+      const response = await fetch('/api/documents', { headers: { Authorization: `Bearer ${token}` } });
+      return response.status;
+    });
+    assert.equal(documentsStatus, 403);
 
     const rail = page.getByRole('complementary', { name: '最近会话' });
     await rail.waitFor();
-    assert.equal(await rail.getByText('session-acceptance').isVisible(), true);
     await page.getByPlaceholder('请输入需要检索的问题').fill('部署前需要做什么？');
     await page.getByRole('button', { name: '发送' }).click();
 
@@ -302,8 +332,7 @@ for (const runtime of [
     await summary.waitFor();
     assert.equal(await summary.getByText('证据充分').isVisible(), true);
     assert.equal(await page.getByLabel('检索诊断').count(), 0);
-    assert.equal(await page.getByText('raw trace remains administrator-only').count(), 0);
-    const sourceButton = summary.getByRole('button', { name: '查看来源 deploy-runbook.md' });
+    const sourceButton = summary.getByRole('button', { name: '查看来源 browser-evidence.md' });
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await sourceButton.click();
     const excerptDrawer = page.getByRole('complementary', { name: '来源摘录' });
@@ -318,7 +347,7 @@ for (const runtime of [
     await assertRenderedWorkspace(page);
     await page.keyboard.press('Escape');
     await excerptDrawer.waitFor({ state: 'detached' });
-    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), '查看来源 deploy-runbook.md');
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), '查看来源 browser-evidence.md');
 
     await page.setViewportSize({ width: 1024, height: 900 });
     assert.equal(await rail.isVisible(), false);
