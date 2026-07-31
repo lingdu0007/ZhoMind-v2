@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.common.security import build_auth_session_key, decode_access_token
+from app.common.config import get_settings
 from app.infra.db import get_db_session
 from app.infra.redis import get_redis_client
 from app.main import app
@@ -69,6 +70,65 @@ def test_register_login_me_flow(client: TestClient) -> None:
     me_response = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert me_response.status_code == 200
     assert me_response.json()["data"]["username"] == "alice"
+
+
+def test_me_projects_the_enabled_system_settings_capability_for_administrators(client: TestClient, monkeypatch) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "admin_invite_code", "test-admin-code")
+    monkeypatch.setattr(settings, "system_settings_draft_enabled", True)
+    monkeypatch.setattr(settings, "system_settings_application_enabled", True)
+
+    user_response = client.post(
+        "/api/v1/auth/register",
+        json={"username": "knowledge-user", "password": "secret-123", "role": "user"},
+    )
+    admin_response = client.post(
+        "/api/v1/auth/register",
+        json={
+            "username": "settings-admin",
+            "password": "secret-123",
+            "role": "admin",
+            "admin_code": "test-admin-code",
+        },
+    )
+
+    user_me = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {user_response.json()['data']['access_token']}"})
+    admin_me = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {admin_response.json()['data']['access_token']}"})
+
+    assert user_me.json()["data"]["capabilities"] == {"system_settings": False}
+    assert admin_me.json()["data"]["capabilities"] == {"system_settings": True}
+
+
+@pytest.mark.parametrize(
+    ("draft_enabled", "application_enabled"),
+    [(False, False), (False, True), (True, False)],
+)
+def test_me_hides_system_settings_when_its_lifecycle_is_incomplete(
+    client: TestClient,
+    monkeypatch,
+    draft_enabled: bool,
+    application_enabled: bool,
+) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "admin_invite_code", "test-admin-code")
+    monkeypatch.setattr(settings, "system_settings_draft_enabled", draft_enabled)
+    monkeypatch.setattr(settings, "system_settings_application_enabled", application_enabled)
+
+    registration = client.post(
+        "/api/v1/auth/register",
+        json={
+            "username": "settings-admin",
+            "password": "secret-123",
+            "role": "admin",
+            "admin_code": "test-admin-code",
+        },
+    )
+    response = client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {registration.json()['data']['access_token']}"},
+    )
+
+    assert response.json()["data"]["capabilities"] == {"system_settings": False}
 
 
 def test_auth_routes_registered(client: TestClient) -> None:

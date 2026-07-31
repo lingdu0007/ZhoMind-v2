@@ -20,6 +20,11 @@ class AuthTokenData(BaseModel):
     role: str
 
 
+class WorkspaceCapabilities(BaseModel):
+    system_settings: bool
+
+
 class MeData(BaseModel):
     username: str
     role: str
+    capabilities: WorkspaceCapabilities

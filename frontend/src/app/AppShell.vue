@@ -32,7 +32,7 @@
           <span>构建任务</span>
         </RouterLink>
         <RouterLink
-          v-if="authStore.isAdmin"
+          v-if="authStore.canAccessSystemSettings"
           class="workbench-shell__nav-item"
           to="/config"
           title="系统设置"
@@ -71,7 +71,11 @@ const route = useRoute();
 const router = useRouter();
 
 const roleLabel = computed(() => (authStore.isAdmin ? '系统管理员' : '知识用户'));
-const accessMessage = computed(() => (route.query.notice === 'admin-required' ? '当前账户无权访问该工作区，已返回对话工作区。' : ''));
+const accessMessage = computed(() => {
+  if (route.query.notice === 'admin-required') return '当前账户无权访问该工作区，已返回对话工作区。';
+  if (route.query.notice === 'settings-unavailable') return '系统设置当前不可用，已返回对话工作区。';
+  return '';
+});
 
 const signOut = async () => {
   clearProtectedSession();

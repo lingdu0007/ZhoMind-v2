@@ -87,7 +87,13 @@ const startWorkbench = async (
       return;
     }
     if (path === '/auth/me') {
-      await route.fulfill(jsonResponse({ username: role === 'admin' ? 'operator' : 'knowledge-user', role }));
+      await route.fulfill(
+        jsonResponse({
+          username: role === 'admin' ? 'operator' : 'knowledge-user',
+          role,
+          capabilities: { system_settings: role === 'admin' }
+        })
+      );
       return;
     }
     if (path === '/sessions') {
