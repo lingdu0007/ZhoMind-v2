@@ -12,6 +12,11 @@ class SystemSettingsState(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     latest_saved_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     active_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    application_state: Mapped[str] = mapped_column(String(24), nullable=False, default="draft_only")
+    application_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    application_actor: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    application_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    application_message: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
 
 class SystemSettingsDraft(Base):

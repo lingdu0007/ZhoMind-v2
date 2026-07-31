@@ -32,7 +32,7 @@
           <span>构建任务</span>
         </RouterLink>
         <RouterLink
-          v-if="authStore.isAdmin && systemSettingsDraftEnabled"
+          v-if="authStore.isAdmin && systemSettingsApplicationEnabled"
           class="workbench-shell__nav-item"
           to="/config"
           title="系统设置"
@@ -64,7 +64,7 @@ import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ClipboardList, LibraryBig, LogOut, MessageCircle, Settings2 } from 'lucide-vue-next';
 import { clearProtectedSession } from './protected-session';
-import { systemSettingsDraftEnabled } from './system-settings-draft';
+import { systemSettingsApplicationEnabled } from './system-settings-draft';
 import { useAuthStore } from '../store/auth';
 
 const authStore = useAuthStore();

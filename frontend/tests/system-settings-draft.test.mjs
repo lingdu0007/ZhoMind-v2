@@ -25,7 +25,8 @@ const settingsDraft = {
   saved_version: 2,
   active_version: 1,
   last_modified: { actor: 'operator', at: '2026-07-31T10:15:00Z' },
-  application_state: 'draft_only'
+  application_state: 'saved',
+  application: { version: 2, actor: 'operator', at: '2026-07-31T10:15:00Z', message: 'settings version is saved' }
 };
 
 const startSettingsWorkspace = async (t, apiHandler, viewport = { width: 1440, height: 900 }) => {
@@ -45,8 +46,10 @@ const startSettingsWorkspace = async (t, apiHandler, viewport = { width: 1440, h
   return { page, baseUrl: server.resolvedUrls.local[0] };
 };
 
-test('System Administrator loads only the server draft, resets unsaved changes, and saves a new inactive version', { timeout: 30000 }, async (t) => {
+test('System Administrator saves and applies a dirty draft without optimistically showing an active version', { timeout: 30000 }, async (t) => {
   const saves = [];
+  const applications = [];
+  let applicationStarted = false;
   const { page, baseUrl } = await startSettingsWorkspace(t, async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -55,7 +58,20 @@ test('System Administrator loads only the server draft, resets unsaved changes, 
       return;
     }
     if (path === '/api/settings/draft' && request.method() === 'GET') {
-      await route.fulfill(jsonResponse(settingsDraft));
+      await route.fulfill(
+        jsonResponse(
+          applicationStarted
+            ? {
+                ...settingsDraft,
+                draft: { ...settingsDraft.draft, llm_model: 'Qwen/Qwen3-14B' },
+                saved_version: 3,
+                active_version: 3,
+                application_state: 'active',
+                application: { version: 3, actor: 'operator', at: '2026-07-31T10:20:01Z', message: 'settings version is active' }
+              }
+            : settingsDraft
+        )
+      );
       return;
     }
     if (path === '/api/settings/draft' && request.method() === 'PUT') {
@@ -66,7 +82,24 @@ test('System Administrator loads only the server draft, resets unsaved changes, 
           draft: { ...settingsDraft.draft, llm_model: 'Qwen/Qwen3-14B' },
           saved_version: 3,
           active_version: 1,
-          last_modified: { actor: 'operator', at: '2026-07-31T10:20:00Z' }
+          last_modified: { actor: 'operator', at: '2026-07-31T10:20:00Z' },
+          application_state: 'saved',
+          application: { version: 3, actor: 'operator', at: '2026-07-31T10:20:00Z', message: 'settings version is saved' }
+        })
+      );
+      return;
+    }
+    if (path === '/api/settings/apply' && request.method() === 'POST') {
+      applications.push(request.postDataJSON());
+      applicationStarted = true;
+      await route.fulfill(
+        jsonResponse({
+          ...settingsDraft,
+          draft: { ...settingsDraft.draft, llm_model: 'Qwen/Qwen3-14B' },
+          saved_version: 3,
+          active_version: 1,
+          application_state: 'applying',
+          application: { version: 3, actor: 'operator', at: '2026-07-31T10:20:00Z', message: 'settings version is applying' }
         })
       );
       return;
@@ -91,7 +124,7 @@ test('System Administrator loads only the server draft, resets unsaved changes, 
   assert.equal(await page.getByText('已保存版本 2').isVisible(), true);
   assert.equal(await page.getByText('生效版本 1').isVisible(), true);
   assert.equal(await page.getByText('最后修改：operator').isVisible(), true);
-  assert.equal(await page.getByText('仅保存草稿，不会修改运行系统。').isVisible(), true);
+  assert.equal(await page.getByText('保存并应用前，运行系统不会变化。').isVisible(), true);
   const geometry = await page.getByLabel('草稿状态').evaluate((bar) => ({
     pageWidth: document.documentElement.scrollWidth,
     viewportWidth: window.innerWidth,
@@ -124,14 +157,78 @@ test('System Administrator loads only the server draft, resets unsaved changes, 
   assert.equal(await page.getByText('Provider API 密钥已修改').count(), 0);
 
   await page.getByLabel('语言模型').fill('Qwen/Qwen3-14B');
-  await page.getByRole('button', { name: '保存草稿', exact: true }).click();
-  await page.getByText('草稿已保存为版本 3。').waitFor();
+  await page.getByRole('button', { name: '保存并应用', exact: true }).click();
+  await page.getByRole('button', { name: '正在应用版本 3。' }).waitFor();
   assert.equal(saves.length, 1);
   assert.equal(saves[0].llm_model, 'Qwen/Qwen3-14B');
   assert.equal(saves[0].provider_api_key, null);
+  assert.deepEqual(applications, [{ version: 3 }]);
   assert.equal(await page.getByText('已保存版本 3').isVisible(), true);
   assert.equal(await page.getByText('生效版本 1').isVisible(), true);
+  assert.equal(await page.getByRole('button', { name: '正在应用版本 3。' }).isDisabled(), true);
+  assert.equal(await page.getByLabel('语言模型').isDisabled(), true);
+  await page.getByText('生效版本 3').waitFor();
+  assert.equal(await page.getByText('设置已生效。').isVisible(), true);
+  await page.reload();
+  await page.getByText('生效版本 3').waitFor();
+  assert.equal(await page.getByText('设置已生效。').isVisible(), true);
   assert.equal(await page.getByText('存在未保存的草稿修改').count(), 0);
+});
+
+test('System Administrator sees a failed application after refresh and can retry the saved version', { timeout: 30000 }, async (t) => {
+  const applications = [];
+  let retry = false;
+  const { page, baseUrl } = await startSettingsWorkspace(t, async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === '/api/auth/me') {
+      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin' }));
+      return;
+    }
+    if (path === '/api/settings/draft' && request.method() === 'GET') {
+      await route.fulfill(
+        jsonResponse(
+          retry
+            ? {
+                ...settingsDraft,
+                application_state: 'active',
+                active_version: 2,
+                application: { version: 2, actor: 'operator', at: '2026-07-31T10:25:00Z', message: 'settings version is active' }
+              }
+            : {
+                ...settingsDraft,
+                application_state: 'failed',
+                application: { version: 2, actor: 'operator', at: '2026-07-31T10:24:00Z', message: 'runtime rejected the saved configuration' }
+              }
+        )
+      );
+      return;
+    }
+    if (path === '/api/settings/apply' && request.method() === 'POST') {
+      applications.push(request.postDataJSON());
+      retry = true;
+      await route.fulfill(
+        jsonResponse({
+          ...settingsDraft,
+          application_state: 'applying',
+          application: { version: 2, actor: 'operator', at: '2026-07-31T10:25:00Z', message: 'settings version is applying' }
+        })
+      );
+      return;
+    }
+    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
+  });
+
+  await page.addInitScript(() => localStorage.setItem('access_token', 'admin-token'));
+  await page.goto(`${baseUrl}config`);
+  await page.getByText('应用失败：runtime rejected the saved configuration').waitFor();
+  assert.equal(await page.getByText('生效版本 1').isVisible(), true);
+
+  await page.getByRole('button', { name: '重试应用版本 2', exact: true }).click();
+  await page.getByRole('button', { name: '正在应用版本 2。' }).waitFor();
+  assert.deepEqual(applications, [{ version: 2 }]);
+  await page.getByText('生效版本 2').waitFor();
+  assert.equal(await page.getByText('设置已生效。').isVisible(), true);
 });
 
 test('settings draft validation keeps edits visible and exposes field-level feedback without showing a secret', { timeout: 30000 }, async (t) => {
@@ -165,7 +262,7 @@ test('settings draft validation keeps edits visible and exposes field-level feed
   await page.goto(`${baseUrl}config`);
   await page.getByRole('heading', { name: '系统设置' }).waitFor();
   await page.getByLabel('语言模型').fill('unsafe value');
-  await page.getByRole('button', { name: '保存草稿', exact: true }).click();
+  await page.getByRole('button', { name: '保存并应用', exact: true }).click();
 
   await page.getByRole('alert').waitFor();
   assert.equal(await page.getByRole('alert').innerText(), '草稿未保存，请修正标记字段后重试。');

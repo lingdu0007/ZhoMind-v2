@@ -82,13 +82,17 @@ export const apiAdapter = {
     return unwrapData(data);
   },
 
-  // System Settings drafts (admin, gated)
+  // System Settings (admin, application-gated)
   async getSystemSettingsDraft() {
     const { data } = await http.get('/settings/draft');
     return unwrapData(data);
   },
   async saveSystemSettingsDraft(payload) {
     const { data } = await http.put('/settings/draft', payload);
+    return unwrapData(data);
+  },
+  async applySystemSettingsVersion(version) {
+    const { data } = await http.post('/settings/apply', { version });
     return unwrapData(data);
   }
 };

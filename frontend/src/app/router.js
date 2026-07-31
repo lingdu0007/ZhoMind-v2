@@ -6,7 +6,7 @@ import UploadPage from '../pages/UploadPage.vue';
 import IndexingJobsPage from '../pages/IndexingJobsPage.vue';
 import ConfigPage from '../pages/ConfigPage.vue';
 import { clearProtectedSession } from './protected-session';
-import { systemSettingsDraftEnabled } from './system-settings-draft';
+import { systemSettingsApplicationEnabled } from './system-settings-draft';
 import { useAuthStore } from '../store/auth';
 
 const routes = [
@@ -19,7 +19,7 @@ const routes = [
     path: '/config',
     name: 'config',
     component: ConfigPage,
-    meta: { requiresAuth: true, requiresAdmin: true, requiresSettingsDraft: true }
+    meta: { requiresAuth: true, requiresAdmin: true, requiresSettingsApplication: true }
   }
 ];
 
@@ -54,7 +54,7 @@ router.beforeEach(async (to) => {
     return { name: 'chat', query: { notice: 'admin-required' } };
   }
 
-  if (to.meta.requiresSettingsDraft && !systemSettingsDraftEnabled) {
+  if (to.meta.requiresSettingsApplication && !systemSettingsApplicationEnabled) {
     return { name: 'chat' };
   }
 

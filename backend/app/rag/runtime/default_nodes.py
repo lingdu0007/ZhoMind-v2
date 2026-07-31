@@ -1,4 +1,4 @@
-from app.common.config import get_settings
+from app.settings.runtime import get_runtime_settings
 from app.rag.dense_contract import dense_mode_active
 from app.rag.runtime.provider_adapters import JudgeAdapter, RerankerAdapter, RetrieverAdapter
 from app.rag.runtime.state import RagStateDict
@@ -37,7 +37,7 @@ class RetrievalPlanNode:
 
     async def run(self, state: RagStateDict) -> RagStateDict:
         plan = state.get("retrieval_plan") or {}
-        plan["strategy"] = "dense_plus_lexical_migration" if dense_mode_active(get_settings()) else "sparse_only"
+        plan["strategy"] = "dense_plus_lexical_migration" if dense_mode_active(get_runtime_settings()) else "sparse_only"
         plan["top_k"] = int(plan.get("top_k") or self.default_top_k)
         state["retrieval_plan"] = plan
         state["trace_steps"].append(

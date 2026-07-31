@@ -2,7 +2,7 @@ from functools import lru_cache
 
 from pymilvus import MilvusClient
 
-from app.common.config import get_settings
+from app.settings.runtime import get_runtime_settings
 
 
 class MilvusProvider:
@@ -22,7 +22,7 @@ class MilvusProvider:
 
 @lru_cache
 def get_milvus_provider() -> MilvusProvider:
-    settings = get_settings()
+    settings = get_runtime_settings()
     return MilvusProvider(uri=settings.milvus_uri, token=settings.milvus_token)
 
 
