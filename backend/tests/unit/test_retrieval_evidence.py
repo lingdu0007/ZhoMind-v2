@@ -12,6 +12,7 @@ from app.retrieval_evidence import HttpResponse, RetrievalEvidenceSmoke
 class _FakeHttpClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.registration_usernames: list[str] = []
         self._job_polls = 0
 
     async def request(self, method: str, path: str, **kwargs) -> HttpResponse:
@@ -19,6 +20,8 @@ class _FakeHttpClient:
         if path == "/api/v1/health":
             return HttpResponse(status_code=200, payload={"code": "OK", "data": {"status": "up"}})
         if path == "/api/v1/auth/register":
+            json_body = kwargs["json_body"]
+            self.registration_usernames.append(str(json_body["username"]))
             return HttpResponse(status_code=200, payload={"code": "OK", "data": {"username": "smoke-admin"}})
         if path == "/api/v1/auth/login":
             return HttpResponse(status_code=200, payload={"code": "OK", "data": {"access_token": "login-token"}})
@@ -123,6 +126,35 @@ def test_retrieval_evidence_smoke_fails_safely_for_incomplete_runtime_configurat
     assert manifest["failed_check"] == "runtime_configuration"
     assert set(manifest["missing_configuration"]) == {"ADMIN_INVITE_CODE", "EMBEDDING_API_KEY"}
     assert "test-qwen-api-key" not in (tmp_path / "run-002" / "manifest.json").read_text(encoding="utf-8")
+
+
+def test_retrieval_evidence_production_run_ids_create_distinct_administrators(tmp_path) -> None:
+    async def _run() -> tuple[str, str]:
+        first_client = _FakeHttpClient()
+        second_client = _FakeHttpClient()
+        for client, run_id in (
+            (first_client, "production-20260731T173054Z-101-1"),
+            (second_client, "production-20260731T173054Z-102-2"),
+        ):
+            runner = RetrievalEvidenceSmoke(
+                settings=_settings(),
+                http_client=client,
+                retrieve=lambda query: _return_dense_result(query),
+                output_dir=tmp_path,
+                source_revision="abc123",
+                run_id=run_id,
+                now=lambda: datetime(2026, 7, 30, tzinfo=timezone.utc),
+                sleep=lambda _: _return_none(),
+            )
+            manifest = await runner.run()
+            assert manifest["outcome"] == "passed"
+        return first_client.registration_usernames[0], second_client.registration_usernames[0]
+
+    first_username, second_username = asyncio.run(_run())
+
+    assert first_username.startswith("retrieval-evidence-")
+    assert second_username.startswith("retrieval-evidence-")
+    assert first_username != second_username
 
 
 async def _return_dense_result(query: str) -> _DenseResult:
