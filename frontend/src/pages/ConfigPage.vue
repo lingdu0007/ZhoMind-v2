@@ -4,7 +4,7 @@
       <div>
         <p class="system-settings__eyebrow">系统运维</p>
         <h1 id="system-settings-title">系统设置</h1>
-        <p class="system-settings__description">编辑服务端保存的草稿。保存不会修改当前运行系统。</p>
+        <p class="system-settings__description">编辑服务端草稿，并在保存后由运行系统确认应用结果。</p>
       </div>
     </header>
 
@@ -18,10 +18,14 @@
         <span>{{ loadError }}</span>
         <button type="button" @click="loadDraft">重新加载</button>
       </p>
-      <p v-if="saveMessage" class="system-settings__success" role="status">{{ saveMessage }}</p>
       <p v-if="saveError" class="system-settings__error" role="alert">{{ saveError }}</p>
+      <p v-if="applicationError" class="system-settings__error" role="alert">{{ applicationError }}</p>
+      <p v-if="applicationState === 'failed'" class="system-settings__error" role="alert">
+        {{ applicationFailureLabel }}
+      </p>
+      <p v-if="applicationState === 'active'" class="system-settings__success" role="status">设置已生效。</p>
 
-      <form v-if="!loadError" class="system-settings__form" :aria-busy="loading" @submit.prevent="saveDraft">
+      <form v-if="!loadError" class="system-settings__form" :aria-busy="controlsDisabled" @submit.prevent="saveAndApply">
         <section class="system-settings__section" aria-labelledby="model-provider-title">
           <div class="system-settings__section-heading">
             <h2 id="model-provider-title">模型与提供方</h2>
@@ -30,7 +34,7 @@
           <div class="system-settings__fields">
             <label :class="{ 'system-settings__field--changed': isChanged('model_provider') }" class="system-settings__field">
               <span>模型提供方</span>
-              <select v-model="draft.model_provider" aria-label="模型提供方">
+              <select v-model="draft.model_provider" :disabled="controlsDisabled" aria-label="模型提供方">
                 <option value="ark">Ark</option>
                 <option value="openai">OpenAI</option>
                 <option value="anthropic">Anthropic</option>
@@ -40,13 +44,13 @@
             </label>
             <label :class="{ 'system-settings__field--changed': isChanged('llm_model') }" class="system-settings__field">
               <span>语言模型</span>
-              <input v-model="draft.llm_model" type="text" autocomplete="off" />
+              <input v-model="draft.llm_model" :disabled="controlsDisabled" type="text" autocomplete="off" />
               <small v-if="isChanged('llm_model')">语言模型已修改</small>
               <small v-if="fieldErrors.llm_model" class="system-settings__field-error">{{ fieldErrors.llm_model }}</small>
             </label>
             <label :class="{ 'system-settings__field--changed': isChanged('embedding_model') }" class="system-settings__field">
               <span>嵌入模型</span>
-              <input v-model="draft.embedding_model" type="text" autocomplete="off" />
+              <input v-model="draft.embedding_model" :disabled="controlsDisabled" type="text" autocomplete="off" />
               <small v-if="isChanged('embedding_model')">嵌入模型已修改</small>
               <small v-if="fieldErrors.embedding_model" class="system-settings__field-error">{{ fieldErrors.embedding_model }}</small>
             </label>
@@ -61,7 +65,7 @@
           <div class="system-settings__fields">
             <label :class="{ 'system-settings__field--changed': isChanged('retrieval_strategy') }" class="system-settings__field">
               <span>检索策略</span>
-              <select v-model="draft.retrieval_strategy" aria-label="检索策略">
+              <select v-model="draft.retrieval_strategy" :disabled="controlsDisabled" aria-label="检索策略">
                 <option value="migration">迁移检索</option>
               </select>
               <small v-if="isChanged('retrieval_strategy')">检索策略已修改</small>
@@ -69,13 +73,13 @@
             </label>
             <label :class="{ 'system-settings__field--changed': isChanged('retrieval_top_k') }" class="system-settings__field">
               <span>候选数量</span>
-              <input v-model.number="draft.retrieval_top_k" type="number" min="1" max="20" />
+              <input v-model.number="draft.retrieval_top_k" :disabled="controlsDisabled" type="number" min="1" max="20" />
               <small v-if="isChanged('retrieval_top_k')">候选数量已修改</small>
               <small v-if="fieldErrors.retrieval_top_k" class="system-settings__field-error">{{ fieldErrors.retrieval_top_k }}</small>
             </label>
             <label :class="{ 'system-settings__field--changed': isChanged('score_threshold') }" class="system-settings__field">
               <span>相似度阈值</span>
-              <input v-model.number="draft.score_threshold" type="number" min="0" max="1" step="0.01" />
+              <input v-model.number="draft.score_threshold" :disabled="controlsDisabled" type="number" min="0" max="1" step="0.01" />
               <small v-if="isChanged('score_threshold')">相似度阈值已修改</small>
               <small v-if="fieldErrors.score_threshold" class="system-settings__field-error">{{ fieldErrors.score_threshold }}</small>
             </label>
@@ -85,18 +89,18 @@
         <section class="system-settings__section" aria-labelledby="storage-index-title">
           <div class="system-settings__section-heading">
             <h2 id="storage-index-title">存储与索引</h2>
-            <p>保存连接目标与索引名称，运行时尚未读取此草稿。</p>
+            <p>运行时会确认连接目标；更换索引名称需要独立的文档重建生命周期。</p>
           </div>
           <div class="system-settings__fields">
             <label :class="{ 'system-settings__field--changed': isChanged('milvus_uri') }" class="system-settings__field">
               <span>Milvus URI</span>
-              <input v-model="draft.milvus_uri" type="url" autocomplete="off" />
+              <input v-model="draft.milvus_uri" :disabled="controlsDisabled" type="url" autocomplete="off" />
               <small v-if="isChanged('milvus_uri')">Milvus URI 已修改</small>
               <small v-if="fieldErrors.milvus_uri" class="system-settings__field-error">{{ fieldErrors.milvus_uri }}</small>
             </label>
             <label :class="{ 'system-settings__field--changed': isChanged('index_name') }" class="system-settings__field">
               <span>索引名称</span>
-              <input v-model="draft.index_name" type="text" autocomplete="off" />
+              <input v-model="draft.index_name" :disabled="controlsDisabled" type="text" autocomplete="off" />
               <small v-if="isChanged('index_name')">索引名称已修改</small>
               <small v-if="fieldErrors.index_name" class="system-settings__field-error">{{ fieldErrors.index_name }}</small>
             </label>
@@ -111,7 +115,7 @@
           <div class="system-settings__fields">
             <label :class="{ 'system-settings__field--changed': Boolean(providerApiKey) }" class="system-settings__field">
               <span>Provider API 密钥</span>
-              <input v-model="providerApiKey" type="password" autocomplete="new-password" placeholder="仅在替换时填写" />
+              <input v-model="providerApiKey" :disabled="controlsDisabled" type="password" autocomplete="new-password" placeholder="仅在替换时填写" />
               <small v-if="providerApiKeyConfigured">Provider API 密钥已配置，内容已隐藏。</small>
               <small v-else>尚未配置 Provider API 密钥。</small>
               <small v-if="providerApiKey">Provider API 密钥已修改</small>
@@ -119,7 +123,7 @@
             </label>
             <label :class="{ 'system-settings__field--changed': isChanged('runtime_timeout_ms') }" class="system-settings__field">
               <span>运行时超时（毫秒）</span>
-              <input v-model.number="draft.runtime_timeout_ms" type="number" min="1000" max="60000" step="1000" />
+              <input v-model.number="draft.runtime_timeout_ms" :disabled="controlsDisabled" type="number" min="1000" max="60000" step="1000" />
               <small v-if="isChanged('runtime_timeout_ms')">运行时超时已修改</small>
               <small v-if="fieldErrors.runtime_timeout_ms" class="system-settings__field-error">{{ fieldErrors.runtime_timeout_ms }}</small>
             </label>
@@ -128,18 +132,19 @@
 
         <footer class="system-settings__state-bar" aria-label="草稿状态">
           <div class="system-settings__state-copy">
-            <strong>{{ dirty ? '存在未保存的草稿修改' : '草稿与已保存版本一致' }}</strong>
+            <strong>{{ lifecycleLabel }}</strong>
             <span>{{ savedVersionLabel }}</span>
             <span>{{ activeVersionLabel }}</span>
             <span>{{ lastModifiedLabel }}</span>
+            <span v-if="application">{{ applicationAuditLabel }}</span>
           </div>
           <div class="system-settings__state-actions">
-            <button type="button" :disabled="loading || !dirty" @click="resetDraft">重置到已保存草稿</button>
-            <button class="system-settings__save" type="submit" :disabled="loading || !dirty">
-              {{ loading ? '正在保存' : '保存草稿' }}
+            <button type="button" :disabled="controlsDisabled || !dirty" @click="resetDraft">重置到已保存草稿</button>
+            <button class="system-settings__save" type="submit" :disabled="controlsDisabled || (!dirty && applicationState !== 'failed')">
+              {{ applyActionLabel }}
             </button>
           </div>
-          <p>仅保存草稿，不会修改运行系统。</p>
+          <p>保存并应用前，运行系统不会变化。</p>
         </footer>
       </form>
     </template>
@@ -172,19 +177,42 @@ const providerApiKeyConfigured = ref(false);
 const savedVersion = ref(null);
 const activeVersion = ref(null);
 const lastModified = ref(null);
+const applicationState = ref('draft_only');
+const application = ref(null);
 const loading = ref(true);
 const loadError = ref('');
 const saveError = ref('');
-const saveMessage = ref('');
+const applicationError = ref('');
 const fieldErrors = reactive({});
 const isDesktop = ref(window.innerWidth >= DESKTOP_MIN_WIDTH);
+let applicationRefreshTimer = null;
 
 const dirty = computed(() => JSON.stringify(draft) !== JSON.stringify(savedDraft.value) || Boolean(providerApiKey.value));
+const isApplying = computed(() => applicationState.value === 'applying');
+const controlsDisabled = computed(() => loading.value || isApplying.value);
 const savedVersionLabel = computed(() => (savedVersion.value === null ? '尚未保存草稿版本' : `已保存版本 ${savedVersion.value}`));
 const activeVersionLabel = computed(() => (activeVersion.value === null ? '尚无生效版本' : `生效版本 ${activeVersion.value}`));
 const lastModifiedLabel = computed(() => {
   if (!lastModified.value) return '尚无修改记录';
   return `最后修改：${lastModified.value.actor} · ${formatTimestamp(lastModified.value.at)}`;
+});
+const lifecycleLabel = computed(() => {
+  if (dirty.value) return '存在未保存的草稿修改';
+  if (applicationState.value === 'applying') return `正在应用版本 ${application.value?.version ?? savedVersion.value}。`;
+  if (applicationState.value === 'active') return '当前保存版本已生效';
+  if (applicationState.value === 'failed') return '已保存版本应用失败';
+  if (applicationState.value === 'saved') return '草稿已保存，尚未应用';
+  return '草稿与已保存版本一致';
+});
+const applicationFailureLabel = computed(() => `应用失败：${application.value?.message || '运行系统未接受该保存版本'}`);
+const applicationAuditLabel = computed(() => {
+  if (!application.value) return '';
+  return `应用记录：${application.value.actor} · ${formatTimestamp(application.value.at)}`;
+});
+const applyActionLabel = computed(() => {
+  if (isApplying.value) return `正在应用版本 ${application.value?.version ?? savedVersion.value}。`;
+  if (!dirty.value && applicationState.value === 'failed') return `重试应用版本 ${savedVersion.value}`;
+  return '保存并应用';
 });
 
 const cloneDraft = (source) => ({
@@ -212,6 +240,8 @@ const applyDraftResponse = (data) => {
   savedVersion.value = data.saved_version;
   activeVersion.value = data.active_version;
   lastModified.value = data.last_modified;
+  applicationState.value = data.application_state || 'draft_only';
+  application.value = data.application || null;
   clearFieldErrors();
 };
 
@@ -221,8 +251,10 @@ const loadDraft = async () => {
   loading.value = true;
   loadError.value = '';
   saveError.value = '';
+  applicationError.value = '';
   try {
     applyDraftResponse(await apiAdapter.getSystemSettingsDraft());
+    if (isApplying.value) scheduleApplicationRefresh();
   } catch (error) {
     loadError.value = error.status === 404 ? '服务端尚未开启系统设置草稿。' : '加载系统设置草稿失败，请重新加载。';
   } finally {
@@ -234,13 +266,35 @@ const resetDraft = () => {
   Object.assign(draft, cloneDraft(savedDraft.value));
   providerApiKey.value = '';
   saveError.value = '';
+  applicationError.value = '';
   clearFieldErrors();
 };
 
-const saveDraft = async () => {
+const applySavedVersion = async (version) => {
+  loading.value = true;
+  applicationError.value = '';
+  try {
+    applyDraftResponse(await apiAdapter.applySystemSettingsVersion(version));
+    if (isApplying.value) scheduleApplicationRefresh();
+  } catch (error) {
+    applicationError.value = error.detail?.fields
+      ? `应用未开始：${Object.values(error.detail.fields).join('；')}`
+      : '应用未开始，请刷新后重试。';
+  } finally {
+    loading.value = false;
+  }
+};
+
+const saveAndApply = async () => {
+  if (!dirty.value && applicationState.value === 'failed' && savedVersion.value !== null) {
+    await applySavedVersion(savedVersion.value);
+    return;
+  }
+  if (!dirty.value) return;
+
   loading.value = true;
   saveError.value = '';
-  saveMessage.value = '';
+  applicationError.value = '';
   clearFieldErrors();
   try {
     const saved = await apiAdapter.saveSystemSettingsDraft({
@@ -248,13 +302,21 @@ const saveDraft = async () => {
       provider_api_key: providerApiKey.value || null
     });
     applyDraftResponse(saved);
-    saveMessage.value = `草稿已保存为版本 ${saved.saved_version}。`;
   } catch (error) {
     Object.assign(fieldErrors, error.detail?.fields || {});
     saveError.value = '草稿未保存，请修正标记字段后重试。';
-  } finally {
     loading.value = false;
+    return;
   }
+  loading.value = false;
+  await applySavedVersion(savedVersion.value);
+};
+
+const scheduleApplicationRefresh = () => {
+  if (applicationRefreshTimer !== null) window.clearTimeout(applicationRefreshTimer);
+  applicationRefreshTimer = window.setTimeout(async () => {
+    await loadDraft();
+  }, 350);
 };
 
 const formatTimestamp = (value) => {
@@ -272,7 +334,10 @@ onMounted(() => {
   loadDraft();
 });
 
-onBeforeUnmount(() => window.removeEventListener('resize', updateViewport));
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', updateViewport);
+  if (applicationRefreshTimer !== null) window.clearTimeout(applicationRefreshTimer);
+});
 </script>
 
 <style scoped>

@@ -4,7 +4,7 @@ from functools import lru_cache
 from langchain_anthropic import ChatAnthropic
 from langchain_openai import ChatOpenAI
 
-from app.common.config import get_settings
+from app.settings.runtime import get_runtime_settings
 from app.extensions.langchain_chat_providers import AnthropicChatProvider, OpenAICompatibleChatProvider
 from app.extensions.langchain_embedding_providers import OpenAIEmbeddingProvider
 from app.rag.interfaces import EmbeddingProvider, LlmProvider, RelevanceJudge, Reranker, Retriever
@@ -83,7 +83,7 @@ class ExtensionRegistry:
 @lru_cache
 def get_extension_registry() -> ExtensionRegistry:
     registry = ExtensionRegistry()
-    settings = get_settings()
+    settings = get_runtime_settings()
 
     if settings.ark_api_key and settings.llm_base_url and settings.llm_model:
         ark_model = ChatOpenAI(

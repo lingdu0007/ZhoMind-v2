@@ -6,12 +6,13 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.common.config import Settings, get_settings
+from app.common.config import Settings
 from app.extensions.registry import get_extension_registry
 from app.infra.milvus_document_index import MilvusDocumentIndex
 from app.model.document import Document, DocumentChunk
 from app.rag.dense_contract import DenseEmbeddingContract, build_embedding_contract_fingerprint, build_milvus_collection_name
 from app.rag.interfaces import EmbeddingProvider, RetrieveResult
+from app.settings.runtime import get_runtime_settings
 
 _DEFAULT_EMBEDDING_PROVIDER = "embedding-default"
 
@@ -38,7 +39,7 @@ class MixedModeDocumentRetrieverService:
         dense_search_multiplier: int = 4,
     ) -> None:
         self._session = session
-        self._settings = settings or get_settings()
+        self._settings = settings or get_runtime_settings()
         self._embedding_provider = embedding_provider
         self._document_index = document_index
         self._candidate_limit = candidate_limit
@@ -163,7 +164,7 @@ class MixedModeDocumentRetrieverService:
         ranked: list[dict[str, Any]] = []
         for chunk in candidates:
             score = self._score_chunk(query=query, content=chunk.content)
-            if score <= 0:
+            if score <= self._settings.runtime_score_threshold:
                 continue
             ranked.append(
                 {

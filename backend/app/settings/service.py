@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.config import get_settings
 from app.common.exceptions import AppError
 from app.model.system_settings import SystemSettingsDraft, SystemSettingsState
+from app.settings.runtime import RuntimeApplicationError, SystemSettingsRuntime, get_system_settings_runtime
 
 _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
 _SUPPORTED_PROVIDERS = {"ark", "openai", "anthropic"}
@@ -27,15 +28,19 @@ _DEFAULT_DRAFT = {
 
 
 class SystemSettingsDraftService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, *, runtime: SystemSettingsRuntime | None = None) -> None:
         self.session = session
+        self.runtime = runtime or get_system_settings_runtime()
 
     async def read(self) -> dict:
         state = await self.session.get(SystemSettingsState, 1)
+        if state and state.active_version is not None and not self.runtime.has_active_version(state.active_version):
+            await self.restore_active_application()
+            state = await self.session.get(SystemSettingsState, 1)
         draft = await self.session.scalar(
             select(SystemSettingsDraft).order_by(SystemSettingsDraft.version.desc()).limit(1)
         )
-        return self._project(draft=draft, active_version=state.active_version if state else None)
+        return self._project(draft=draft, state=state)
 
     async def save(self, *, actor: str, payload: object) -> dict:
         normalized, provider_api_key = self._validate(payload)
@@ -44,6 +49,12 @@ class SystemSettingsDraftService:
             state = SystemSettingsState(id=1, latest_saved_version=0, active_version=None)
             self.session.add(state)
             await self.session.flush()
+        if state.application_state == "applying":
+            raise AppError(
+                status_code=409,
+                code="SETTINGS_APPLICATION_IN_PROGRESS",
+                message="a settings application is already in progress",
+            )
 
         previous = await self.session.scalar(
             select(SystemSettingsDraft).order_by(SystemSettingsDraft.version.desc()).limit(1)
@@ -61,8 +72,113 @@ class SystemSettingsDraftService:
             saved_at=datetime.now(timezone.utc),
         )
         self.session.add(draft)
+        state.application_state = "saved"
+        state.application_version = None
+        state.application_actor = None
+        state.application_at = None
+        state.application_message = None
         await self.session.commit()
-        return self._project(draft=draft, active_version=state.active_version)
+        return self._project(draft=draft, state=state)
+
+    async def begin_application(self, *, actor: str, version: object) -> dict:
+        requested_version = self._parse_version(version)
+        state = await self.session.get(SystemSettingsState, 1)
+        draft = await self.session.get(SystemSettingsDraft, requested_version)
+        if draft is None:
+            raise AppError(status_code=404, code="SETTINGS_VERSION_NOT_FOUND", message="saved settings version was not found")
+        if state is None or requested_version != state.latest_saved_version:
+            raise AppError(status_code=409, code="SETTINGS_VERSION_STALE", message="saved settings version is stale")
+        if state.application_state == "applying":
+            raise AppError(
+                status_code=409,
+                code="SETTINGS_APPLICATION_IN_PROGRESS",
+                message="a settings application is already in progress",
+            )
+
+        self._validate_saved_version(draft)
+        try:
+            self.runtime.validate(draft.settings)
+        except RuntimeApplicationError as exc:
+            raise AppError(
+                status_code=409,
+                code="SETTINGS_VERSION_UNSUPPORTED",
+                message="saved settings version is unsupported by the running system",
+                detail={"fields": getattr(exc, "fields", {"settings": "cannot be applied by the running system"})},
+            ) from exc
+
+        now = datetime.now(timezone.utc)
+        state.application_state = "applying"
+        state.application_version = requested_version
+        state.application_actor = actor
+        state.application_at = now
+        state.application_message = "settings version is applying"
+        await self.session.commit()
+        return self._project(draft=draft, state=state)
+
+    async def complete_application(self, *, actor: str, version: int) -> None:
+        state = await self.session.get(SystemSettingsState, 1)
+        draft = await self.session.get(SystemSettingsDraft, version)
+        if (
+            state is None
+            or draft is None
+            or state.application_state != "applying"
+            or state.application_version != version
+            or state.application_actor != actor
+        ):
+            return
+
+        try:
+            provider_api_key = self._open_secret(draft.sealed_secrets.get("provider_api_key"))
+            await self.runtime.apply(version=version, settings=draft.settings, provider_api_key=provider_api_key)
+        except RuntimeApplicationError as exc:
+            state.application_state = "failed"
+            state.application_message = self._safe_application_message(exc)
+        except Exception:  # pragma: no cover - protects state transitions from third-party failures
+            state.application_state = "failed"
+            state.application_message = "runtime did not accept the saved configuration"
+        else:
+            state.active_version = version
+            state.application_state = "active"
+            state.application_message = "settings version is active"
+        state.application_at = datetime.now(timezone.utc)
+        await self.session.commit()
+
+    async def restore_active_application(self) -> None:
+        state = await self.session.get(SystemSettingsState, 1)
+        if state is None or state.active_version is None:
+            return
+        draft = await self.session.get(SystemSettingsDraft, state.active_version)
+        if draft is None:
+            state.active_version = None
+            state.application_state = "failed"
+            state.application_message = "active settings version is unavailable"
+            state.application_at = datetime.now(timezone.utc)
+            await self.session.commit()
+            return
+
+        try:
+            provider_api_key = self._open_secret(draft.sealed_secrets.get("provider_api_key"))
+            await self.runtime.apply(
+                version=state.active_version,
+                settings=draft.settings,
+                provider_api_key=provider_api_key,
+            )
+        except RuntimeApplicationError as exc:
+            state.active_version = None
+            state.application_state = "failed"
+            state.application_message = self._safe_application_message(exc)
+            state.application_at = datetime.now(timezone.utc)
+            await self.session.commit()
+
+    def _validate_saved_version(self, draft: SystemSettingsDraft) -> None:
+        payload = {**draft.settings, "provider_api_key": None}
+        self._validate(payload)
+
+    @staticmethod
+    def _parse_version(version: object) -> int:
+        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            raise AppError(status_code=400, code="SETTINGS_VERSION_INVALID", message="saved settings version is invalid")
+        return version
 
     def _validate(self, payload: object) -> tuple[dict, str | None]:
         fields: dict[str, str] = {}
@@ -201,15 +317,49 @@ class SystemSettingsDraftService:
             )
         return secret_box.encrypt(value.encode("utf-8")).decode("ascii")
 
+    def _open_secret(self, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise RuntimeApplicationError("saved secret is unavailable")
+        secret_box = self._secret_box()
+        if secret_box is None:
+            raise RuntimeApplicationError("secure secret storage is unavailable")
+        try:
+            return secret_box.decrypt(value.encode("ascii")).decode("utf-8")
+        except Exception as exc:
+            raise RuntimeApplicationError("saved secret is unavailable") from exc
+
     @staticmethod
-    def _project(*, draft: SystemSettingsDraft | None, active_version: int | None) -> dict:
+    def _safe_application_message(exc: RuntimeApplicationError) -> str:
+        message = str(exc)
+        return message if message in {
+            "runtime rejected the saved configuration",
+            "runtime did not accept the saved configuration",
+            "saved secret is unavailable",
+            "secure secret storage is unavailable",
+        } else "runtime did not accept the saved configuration"
+
+    @staticmethod
+    def _project(*, draft: SystemSettingsDraft | None, state: SystemSettingsState | None) -> dict:
+        application = None
+        if state and state.application_version is not None and state.application_actor and state.application_at:
+            application = {
+                "version": state.application_version,
+                "actor": state.application_actor,
+                "at": state.application_at.isoformat(),
+                "message": state.application_message or "application outcome is unavailable",
+            }
+        active_version = state.active_version if state else None
+        application_state = state.application_state if state else "draft_only"
         if draft is None:
             return {
                 "draft": {**_DEFAULT_DRAFT, "provider_api_key": {"configured": False}},
                 "saved_version": None,
                 "active_version": active_version,
                 "last_modified": None,
-                "application_state": "draft_only",
+                "application_state": application_state,
+                "application": application,
             }
         return {
             "draft": {
@@ -219,5 +369,6 @@ class SystemSettingsDraftService:
             "saved_version": draft.version,
             "active_version": active_version,
             "last_modified": {"actor": draft.saved_by, "at": draft.saved_at.isoformat()},
-            "application_state": "draft_only",
+            "application_state": application_state,
+            "application": application,
         }
