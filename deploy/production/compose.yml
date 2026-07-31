@@ -74,6 +74,8 @@ services:
       MINIO_REGION: us-east-1
       ETCD_ENDPOINTS: etcd:2379
       MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
     volumes:
       - milvus-data:/var/lib/milvus
     healthcheck:
