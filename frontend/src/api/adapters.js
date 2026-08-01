@@ -51,6 +51,10 @@ export const apiAdapter = {
     const { data } = await http.post(`/documents/${encodeURIComponent(documentId)}/build`, payload);
     return unwrapData(data);
   },
+  async publishDocument(documentId) {
+    const { data } = await http.post(`/documents/${encodeURIComponent(documentId)}/publish`);
+    return unwrapData(data);
+  },
   async batchBuildDocuments(payload) {
     const { data } = await http.post('/documents/batch-build', payload);
     return unwrapData(data);

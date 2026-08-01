@@ -71,7 +71,7 @@
           <button ref="excerptCloseRef" type="button" class="evidence-excerpt__close" aria-label="关闭来源摘录" @click="closeSourceExcerpt">关闭</button>
         </header>
         <p class="evidence-excerpt__id">{{ selectedSource.source_id }}</p>
-        <div class="evidence-excerpt__content">{{ selectedSource.excerpt || '未返回可展示的来源摘录。' }}</div>
+        <div class="evidence-excerpt__content">{{ selectedSource.withdrawal_notice || selectedSource.excerpt || '未返回可展示的来源摘录。' }}</div>
       </aside>
     </div>
   </section>

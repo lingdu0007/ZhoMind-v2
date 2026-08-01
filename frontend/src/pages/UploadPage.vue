@@ -171,11 +171,28 @@
                   v-if="canInspectChunks(document)"
                   type="button"
                   class="document-library__icon-action"
-                  :aria-label="`查看文档 ${document.document_id} 的已发布分块`"
-                  :title="'查看已发布分块'"
+                  :aria-label="`查看文档 ${document.document_id} 的候选或已发布分块`"
+                  :title="'查看候选或已发布分块'"
                   @click="inspectChunks(document)"
                 >
                   <FileSearch :size="16" aria-hidden="true" />
+                </button>
+                <button
+                  v-if="canPublish(document)"
+                  type="button"
+                  class="document-library__icon-action"
+                  :aria-label="`发布候选构建 ${document.document_id}`"
+                  title="发布候选构建"
+                  :disabled="Boolean(publicationLoading[document.document_id])"
+                  @click="publishDocument(document)"
+                >
+                  <RefreshCw
+                    v-if="publicationLoading[document.document_id]"
+                    :size="16"
+                    class="document-library__refresh-icon--spinning"
+                    aria-hidden="true"
+                  />
+                  <CircleCheck v-else :size="16" aria-hidden="true" />
                 </button>
                 <button
                   v-if="canRebuild(document)"
@@ -220,8 +237,8 @@
     >
       <template #header>
         <div>
-          <p class="document-library__dialog-eyebrow">已发布版本</p>
-          <h2>已发布分块</h2>
+          <p class="document-library__dialog-eyebrow">{{ inspectedGenerationLabel }}</p>
+          <h2>{{ inspectedGenerationLabel }}分块</h2>
         </div>
       </template>
 
@@ -229,13 +246,13 @@
         <p class="document-library__chunks-identity">文档 ID：{{ inspectedDocument.document_id }}</p>
         <p class="document-library__chunks-name">{{ inspectedDocument.filename }}</p>
 
-        <p v-if="chunksLoading" class="document-library__chunks-state" role="status">正在加载已发布分块...</p>
+        <p v-if="chunksLoading" class="document-library__chunks-state" role="status">正在加载{{ inspectedGenerationLabel }}分块...</p>
         <div v-else-if="chunkInspectionError" class="document-library__chunks-error" role="alert">
           <p>{{ chunkInspectionError }}</p>
           <button type="button" @click="loadChunks(chunkPagination.page)">重新检查</button>
         </div>
         <p v-else-if="!chunks.length" class="document-library__chunks-state" role="status">
-          当前已发布版本没有可展示的分块。
+          当前{{ inspectedGenerationLabel }}没有可展示的分块。
         </p>
         <ol v-else class="document-library__chunk-list">
           <li v-for="chunk in chunks" :key="chunk.chunk_id" class="document-library__chunk">
@@ -371,6 +388,7 @@ const statusFilterOptions = [
   { value: 'all', label: '全部状态' },
   { value: 'pending', label: '待处理' },
   { value: 'processing', label: '处理中' },
+  { value: 'candidate', label: '待发布候选' },
   { value: 'ready', label: '可检索' },
   { value: 'failed', label: '构建失败' },
   { value: 'deleting', label: '删除中' }
@@ -379,6 +397,7 @@ const statusFilterOptions = [
 const documentStatuses = {
   pending: { label: '待处理 (pending)', tone: 'neutral' },
   processing: { label: '处理中 (processing)', tone: 'warning' },
+  candidate: { label: '待发布候选 (candidate)', tone: 'warning' },
   ready: { label: '可检索 (ready)', tone: 'success' },
   failed: { label: '构建失败 (failed)', tone: 'danger' },
   deleting: { label: '删除中 (deleting)', tone: 'warning' }
@@ -405,6 +424,7 @@ const rebuildLoading = ref(false);
 const rebuildError = ref('');
 const rebuildJobs = ref({});
 const deletionLoading = ref({});
+const publicationLoading = ref({});
 const deleteSuccess = ref('');
 const deleteError = ref('');
 const selectedDocumentIds = ref([]);
@@ -471,6 +491,9 @@ const emptyStateText = computed(() => {
 const chunkTotalPages = computed(() =>
   Math.max(1, Math.ceil(Number(chunkPagination.value.total || 0) / Number(chunkPagination.value.page_size || CHUNK_PAGE_SIZE)))
 );
+const inspectedGenerationLabel = computed(() =>
+  Number(inspectedDocument.value?.candidate_generation) > 0 ? '候选构建' : '已发布版本'
+);
 
 const documentStatusMeta = (status) => documentStatuses[status] || { label: status || '-', tone: 'neutral' };
 
@@ -512,15 +535,17 @@ const loadErrorMessage = (error) => {
 const chunkInspectionErrorMessage = (error) => {
   if (error?.status === 401) return '登录状态已失效，请重新登录。';
   if (error?.status === 403) return '当前账户无权查看文档分块。';
-  if (error?.status === 409) return '当前文档尚未产生可查看的已发布分块，请等待构建完成后重试。';
-  return '加载已发布分块失败，请重新检查。';
+  if (error?.status === 409) return '当前文档尚未产生可查看的候选或已发布分块，请等待构建完成后重试。';
+  return '加载候选或已发布分块失败，请重新检查。';
 };
 
 const hasPublishedGeneration = (document) => Number(document?.published_generation) > 0;
 
-const canInspectChunks = (document) => document.status === 'ready' && hasPublishedGeneration(document);
+const canInspectChunks = (document) => Number(document?.candidate_generation) > 0 || hasPublishedGeneration(document);
 
-const canRebuild = (document) => ['ready', 'failed'].includes(document.status);
+const canPublish = (document) => document.status === 'candidate' && Number(document?.candidate_generation) > 0;
+
+const canRebuild = (document) => ['ready', 'candidate', 'failed'].includes(document.status);
 
 const canDelete = (document) => document.status !== 'deleting';
 
@@ -669,6 +694,31 @@ const deleteErrorMessage = (error) => {
   if (error?.status === 404) return '文档已不在文档库中，请刷新确认当前状态。';
   if (error?.status === 409) return '文档当前正在变更，请刷新后重试。';
   return '请稍后重试。';
+};
+
+const publishDocument = async (document) => {
+  try {
+    await ElMessageBox.confirm(
+      `确认发布文档“${document.filename}”的候选构建？发布后它将立即用于后续检索。`,
+      '发布候选构建',
+      { type: 'warning', confirmButtonText: '发布', cancelButtonText: '取消' }
+    );
+  } catch {
+    return;
+  }
+
+  publicationLoading.value = { ...publicationLoading.value, [document.document_id]: true };
+  try {
+    const published = await apiAdapter.publishDocument(document.document_id);
+    documents.value = documents.value.map((item) =>
+      item.document_id === document.document_id ? { ...item, ...published } : item
+    );
+  } catch (error) {
+    deleteError.value = `发布候选构建失败：${deleteErrorMessage(error)}`;
+  } finally {
+    const { [document.document_id]: _completed, ...remaining } = publicationLoading.value;
+    publicationLoading.value = remaining;
+  }
 };
 
 const deleteDocument = async (document) => {

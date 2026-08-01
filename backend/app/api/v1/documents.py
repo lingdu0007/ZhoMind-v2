@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import Awaitable
 from concurrent.futures import Future
+from copy import deepcopy
 from contextlib import suppress
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -12,6 +13,7 @@ from fastapi import APIRouter, Depends, File, Query, UploadFile
 from redis.asyncio import Redis
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import undefer
 
 from app.common.config import get_settings
 from app.common.deps import require_admin
@@ -22,10 +24,12 @@ from app.documents.build_service import DocumentBuildService
 from app.documents.dense_maintenance_service import DenseMaintenanceService
 from app.documents.job_dispatcher import DocumentJobDispatcher
 from app.documents.operator_service import DocumentsOperatorService
+from app.documents.parsers import parse_document
 from app.documents.schemas import BatchBuildRequest, BatchDeleteRequest, BuildDocumentRequest, DenseMaintenanceRequest
 from app.extensions.registry import get_task_backend
 from app.infra.db import get_db_session
 from app.infra.redis import get_redis_client
+from app.model.chat import ChatMessage
 from app.model.document import Document, DocumentChunk, DocumentJob
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -126,6 +130,8 @@ def _serialize_document(document: Document) -> dict:
         "chunk_strategy": document.chunk_strategy,
         "chunk_count": document.chunk_count,
         "published_generation": document.published_generation,
+        "candidate_generation": document.candidate_generation,
+        "candidate_chunk_count": document.candidate_chunk_count,
         "uploaded_at": document.uploaded_at.isoformat(),
     }
 
@@ -155,7 +161,7 @@ def _serialize_chunk(chunk: DocumentChunk) -> dict:
 
 
 def _validate_supported_upload_file_type(file_type: str) -> None:
-    allowed = set(get_settings().document_allowed_extensions)
+    allowed = {"txt", "md", "pdf"}
     if file_type not in allowed:
         raise AppError(
             status_code=415,
@@ -163,6 +169,17 @@ def _validate_supported_upload_file_type(file_type: str) -> None:
             message="document file type not supported",
             detail={"file_type": file_type},
         )
+
+
+def _validate_upload_content(filename: str, file_type: str, content: bytes) -> None:
+    if len(content) > 25 * 1024 * 1024:
+        raise AppError(
+            status_code=413,
+            code="DOC_FILE_TOO_LARGE",
+            message="document file exceeds the 25 MiB limit",
+            detail={"file_type": file_type},
+        )
+    parse_document(filename, content)
 
 
 async def _get_document_or_404(session: AsyncSession, document_id: str) -> Document:
@@ -304,6 +321,28 @@ async def _compensate_upload_enqueue_failure(session: AsyncSession, *, document_
     await _best_effort_cancel_enqueued(job_id)
 
 
+async def _compensate_replacement_upload_enqueue_failure(
+    session: AsyncSession,
+    *,
+    document_id: str,
+    job_id: str,
+    previous_state: dict,
+) -> None:
+    await session.rollback()
+    result = await session.execute(select(Document).options(undefer(Document.source_content)).where(Document.id == document_id))
+    document = result.scalar_one_or_none()
+    if document is not None:
+        document.file_type = previous_state["file_type"]
+        document.file_size = previous_state["file_size"]
+        document.source_content = previous_state["source_content"]
+        document.status = previous_state["status"]
+        document.next_generation = previous_state["next_generation"]
+        document.latest_requested_generation = previous_state["latest_requested_generation"]
+    await session.execute(delete(DocumentJob).where(DocumentJob.id == job_id))
+    await session.commit()
+    await _best_effort_cancel_enqueued(job_id)
+
+
 async def _compensate_rebuild_enqueue_failure(
     session: AsyncSession,
     *,
@@ -370,6 +409,23 @@ async def _tombstone_document(session: AsyncSession, *, document: Document) -> N
             job.stage = "failed"
             job.progress = min(job.progress, 99)
             job.message = "job canceled because document was deleted"
+
+    messages_result = await session.execute(select(ChatMessage).where(ChatMessage.type == "assistant"))
+    for message in messages_result.scalars().all():
+        trace = deepcopy(message.rag_trace) if isinstance(message.rag_trace, dict) else None
+        evidence = trace.get("evidence") if isinstance(trace, dict) else None
+        if not isinstance(evidence, list):
+            continue
+        changed = False
+        for item in evidence:
+            if not isinstance(item, dict) or item.get("document_id") != document.id:
+                continue
+            item.pop("content_preview", None)
+            item.pop("content", None)
+            item["withdrawn"] = True
+            changed = True
+        if changed:
+            message.rag_trace = trace
 
 
 @router.get("")
@@ -523,27 +579,44 @@ async def upload_document(
         raise AppError(status_code=400, code="VALIDATION_ERROR", message="file is required")
 
     existing = await session.execute(
-        select(Document).where(
+        select(Document).options(undefer(Document.source_content)).where(
             Document.filename == filename,
             Document.deleted_at.is_(None),
         )
     )
-    if existing.scalar_one_or_none() is not None:
-        raise AppError(status_code=409, code="RESOURCE_CONFLICT", message="filename already exists")
-
     file_type = Path(filename).suffix.lower().lstrip(".") or "unknown"
     _validate_supported_upload_file_type(file_type)
     content = await file.read()
-    document = Document(
-        filename=filename,
-        file_type=file_type,
-        file_size=len(content),
-        source_content=content,
-        status="pending",
-        chunk_strategy="general",
-    )
-    session.add(document)
-    await session.flush()
+    _validate_upload_content(filename, file_type, content)
+    document = existing.scalar_one_or_none()
+    created_document = document is None
+    previous_state: dict | None = None
+    if document is None:
+        document = Document(
+            filename=filename,
+            file_type=file_type,
+            file_size=len(content),
+            source_content=content,
+            status="pending",
+            chunk_strategy="general",
+        )
+        session.add(document)
+        await session.flush()
+        queued_message = "queued for build"
+    else:
+        previous_state = {
+            "file_type": document.file_type,
+            "file_size": document.file_size,
+            "source_content": document.source_content,
+            "status": document.status,
+            "next_generation": document.next_generation,
+            "latest_requested_generation": document.latest_requested_generation,
+        }
+        document.file_type = file_type
+        document.file_size = len(content)
+        document.source_content = content
+        document.status = "pending"
+        queued_message = "queued for replacement build"
 
     job = await _create_job(
         session,
@@ -553,7 +626,7 @@ async def upload_document(
         status="queued",
         stage="queued",
         progress=0,
-        message="queued for build",
+        message=queued_message,
     )
     document.latest_requested_generation = document.next_generation
     document.next_generation += 1
@@ -562,13 +635,69 @@ async def upload_document(
         await _enqueue_document_build(session, document_id=document.id, job_id=job.id, content=content)
     except Exception as exc:
         with suppress(Exception):
-            await _compensate_upload_enqueue_failure(session, document_id=document.id, job_id=job.id)
+            if created_document:
+                await _compensate_upload_enqueue_failure(session, document_id=document.id, job_id=job.id)
+            else:
+                assert previous_state is not None
+                await _compensate_replacement_upload_enqueue_failure(
+                    session,
+                    document_id=document.id,
+                    job_id=job.id,
+                    previous_state=previous_state,
+                )
         raise _enqueue_failed_error() from exc
 
     return _ok({
         "document_id": document.id,
         "job_id": job.id,
     })
+
+
+@router.post("/{document_id}/publish")
+async def publish_document(
+    document_id: str,
+    _: object = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+    redis: Redis = Depends(get_redis_client),
+) -> dict:
+    await _ensure_document_mutations_allowed(redis)
+    document = await _get_document_or_404(session, document_id)
+    generation = document.candidate_generation
+    if generation is None:
+        raise AppError(
+            status_code=409,
+            code="DOC_CANDIDATE_BUILD_NOT_READY",
+            message="document has no candidate build ready for publication",
+            detail={"document_id": document_id},
+        )
+
+    publish_result = await session.execute(
+        Document.__table__.update()
+        .where(
+            Document.id == document.id,
+            Document.deleted_at.is_(None),
+            Document.candidate_generation == generation,
+        )
+        .values(
+            published_generation=generation,
+            dense_ready_generation=Document.candidate_dense_ready_generation,
+            dense_ready_fingerprint=Document.candidate_dense_ready_fingerprint,
+            chunk_strategy=Document.candidate_chunk_strategy,
+            chunk_count=Document.candidate_chunk_count,
+            candidate_generation=None,
+            candidate_dense_ready_generation=0,
+            candidate_dense_ready_fingerprint=None,
+            candidate_chunk_strategy=None,
+            candidate_chunk_count=0,
+            status="ready",
+        )
+    )
+    if publish_result.rowcount != 1:
+        await session.rollback()
+        raise AppError(status_code=409, code="DOC_CANDIDATE_BUILD_NOT_READY", message="candidate build changed before publication")
+    await session.commit()
+    await session.refresh(document)
+    return _ok(_serialize_document(document))
 
 
 @router.post("/{document_id}/build")
@@ -733,7 +862,8 @@ async def get_document_chunks(
     page, page_size = _validate_pagination(page, page_size)
 
     document = await _get_document_or_404(session, document_id)
-    if document.status != "ready" or document.published_generation == 0:
+    generation = document.candidate_generation or document.published_generation
+    if generation == 0:
         raise AppError(
             status_code=409,
             code="DOC_CHUNK_RESULT_NOT_READY",
@@ -746,14 +876,14 @@ async def get_document_chunks(
         .select_from(DocumentChunk)
         .where(
             DocumentChunk.document_id == document_id,
-            DocumentChunk.generation == document.published_generation,
+            DocumentChunk.generation == generation,
         )
     )
     result = await session.execute(
         select(DocumentChunk)
         .where(
             DocumentChunk.document_id == document_id,
-            DocumentChunk.generation == document.published_generation,
+            DocumentChunk.generation == generation,
         )
         .order_by(DocumentChunk.chunk_index.asc())
         .offset((page - 1) * page_size)
@@ -763,6 +893,8 @@ async def get_document_chunks(
     return _ok(
         {
             "items": items,
+            "generation": generation,
+            "generation_state": "candidate" if document.candidate_generation else "published",
             "pagination": {
                 "page": page,
                 "page_size": page_size,
@@ -854,7 +986,7 @@ async def cancel_job(
         document_result = await session.execute(select(Document).where(Document.id == job.document_id))
         document = document_result.scalar_one_or_none()
         if document is not None and document.deleted_at is None:
-            document.status = "pending"
+            document.status = "ready" if document.published_generation > 0 else "pending"
             if job.build_generation is not None and document.latest_requested_generation == job.build_generation:
                 document.latest_requested_generation = document.published_generation
             if (

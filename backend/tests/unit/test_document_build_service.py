@@ -956,7 +956,7 @@ def test_process_job_dense_provider_missing_does_not_publish_as_lexical_only_rea
     asyncio.run(_run())
 
 
-def test_process_job_does_not_persist_dense_readiness_before_publish() -> None:
+def test_process_job_persists_dense_readiness_on_candidate_without_publishing() -> None:
     async def _run() -> None:
         db_fd, db_path = tempfile.mkstemp(prefix="build-dense-autoflush-", suffix=".db")
         os.close(db_fd)
@@ -1041,9 +1041,12 @@ def test_process_job_does_not_persist_dense_readiness_before_publish() -> None:
             async with session_factory() as session:
                 persisted = await session.get(Document, document.id)
                 assert persisted is not None
-                assert persisted.published_generation == 1
-                assert persisted.dense_ready_generation == 1
-                assert persisted.dense_ready_fingerprint == "fp-123"
+                assert persisted.published_generation == 0
+                assert persisted.dense_ready_generation == 0
+                assert persisted.dense_ready_fingerprint is None
+                assert persisted.candidate_generation == 1
+                assert persisted.candidate_dense_ready_generation == 1
+                assert persisted.candidate_dense_ready_fingerprint == "fp-123"
         finally:
             await engine.dispose()
             os.remove(db_path)

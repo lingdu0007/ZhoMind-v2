@@ -51,5 +51,12 @@ def parse_document(filename: str, content: bytes) -> ParsedDocument:
                 message="invalid or corrupt pdf document",
                 detail={"file_type": file_type},
             ) from exc
+        if not text.strip():
+            raise AppError(
+                status_code=400,
+                code="DOC_PDF_TEXT_NOT_EXTRACTABLE",
+                message="pdf document must contain extractable text",
+                detail={"file_type": file_type},
+            )
 
     return ParsedDocument(source_file=filename, file_type=file_type, text=text)
