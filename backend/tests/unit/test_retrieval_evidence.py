@@ -12,17 +12,12 @@ from app.retrieval_evidence import HttpResponse, RetrievalEvidenceSmoke
 class _FakeHttpClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
-        self.registration_usernames: list[str] = []
         self._job_polls = 0
 
     async def request(self, method: str, path: str, **kwargs) -> HttpResponse:
         self.calls.append((method, path))
         if path == "/api/v1/health":
             return HttpResponse(status_code=200, payload={"code": "OK", "data": {"status": "up"}})
-        if path == "/api/v1/auth/register":
-            json_body = kwargs["json_body"]
-            self.registration_usernames.append(str(json_body["username"]))
-            return HttpResponse(status_code=200, payload={"code": "OK", "data": {"username": "smoke-admin"}})
         if path == "/api/v1/auth/login":
             return HttpResponse(status_code=200, payload={"code": "OK", "data": {"access_token": "login-token"}})
         if path == "/api/v1/documents/upload":
@@ -89,7 +84,8 @@ class _GenerationFakeHttpClient(_FakeHttpClient):
 def _settings(**overrides: object) -> Settings:
     values: dict[str, object] = {
         "JWT_SECRET": "test-jwt-value",
-        "ADMIN_INVITE_CODE": "test-admin-code",
+        "BOOTSTRAP_ADMIN_USERNAME": "test-bootstrap-admin",
+        "BOOTSTRAP_ADMIN_PASSWORD": "test-bootstrap-password",
         "EMBEDDING_API_KEY": "test-qwen-api-key",
         "EMBEDDING_BASE_URL": "https://embedding.example.test/v1",
         "EMBEDDING_MODEL": "Qwen/Qwen3-Embedding-8B",
@@ -142,14 +138,14 @@ def test_retrieval_evidence_smoke_writes_non_sensitive_success_manifest(tmp_path
     assert "test-qwen-api-key" not in serialized
     assert "https://embedding.example.test/v1" not in serialized
     assert "Qwen/Qwen3-Embedding-8B" not in serialized
-    assert "test-admin-code" not in serialized
+    assert "test-bootstrap-password" not in serialized
     assert "test-jwt-value" not in serialized
 
 
 def test_retrieval_evidence_smoke_fails_safely_for_incomplete_runtime_configuration(tmp_path) -> None:
     async def _run() -> dict:
         runner = RetrievalEvidenceSmoke(
-            settings=_settings(ADMIN_INVITE_CODE="", EMBEDDING_API_KEY=""),
+            settings=_settings(BOOTSTRAP_ADMIN_USERNAME="", EMBEDDING_API_KEY=""),
             http_client=_FakeHttpClient(),
             retrieve=lambda query: _return_dense_result(query),
             output_dir=tmp_path,
@@ -164,7 +160,7 @@ def test_retrieval_evidence_smoke_fails_safely_for_incomplete_runtime_configurat
 
     assert manifest["outcome"] == "failed"
     assert manifest["failed_check"] == "runtime_configuration"
-    assert set(manifest["missing_configuration"]) == {"ADMIN_INVITE_CODE", "EMBEDDING_API_KEY"}
+    assert set(manifest["missing_configuration"]) == {"BOOTSTRAP_ADMIN_USERNAME", "EMBEDDING_API_KEY"}
     assert "test-qwen-api-key" not in (tmp_path / "run-002" / "manifest.json").read_text(encoding="utf-8")
 
 
@@ -200,8 +196,8 @@ def test_generation_smoke_proves_cited_normal_and_streaming_chat_without_recordi
     assert "retrieval evidence excerpt" not in serialized
 
 
-def test_retrieval_evidence_production_run_ids_create_distinct_administrators(tmp_path) -> None:
-    async def _run() -> tuple[str, str]:
+def test_retrieval_evidence_production_run_ids_do_not_create_administrators(tmp_path) -> None:
+    async def _run() -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
         first_client = _FakeHttpClient()
         second_client = _FakeHttpClient()
         for client, run_id in (
@@ -220,13 +216,14 @@ def test_retrieval_evidence_production_run_ids_create_distinct_administrators(tm
             )
             manifest = await runner.run()
             assert manifest["outcome"] == "passed"
-        return first_client.registration_usernames[0], second_client.registration_usernames[0]
+        return first_client.calls, second_client.calls
 
-    first_username, second_username = asyncio.run(_run())
+    first_calls, second_calls = asyncio.run(_run())
 
-    assert first_username.startswith("retrieval-evidence-")
-    assert second_username.startswith("retrieval-evidence-")
-    assert first_username != second_username
+    assert ("POST", "/api/v1/auth/register") not in first_calls
+    assert ("POST", "/api/v1/auth/register") not in second_calls
+    assert ("POST", "/api/v1/auth/login") in first_calls
+    assert ("POST", "/api/v1/auth/login") in second_calls
 
 
 async def _return_dense_result(query: str) -> _DenseResult:

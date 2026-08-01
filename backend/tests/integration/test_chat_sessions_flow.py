@@ -14,6 +14,7 @@ from app.model.base import Base
 from app.model.document import Document, DocumentChunk
 from app.repository.chat_repository import ChatRepository
 from app.service.chat_service import CHAT_JUDGE_PROVIDER, CHAT_RERANK_PROVIDER, CHAT_RETRIEVER_PROVIDER
+from tests.support.auth import create_authenticated_test_token
 
 
 class _InMemoryRedis:
@@ -36,15 +37,14 @@ def _extract_data(payload: dict) -> dict:
 
 
 def _auth_headers(client: TestClient, username: str = "chat-user", role: str = "user") -> dict[str, str]:
-    payload = {"username": username, "password": "secret-123", "role": role}
-    if role == "admin":
-        payload["admin_code"] = get_settings().admin_invite_code
-    response = client.post(
-        "/api/v1/auth/register",
-        json=payload,
+    token = asyncio.run(
+        create_authenticated_test_token(
+            client.app.state.test_auth_session_factory,
+            client.app.state.test_auth_redis,
+            username=username,
+            role=role,
+        )
     )
-    assert response.status_code == 200
-    token = response.json()["data"]["access_token"]
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -274,7 +274,9 @@ def test_chat_and_sessions_flow(monkeypatch) -> None:
         return fake_redis
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = override_get_redis_client
+    app.state.test_auth_redis = fake_redis
 
     registry = get_extension_registry()
     prev_retriever = registry.get_retriever(CHAT_RETRIEVER_PROVIDER)
@@ -446,7 +448,9 @@ def test_chat_reject_gate_when_no_evidence(monkeypatch) -> None:
         return fake_redis
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = override_get_redis_client
+    app.state.test_auth_redis = fake_redis
 
     registry = get_extension_registry()
     prev_retriever = registry.get_retriever(CHAT_RETRIEVER_PROVIDER)
@@ -511,7 +515,9 @@ def test_chat_smalltalk_fallback_without_evidence(monkeypatch) -> None:
         return fake_redis
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = override_get_redis_client
+    app.state.test_auth_redis = fake_redis
 
     registry = get_extension_registry()
     prev_retriever = registry.get_retriever(CHAT_RETRIEVER_PROVIDER)
@@ -597,7 +603,9 @@ def test_chat_dense_trace_uses_default_mixed_mode_retriever(monkeypatch) -> None
         return fake_redis
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = override_get_redis_client
+    app.state.test_auth_redis = fake_redis
 
     registry = get_extension_registry()
     prev_retriever = registry.get_retriever(CHAT_RETRIEVER_PROVIDER)
@@ -708,7 +716,9 @@ def test_chat_dense_failure_trace_marks_runtime_fallback_and_error(monkeypatch) 
         return fake_redis
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = override_get_redis_client
+    app.state.test_auth_redis = fake_redis
 
     registry = get_extension_registry()
     prev_retriever = registry.get_retriever(CHAT_RETRIEVER_PROVIDER)
@@ -827,7 +837,9 @@ def test_chat_dense_failure_full_lexical_fallback_reads_tail_of_published_live_c
         return fake_redis
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = override_get_redis_client
+    app.state.test_auth_redis = fake_redis
 
     registry = get_extension_registry()
     prev_retriever = registry.get_retriever(CHAT_RETRIEVER_PROVIDER)

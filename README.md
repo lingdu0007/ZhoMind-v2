@@ -8,18 +8,12 @@ Run these commands from the repository root:
 cp backend/.env.example backend/.env
 ```
 
-Edit `backend/.env` before startup. At minimum, fill the blank required values such as `JWT_SECRET`, `ADMIN_INVITE_CODE`, provider API keys, and any provider-specific base URLs or tokens you actually use.
+Edit `backend/.env` before startup. At minimum, fill the blank required values such as `JWT_SECRET`, Bootstrap Administrator credentials, provider API keys, and any provider-specific base URLs or tokens you actually use.
 
 Start the backend stack with your local ignored runtime config:
 
 ```bash
 docker compose up -d backend
-```
-
-Run the smoke script after the backend is healthy. If `backend/.env` sets `ADMIN_INVITE_CODE`, export the same value through `SMOKE_ADMIN_CODE` first:
-
-```bash
-SMOKE_ADMIN_CODE='<same as backend/.env ADMIN_INVITE_CODE>' node frontend/tests/user-path-smoke.mjs
 ```
 
 ## Opt-In Milvus Dense E2E Verification
@@ -37,7 +31,7 @@ RUN_MILVUS_E2E=1 MILVUS_URI=http://127.0.0.1:19530 EMBEDDING_API_KEY=test-milvus
 
 The Retrieval Smoke uses the existing administrator upload and document-build flow, then calls the existing dense retrieval implementation directly. It does not call a chat model.
 
-Keep the local provider configuration in the ignored `backend/.env`. The smoke requires a non-default `JWT_SECRET`, `ADMIN_INVITE_CODE`, and active Qwen embedding configuration (`EMBEDDING_API_KEY`, `EMBEDDING_BASE_URL`, `EMBEDDING_MODEL`, and `DENSE_EMBEDDING_DIM`). It never prints or writes those values.
+Keep the local provider configuration in the ignored `backend/.env`. The smoke requires a non-default `JWT_SECRET`, Bootstrap Administrator credentials, and active Qwen embedding configuration (`EMBEDDING_API_KEY`, `EMBEDDING_BASE_URL`, `EMBEDDING_MODEL`, and `DENSE_EMBEDDING_DIM`). It never prints or writes those values.
 
 Run it from the repository root:
 

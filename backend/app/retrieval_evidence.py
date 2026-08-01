@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
-import secrets
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -171,7 +170,7 @@ class RetrievalEvidenceSmoke:
                 )
 
             await self._expect_ok("health", "GET", "/api/v1/health")
-            access_token = await self._create_admin_and_login()
+            access_token = await self._login_bootstrap_administrator()
             headers = {"Authorization": f"Bearer {access_token}"}
             document_id, job_id = await self._upload_markdown(headers=headers)
             job = await self._wait_for_job(job_id=job_id, headers=headers)
@@ -242,8 +241,10 @@ class RetrievalEvidenceSmoke:
 
     def _missing_configuration(self) -> list[str]:
         missing: list[str] = []
-        if not self._settings.admin_invite_code.strip():
-            missing.append("ADMIN_INVITE_CODE")
+        if not self._settings.bootstrap_admin_username.strip():
+            missing.append("BOOTSTRAP_ADMIN_USERNAME")
+        if not self._settings.bootstrap_admin_password.strip():
+            missing.append("BOOTSTRAP_ADMIN_PASSWORD")
         if not self._settings.jwt_secret.strip() or self._settings.jwt_secret == "change-me":
             missing.append("JWT_SECRET")
         if not self._settings.embedding_api_key_configured:
@@ -269,26 +270,15 @@ class RetrievalEvidenceSmoke:
                 missing.append("MODEL")
         return missing
 
-    async def _create_admin_and_login(self) -> str:
-        # Prefixes such as production- make the first characters identical across runs.
-        username = f"retrieval-evidence-{sha256(self._run_id.encode('utf-8')).hexdigest()[:24]}"
-        password = secrets.token_urlsafe(24)
-        await self._expect_ok(
-            "administrator_registration",
-            "POST",
-            "/api/v1/auth/register",
-            json_body={
-                "username": username,
-                "password": password,
-                "role": "admin",
-                "admin_code": self._settings.admin_invite_code,
-            },
-        )
+    async def _login_bootstrap_administrator(self) -> str:
         login = await self._expect_ok(
             "administrator_login",
             "POST",
             "/api/v1/auth/login",
-            json_body={"username": username, "password": password},
+            json_body={
+                "username": self._settings.bootstrap_admin_username,
+                "password": self._settings.bootstrap_admin_password,
+            },
         )
         access_token = login.get("access_token")
         if not isinstance(access_token, str) or not access_token:

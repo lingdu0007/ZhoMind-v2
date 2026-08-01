@@ -69,20 +69,20 @@ test('Authentication Entry registers a Knowledge User before entering the workbe
   assert.equal(await page.getByRole('navigation').count(), 0);
 
   await page.getByRole('tab', { name: '注册' }).click();
-  await page.getByRole('radio', { name: '系统管理员' }).check();
-  assert.equal(await page.getByLabel('管理员邀请码').isVisible(), true);
-
-  await page.getByRole('radio', { name: '知识用户' }).check();
-  assert.equal(await page.getByLabel('管理员邀请码').isVisible(), false);
+  assert.equal(await page.getByRole('radio', { name: '系统管理员' }).count(), 0);
+  assert.equal(await page.getByLabel('团队邀请码').isVisible(), true);
 
   await page.getByLabel('用户名').fill('lin');
   await page.getByLabel('密码').fill('safe-password');
+  await page.getByLabel('团队邀请码').fill('team-invitation');
   await page.getByRole('button', { name: '完成注册' }).click();
 
   await page.waitForURL(/\/chat$/);
   await page.getByRole('heading', { name: '对话工作区' }).waitFor();
   assert.equal(await page.getByRole('navigation').count(), 1);
-  assert.deepEqual(registerPayloads, [{ username: 'lin', password: 'safe-password', role: 'user' }]);
+  assert.deepEqual(registerPayloads, [
+    { username: 'lin', password: 'safe-password', invitation_code: 'team-invitation' }
+  ]);
 });
 
 test('a stored token refreshes the server role before rejecting an administrator route and logout clears it', { timeout: 30000 }, async (t) => {

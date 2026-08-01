@@ -66,10 +66,28 @@ const run = async () => {
   const username = `smoke_user_${stamp}`;
   const password = 'smoke-pass-123';
 
+  const adminUsername = process.env.SMOKE_ADMIN_USERNAME?.trim();
+  const adminPassword = process.env.SMOKE_ADMIN_PASSWORD?.trim();
+  assert.ok(adminUsername && adminPassword, 'SMOKE_ADMIN_USERNAME and SMOKE_ADMIN_PASSWORD are required');
+
+  const loginAdmin = await request({
+    method: 'POST',
+    path: '/auth/login',
+    body: { username: adminUsername, password: adminPassword }
+  });
+  assert.equal(loginAdmin.status, 200, `Bootstrap Administrator login failed: ${formatErrorDetails(loginAdmin)}`);
+  const adminToken = loginAdmin.data?.access_token;
+  assert.ok(adminToken, 'missing admin access_token');
+
+  const invitation = await request({ method: 'POST', path: '/members/invitations', token: adminToken, body: {} });
+  assert.equal(invitation.status, 200, `Team Invitation creation failed: ${formatErrorDetails(invitation)}`);
+  const invitationCode = invitation.data?.invitation_code;
+  assert.ok(invitationCode, 'missing Team Invitation credential');
+
   const register = await request({
     method: 'POST',
     path: '/auth/register',
-    body: { username, password, role: 'user' }
+    body: { username, password, invitation_code: invitationCode }
   });
   assert.equal(register.status, 200, 'register failed');
 
@@ -92,41 +110,6 @@ const run = async () => {
     isForm: true
   });
   assert.equal(userUpload.status, 403, 'user upload should be forbidden');
-
-  const adminUsername = `smoke_admin_${stamp}`;
-  const adminCode = process.env.SMOKE_ADMIN_CODE?.trim();
-  if (!adminCode) {
-    console.warn(
-      '[warn] SMOKE_ADMIN_CODE is not set. Smoke will continue, but admin registration now depends on backend/.env ADMIN_INVITE_CODE.'
-    );
-  }
-  const adminRegisterBody = adminCode
-    ? { username: adminUsername, password, role: 'admin', admin_code: adminCode }
-    : { username: adminUsername, password, role: 'admin' };
-
-  const registerAdmin = await request({
-    method: 'POST',
-    path: '/auth/register',
-    body: adminRegisterBody
-  });
-  if (registerAdmin.status !== 200) {
-    const detail = formatErrorDetails(registerAdmin);
-    const adminCodeHint = adminCode
-      ? 'SMOKE_ADMIN_CODE is set, so it likely does not match backend/.env ADMIN_INVITE_CODE.'
-      : 'SMOKE_ADMIN_CODE is missing, so the request cannot match backend/.env ADMIN_INVITE_CODE unless the backend value is empty.';
-    throw new Error(
-      `admin register failed. Check backend/.env ADMIN_INVITE_CODE and ensure SMOKE_ADMIN_CODE matches it. ${adminCodeHint}${detail ? ` Backend response: ${detail}.` : ''}`
-    );
-  }
-
-  const loginAdmin = await request({
-    method: 'POST',
-    path: '/auth/login',
-    body: { username: adminUsername, password }
-  });
-  assert.equal(loginAdmin.status, 200, 'admin login failed');
-  const adminToken = loginAdmin.data?.access_token;
-  assert.ok(adminToken, 'missing admin access_token');
 
   const uploadUnsupportedForm = new FormData();
   uploadUnsupportedForm.append(

@@ -9,6 +9,7 @@ from app.common.exceptions import register_exception_handlers
 from app.common.logger import configure_logging
 from app.common.request_id import RequestIdMiddleware
 from app.infra.db import SessionLocal
+from app.service.member_admission_service import MemberAdmissionService
 from app.settings.service import SystemSettingsDraftService
 
 settings = get_settings()
@@ -23,6 +24,16 @@ async def lifespan(application: FastAPI):
             await SystemSettingsDraftService(session).restore_active_application()
     except (OSError, SQLAlchemyError):
         # The settings tables may not exist before migrations have run.
+        pass
+    try:
+        async with session_factory() as session:
+            settings = get_settings()
+            await MemberAdmissionService(session, redis=None).create_bootstrap_administrator(
+                username=settings.bootstrap_admin_username,
+                password=settings.bootstrap_admin_password,
+            )
+    except (OSError, SQLAlchemyError):
+        # The users table may not exist before migrations have run.
         pass
     yield
 

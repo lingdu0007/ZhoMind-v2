@@ -1,3 +1,5 @@
+import uuid
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,5 +17,23 @@ class UserRepository:
     async def create_user(self, username: str, password_hash: str, role: str) -> User:
         user = User(username=username, password_hash=password_hash, role=role)
         self.session.add(user)
+        await self.session.flush()
+        return user
+
+    async def has_bootstrap_administrator(self) -> bool:
+        result = await self.session.execute(select(User.id).where(User.is_bootstrap_administrator.is_(True)).limit(1))
+        return result.scalar_one_or_none() is not None
+
+    async def list_members(self) -> list[User]:
+        result = await self.session.execute(select(User).order_by(User.created_at.asc(), User.username.asc()))
+        return list(result.scalars())
+
+    async def promote(self, user: User) -> User:
+        user.role = "admin"
+        await self.session.flush()
+        return user
+
+    async def deactivate(self, user: User) -> User:
+        user.is_active = False
         await self.session.flush()
         return user
