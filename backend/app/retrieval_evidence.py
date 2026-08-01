@@ -22,7 +22,7 @@ from app.service.document_retrieval_service import MixedModeDocumentRetrieverSer
 
 _POLL_ATTEMPTS = 120
 _POLL_INTERVAL_SECONDS = 0.5
-_GENERATION_SMOKE_QUESTION = "生成带引用的回答应依据哪个知识版本？"
+_GENERATION_SMOKE_QUESTION = "根据验收事实，蓝松石版本在生成带引用回答时具有什么作用？"
 
 
 @dataclass(frozen=True)
@@ -295,7 +295,7 @@ class RetrievalEvidenceSmoke:
         sentinel = f"retrieval-evidence-{self._run_id}"
         source = (
             "# Generation Smoke Source\n\n"
-            "已发布知识版本是生成带引用回答的唯一依据。\n\n"
+            "验收事实：蓝松石版本是生成带引用回答的唯一已发布知识版本。\n\n"
             f"验证标识：{sentinel}\n"
         )
         upload = await self._expect_ok(
