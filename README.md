@@ -39,7 +39,7 @@ Run it from the repository root:
 ./retrieval-evidence smoke
 ```
 
-The command requires a clean local experiment branch, then starts a unique Compose project with separate ports and runtime volumes for that run. It stops that Compose project on exit, so repeated runs start with independent databases and indexes. The command writes a non-sensitive manifest to `../../evidence/runs/<run-id>/manifest.json`, reporting the document build, live Qwen embedding, the hashed embedding contract identity, Milvus indexing, and the retrieved dense candidate selected under the published-source retrieval contract. It exits nonzero for any failed acceptance check.
+The command requires a clean local experiment branch, then starts a unique Compose project with separate ports and runtime volumes for that run. It stops that Compose project on exit, so repeated runs start with independent databases and indexes. The command writes a non-sensitive manifest to `../../evidence/runs/<run-id>/manifest.json`, reporting the document build, live Qwen embedding, the hashed embedding contract identity, Milvus indexing, and proof that the retrieved dense candidate belongs to the just-ingested document. It exits nonzero for any failed acceptance check.
 
 ## Cited Generation Smoke
 

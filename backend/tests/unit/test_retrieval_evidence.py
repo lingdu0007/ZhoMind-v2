@@ -174,7 +174,7 @@ def test_retrieval_evidence_smoke_writes_non_sensitive_success_manifest(tmp_path
     assert manifest["checks"]["retrieval"] == {
         "candidate_document_id": "doc-ingested",
         "candidate_chunk_id": "chunk-1",
-        "candidate_is_published": True,
+        "candidate_belongs_to_ingested_document": True,
     }
     assert manifest["checks"]["chat_model"] == {"invoked": False}
 
@@ -188,7 +188,7 @@ def test_retrieval_evidence_smoke_writes_non_sensitive_success_manifest(tmp_path
     assert "test-jwt-value" not in serialized
 
 
-def test_generation_smoke_accepts_an_already_published_retrieval_candidate(tmp_path) -> None:
+def test_generation_smoke_rejects_a_dense_candidate_from_another_published_document(tmp_path) -> None:
     async def _run() -> dict:
         runner = RetrievalEvidenceSmoke(
             settings=_settings(ARK_API_KEY="test-ark-api-key", BASE_URL="https://llm.example.test/v1", MODEL="test-model"),
@@ -205,12 +205,9 @@ def test_generation_smoke_accepts_an_already_published_retrieval_candidate(tmp_p
 
     manifest = asyncio.run(_run())
 
-    assert manifest["outcome"] == "passed"
-    assert manifest["checks"]["retrieval"] == {
-        "candidate_document_id": "doc-existing",
-        "candidate_chunk_id": "chunk-1",
-        "candidate_is_published": True,
-    }
+    assert manifest["outcome"] == "failed"
+    assert manifest["failed_check"] == "retrieval"
+    assert manifest["failure_code"] == "INGESTED_DOCUMENT_NOT_RETRIEVED"
 
 
 def test_retrieval_evidence_smoke_fails_safely_for_incomplete_runtime_configuration(tmp_path) -> None:
