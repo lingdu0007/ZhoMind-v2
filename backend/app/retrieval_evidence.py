@@ -23,7 +23,6 @@ from app.service.document_retrieval_service import MixedModeDocumentRetrieverSer
 
 _POLL_ATTEMPTS = 120
 _POLL_INTERVAL_SECONDS = 0.5
-_GENERATION_SMOKE_QUESTION = "根据验收事实，蓝松石版本在生成带引用回答时具有什么作用？"
 
 
 @dataclass(frozen=True)
@@ -162,6 +161,8 @@ class RetrievalEvidenceSmoke:
 
     async def run(self) -> dict[str, Any]:
         started_at = self._now()
+        acceptance_time = self._acceptance_time(started_at)
+        question = self._generation_smoke_question(acceptance_time)
         try:
             missing = self._missing_configuration()
             if missing:
@@ -174,18 +175,18 @@ class RetrievalEvidenceSmoke:
             await self._expect_ok("health", "GET", "/api/v1/health")
             access_token = await self._login_bootstrap_administrator()
             headers = {"Authorization": f"Bearer {access_token}"}
-            document_id, job_id = await self._upload_markdown(headers=headers)
+            document_id, job_id = await self._upload_markdown(headers=headers, acceptance_time=acceptance_time)
             job = await self._wait_for_job(job_id=job_id, headers=headers)
             chunk_count = await self._verify_chunks(document_id=document_id, headers=headers)
             published_generation = await self._publish_document(document_id=document_id, headers=headers)
-            result = await self._retrieve(_GENERATION_SMOKE_QUESTION)
+            result = await self._retrieve(question)
             candidate = self._verify_dense_retrieval(result=result, document_id=document_id)
             chat_model_check = {"invoked": False}
             if self._include_generation:
                 knowledge_user_headers = await self._admit_knowledge_user(administrator_headers=headers)
                 chat_model_check = await self._verify_generation_loop(
                     headers=knowledge_user_headers,
-                    question=_GENERATION_SMOKE_QUESTION,
+                    question=question,
                     expected_source_id=str(candidate["chunk_id"]),
                 )
 
@@ -323,11 +324,22 @@ class RetrievalEvidenceSmoke:
             raise _SmokeFailure("knowledge_user_admission", "KNOWLEDGE_USER_ACCESS_TOKEN_MISSING")
         return {"Authorization": f"Bearer {access_token}"}
 
-    async def _upload_markdown(self, *, headers: Mapping[str, str]) -> tuple[str, str]:
+    @staticmethod
+    def _acceptance_time(started_at: datetime) -> str:
+        return (
+            f"{started_at.year}年{started_at.month}月{started_at.day}日"
+            f"{started_at.hour}时{started_at.minute:02d}分{started_at.second:02d}秒"
+        )
+
+    @staticmethod
+    def _generation_smoke_question(acceptance_time: str) -> str:
+        return f"根据{acceptance_time}的验收事实，蓝松石版本在生成带引用回答时具有什么作用？"
+
+    async def _upload_markdown(self, *, headers: Mapping[str, str], acceptance_time: str) -> tuple[str, str]:
         sentinel = f"retrieval-evidence-{self._run_id}"
         source = (
             "# Generation Smoke Source\n\n"
-            "验收事实：蓝松石版本是生成带引用回答的唯一已发布知识版本。\n\n"
+            f"验收事实：蓝松石版本在{acceptance_time}的生产验收中，是生成带引用回答的唯一已发布知识版本。\n\n"
             f"验证标识：{sentinel}\n"
         )
         upload = await self._expect_ok(
