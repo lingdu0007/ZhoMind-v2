@@ -29,90 +29,31 @@
         <section class="system-settings__section" aria-labelledby="model-provider-title">
           <div class="system-settings__section-heading">
             <h2 id="model-provider-title">模型与提供方</h2>
-            <p>仅保存待审核的模型与提供方草稿。</p>
+            <p>每次只配置一个生成服务商；保存的密钥仅可替换，不能读取或复制。</p>
           </div>
           <div class="system-settings__fields">
-            <label :class="{ 'system-settings__field--changed': isChanged('model_provider') }" class="system-settings__field">
+            <label :class="{ 'system-settings__field--changed': isChanged('provider_type') }" class="system-settings__field">
               <span>模型提供方</span>
-              <select v-model="draft.model_provider" :disabled="controlsDisabled" aria-label="模型提供方">
+              <select v-model="draft.provider_type" :disabled="controlsDisabled" aria-label="模型提供方">
                 <option value="ark">Ark</option>
                 <option value="openai">OpenAI</option>
                 <option value="anthropic">Anthropic</option>
               </select>
-              <small v-if="isChanged('model_provider')">模型提供方已修改</small>
-              <small v-if="fieldErrors.model_provider" class="system-settings__field-error">{{ fieldErrors.model_provider }}</small>
+              <small v-if="isChanged('provider_type')">模型提供方已修改</small>
+              <small v-if="fieldErrors.provider_type" class="system-settings__field-error">{{ fieldErrors.provider_type }}</small>
             </label>
-            <label :class="{ 'system-settings__field--changed': isChanged('llm_model') }" class="system-settings__field">
-              <span>语言模型</span>
-              <input v-model="draft.llm_model" :disabled="controlsDisabled" type="text" autocomplete="off" />
-              <small v-if="isChanged('llm_model')">语言模型已修改</small>
-              <small v-if="fieldErrors.llm_model" class="system-settings__field-error">{{ fieldErrors.llm_model }}</small>
+            <label :class="{ 'system-settings__field--changed': isChanged('model') }" class="system-settings__field">
+              <span>模型</span>
+              <input v-model="draft.model" :disabled="controlsDisabled" type="text" autocomplete="off" aria-label="生成模型" />
+              <small v-if="isChanged('model')">模型已修改</small>
+              <small v-if="fieldErrors.model" class="system-settings__field-error">{{ fieldErrors.model }}</small>
             </label>
-            <label :class="{ 'system-settings__field--changed': isChanged('embedding_model') }" class="system-settings__field">
-              <span>嵌入模型</span>
-              <input v-model="draft.embedding_model" :disabled="controlsDisabled" type="text" autocomplete="off" />
-              <small v-if="isChanged('embedding_model')">嵌入模型已修改</small>
-              <small v-if="fieldErrors.embedding_model" class="system-settings__field-error">{{ fieldErrors.embedding_model }}</small>
+            <label :class="{ 'system-settings__field--changed': isChanged('service_url') }" class="system-settings__field">
+              <span>服务 URL</span>
+              <input v-model="draft.service_url" :disabled="controlsDisabled" type="url" autocomplete="off" />
+              <small v-if="isChanged('service_url')">服务 URL 已修改</small>
+              <small v-if="fieldErrors.service_url" class="system-settings__field-error">{{ fieldErrors.service_url }}</small>
             </label>
-          </div>
-        </section>
-
-        <section class="system-settings__section" aria-labelledby="retrieval-strategy-title">
-          <div class="system-settings__section-heading">
-            <h2 id="retrieval-strategy-title">检索策略</h2>
-            <p>当前运行路径只接受迁移检索策略；草稿不会改变线上检索。</p>
-          </div>
-          <div class="system-settings__fields">
-            <label :class="{ 'system-settings__field--changed': isChanged('retrieval_strategy') }" class="system-settings__field">
-              <span>检索策略</span>
-              <select v-model="draft.retrieval_strategy" :disabled="controlsDisabled" aria-label="检索策略">
-                <option value="migration">迁移检索</option>
-              </select>
-              <small v-if="isChanged('retrieval_strategy')">检索策略已修改</small>
-              <small v-if="fieldErrors.retrieval_strategy" class="system-settings__field-error">{{ fieldErrors.retrieval_strategy }}</small>
-            </label>
-            <label :class="{ 'system-settings__field--changed': isChanged('retrieval_top_k') }" class="system-settings__field">
-              <span>候选数量</span>
-              <input v-model.number="draft.retrieval_top_k" :disabled="controlsDisabled" type="number" min="1" max="20" />
-              <small v-if="isChanged('retrieval_top_k')">候选数量已修改</small>
-              <small v-if="fieldErrors.retrieval_top_k" class="system-settings__field-error">{{ fieldErrors.retrieval_top_k }}</small>
-            </label>
-            <label :class="{ 'system-settings__field--changed': isChanged('score_threshold') }" class="system-settings__field">
-              <span>相似度阈值</span>
-              <input v-model.number="draft.score_threshold" :disabled="controlsDisabled" type="number" min="0" max="1" step="0.01" />
-              <small v-if="isChanged('score_threshold')">相似度阈值已修改</small>
-              <small v-if="fieldErrors.score_threshold" class="system-settings__field-error">{{ fieldErrors.score_threshold }}</small>
-            </label>
-          </div>
-        </section>
-
-        <section class="system-settings__section" aria-labelledby="storage-index-title">
-          <div class="system-settings__section-heading">
-            <h2 id="storage-index-title">存储与索引</h2>
-            <p>运行时会确认连接目标；更换索引名称需要独立的文档重建生命周期。</p>
-          </div>
-          <div class="system-settings__fields">
-            <label :class="{ 'system-settings__field--changed': isChanged('milvus_uri') }" class="system-settings__field">
-              <span>Milvus URI</span>
-              <input v-model="draft.milvus_uri" :disabled="controlsDisabled" type="url" autocomplete="off" />
-              <small v-if="isChanged('milvus_uri')">Milvus URI 已修改</small>
-              <small v-if="fieldErrors.milvus_uri" class="system-settings__field-error">{{ fieldErrors.milvus_uri }}</small>
-            </label>
-            <label :class="{ 'system-settings__field--changed': isChanged('index_name') }" class="system-settings__field">
-              <span>索引名称</span>
-              <input v-model="draft.index_name" :disabled="controlsDisabled" type="text" autocomplete="off" />
-              <small v-if="isChanged('index_name')">索引名称已修改</small>
-              <small v-if="fieldErrors.index_name" class="system-settings__field-error">{{ fieldErrors.index_name }}</small>
-            </label>
-          </div>
-        </section>
-
-        <section class="system-settings__section" aria-labelledby="security-runtime-title">
-          <div class="system-settings__section-heading">
-            <h2 id="security-runtime-title">安全与运行时</h2>
-            <p>敏感值只可替换，读取时不会返回原始内容。</p>
-          </div>
-          <div class="system-settings__fields">
             <label :class="{ 'system-settings__field--changed': Boolean(providerApiKey) }" class="system-settings__field">
               <span>Provider API 密钥</span>
               <input v-model="providerApiKey" :disabled="controlsDisabled" type="password" autocomplete="new-password" placeholder="仅在替换时填写" />
@@ -120,12 +61,6 @@
               <small v-else>尚未配置 Provider API 密钥。</small>
               <small v-if="providerApiKey">Provider API 密钥已修改</small>
               <small v-if="fieldErrors.provider_api_key" class="system-settings__field-error">{{ fieldErrors.provider_api_key }}</small>
-            </label>
-            <label :class="{ 'system-settings__field--changed': isChanged('runtime_timeout_ms') }" class="system-settings__field">
-              <span>运行时超时（毫秒）</span>
-              <input v-model.number="draft.runtime_timeout_ms" :disabled="controlsDisabled" type="number" min="1000" max="60000" step="1000" />
-              <small v-if="isChanged('runtime_timeout_ms')">运行时超时已修改</small>
-              <small v-if="fieldErrors.runtime_timeout_ms" class="system-settings__field-error">{{ fieldErrors.runtime_timeout_ms }}</small>
             </label>
           </div>
         </section>
@@ -159,15 +94,9 @@ import { apiAdapter } from '../api/adapters';
 
 const DESKTOP_MIN_WIDTH = 641;
 const emptyDraft = () => ({
-  model_provider: 'ark',
-  llm_model: '',
-  embedding_model: '',
-  retrieval_strategy: 'migration',
-  retrieval_top_k: 8,
-  score_threshold: 0.3,
-  milvus_uri: '',
-  index_name: 'zhomind_docs',
-  runtime_timeout_ms: 8000
+  provider_type: 'ark',
+  model: '',
+  service_url: ''
 });
 
 const draft = reactive(emptyDraft());
@@ -216,15 +145,9 @@ const applyActionLabel = computed(() => {
 });
 
 const cloneDraft = (source) => ({
-  model_provider: source.model_provider,
-  llm_model: source.llm_model,
-  embedding_model: source.embedding_model,
-  retrieval_strategy: source.retrieval_strategy,
-  retrieval_top_k: source.retrieval_top_k,
-  score_threshold: source.score_threshold,
-  milvus_uri: source.milvus_uri,
-  index_name: source.index_name,
-  runtime_timeout_ms: source.runtime_timeout_ms
+  provider_type: source.provider_type,
+  model: source.model,
+  service_url: source.service_url
 });
 
 const clearFieldErrors = () => {

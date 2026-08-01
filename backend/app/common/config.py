@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     # Applied System Settings are process-local runtime values, never browser input.
     runtime_retrieval_top_k: int = 3
     runtime_score_threshold: float = 0.0
+    runtime_generation_settings_managed: bool = False
 
     # LLM / ARK
     ark_api_key: str = Field("", alias="ARK_API_KEY")
@@ -72,6 +73,7 @@ class Settings(BaseSettings):
     openai_model: str = Field("gpt-4o-mini", alias="OPENAI_MODEL")
 
     anthropic_api_key: str = Field("", alias="ANTHROPIC_API_KEY")
+    anthropic_base_url: str = Field("", alias="ANTHROPIC_BASE_URL")
     anthropic_model: str = Field("claude-sonnet-4-6", alias="ANTHROPIC_MODEL")
 
     @staticmethod
