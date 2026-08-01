@@ -175,6 +175,7 @@ class RetrievalEvidenceSmoke:
             document_id, job_id = await self._upload_markdown(headers=headers)
             job = await self._wait_for_job(job_id=job_id, headers=headers)
             chunk_count = await self._verify_chunks(document_id=document_id, headers=headers)
+            published_generation = await self._publish_document(document_id=document_id, headers=headers)
             result = await self._retrieve(f"retrieval-evidence-{self._run_id}")
             candidate = self._verify_dense_retrieval(result=result, document_id=document_id)
             chat_model_check = {"invoked": False}
@@ -196,6 +197,10 @@ class RetrievalEvidenceSmoke:
                             "job_id": job_id,
                             "status": str(job["status"]),
                             "chunk_count": chunk_count,
+                        },
+                        "document_publication": {
+                            "document_id": document_id,
+                            "published_generation": published_generation,
                         },
                         "live_embedding": {
                             "provider": "qwen",
@@ -323,6 +328,18 @@ class RetrievalEvidenceSmoke:
         if not isinstance(chunk_count, int) or chunk_count <= 0:
             raise _SmokeFailure("document_build", "DOCUMENT_CHUNKS_MISSING")
         return chunk_count
+
+    async def _publish_document(self, *, document_id: str, headers: Mapping[str, str]) -> int:
+        payload = await self._expect_ok(
+            "document_publication",
+            "POST",
+            f"/api/v1/documents/{document_id}/publish",
+            headers=headers,
+        )
+        published_generation = payload.get("published_generation")
+        if isinstance(published_generation, bool) or not isinstance(published_generation, int) or published_generation < 1:
+            raise _SmokeFailure("document_publication", "DOCUMENT_PUBLICATION_INVALID")
+        return published_generation
 
     def _verify_dense_retrieval(self, *, result: RetrieveResult, document_id: str) -> Mapping[str, Any]:
         if result.dense_query_failed:
