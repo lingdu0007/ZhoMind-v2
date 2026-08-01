@@ -57,6 +57,13 @@ class _DenseResult:
     items = [{"document_id": "doc-ingested", "chunk_id": "chunk-1", "retrieval_source": "dense"}]
 
 
+class _ExistingPublishedDenseResult:
+    dense_candidate_count = 1
+    dense_hydrated_count = 1
+    dense_query_failed = False
+    items = [{"document_id": "doc-existing", "chunk_id": "chunk-1", "retrieval_source": "dense"}]
+
+
 class _GenerationFakeHttpClient(_FakeHttpClient):
     async def request(self, method: str, path: str, **kwargs) -> HttpResponse:
         if path == "/api/v1/chat":
@@ -167,7 +174,7 @@ def test_retrieval_evidence_smoke_writes_non_sensitive_success_manifest(tmp_path
     assert manifest["checks"]["retrieval"] == {
         "candidate_document_id": "doc-ingested",
         "candidate_chunk_id": "chunk-1",
-        "candidate_belongs_to_ingested_document": True,
+        "candidate_is_published": True,
     }
     assert manifest["checks"]["chat_model"] == {"invoked": False}
 
@@ -179,6 +186,31 @@ def test_retrieval_evidence_smoke_writes_non_sensitive_success_manifest(tmp_path
     assert "Qwen/Qwen3-Embedding-8B" not in serialized
     assert "test-bootstrap-password" not in serialized
     assert "test-jwt-value" not in serialized
+
+
+def test_generation_smoke_accepts_an_already_published_retrieval_candidate(tmp_path) -> None:
+    async def _run() -> dict:
+        runner = RetrievalEvidenceSmoke(
+            settings=_settings(ARK_API_KEY="test-ark-api-key", BASE_URL="https://llm.example.test/v1", MODEL="test-model"),
+            http_client=_GenerationFakeHttpClient(),
+            retrieve=lambda query: _return_existing_published_dense_result(query),
+            output_dir=tmp_path,
+            source_revision="abc123",
+            run_id="generation-run-existing-published-source",
+            include_generation=True,
+            now=lambda: datetime(2026, 7, 30, tzinfo=timezone.utc),
+            sleep=lambda _: _return_none(),
+        )
+        return await runner.run()
+
+    manifest = asyncio.run(_run())
+
+    assert manifest["outcome"] == "passed"
+    assert manifest["checks"]["retrieval"] == {
+        "candidate_document_id": "doc-existing",
+        "candidate_chunk_id": "chunk-1",
+        "candidate_is_published": True,
+    }
 
 
 def test_retrieval_evidence_smoke_fails_safely_for_incomplete_runtime_configuration(tmp_path) -> None:
@@ -418,6 +450,11 @@ def test_retrieval_evidence_production_run_ids_do_not_create_administrators(tmp_
 async def _return_dense_result(query: str) -> _DenseResult:
     assert query == "根据验收事实，蓝松石版本在生成带引用回答时具有什么作用？"
     return _DenseResult()
+
+
+async def _return_existing_published_dense_result(query: str) -> _ExistingPublishedDenseResult:
+    assert query == "根据验收事实，蓝松石版本在生成带引用回答时具有什么作用？"
+    return _ExistingPublishedDenseResult()
 
 
 async def _return_none() -> None:

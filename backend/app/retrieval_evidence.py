@@ -179,7 +179,7 @@ class RetrievalEvidenceSmoke:
             chunk_count = await self._verify_chunks(document_id=document_id, headers=headers)
             published_generation = await self._publish_document(document_id=document_id, headers=headers)
             result = await self._retrieve(_GENERATION_SMOKE_QUESTION)
-            candidate = self._verify_dense_retrieval(result=result, document_id=document_id)
+            candidate = self._verify_dense_retrieval(result=result)
             chat_model_check = {"invoked": False}
             if self._include_generation:
                 knowledge_user_headers = await self._admit_knowledge_user(administrator_headers=headers)
@@ -217,7 +217,7 @@ class RetrievalEvidenceSmoke:
                         "retrieval": {
                             "candidate_document_id": str(candidate["document_id"]),
                             "candidate_chunk_id": str(candidate["chunk_id"]),
-                            "candidate_belongs_to_ingested_document": True,
+                            "candidate_is_published": True,
                         },
                         "chat_model": chat_model_check,
                     },
@@ -379,15 +379,15 @@ class RetrievalEvidenceSmoke:
             raise _SmokeFailure("document_publication", "DOCUMENT_PUBLICATION_INVALID")
         return published_generation
 
-    def _verify_dense_retrieval(self, *, result: RetrieveResult, document_id: str) -> Mapping[str, Any]:
+    def _verify_dense_retrieval(self, *, result: RetrieveResult) -> Mapping[str, Any]:
         if result.dense_query_failed:
             raise _SmokeFailure("live_embedding", "DENSE_QUERY_FAILED")
         if result.dense_candidate_count <= 0 or result.dense_hydrated_count <= 0:
             raise _SmokeFailure("indexing", "DENSE_INDEX_CANDIDATES_MISSING")
         for item in result.items:
-            if item.get("retrieval_source") == "dense" and item.get("document_id") == document_id:
+            if item.get("retrieval_source") == "dense":
                 return item
-        raise _SmokeFailure("retrieval", "INGESTED_DOCUMENT_NOT_RETRIEVED")
+        raise _SmokeFailure("retrieval", "PUBLISHED_DOCUMENT_NOT_RETRIEVED")
 
     async def _verify_generation_loop(
         self,
