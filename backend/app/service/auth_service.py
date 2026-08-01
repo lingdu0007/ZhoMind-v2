@@ -7,6 +7,7 @@ from app.common.exceptions import AppError
 from app.common.security import build_auth_session_key, create_access_token, decode_access_token, hash_password, verify_password
 from app.service.member_admission_service import MemberAdmissionService
 from app.repository.user_repository import UserRepository
+from app.operations.limits import MAX_ACTIVE_MEMBERS
 
 
 class AuthService:
@@ -45,6 +46,13 @@ class AuthService:
             raise AppError(status_code=409, code="RESOURCE_CONFLICT", message="username already exists")
 
         await MemberAdmissionService(self.session, self.redis).verify_registration_invitation(invitation_code)
+        await self.repo.lock_active_members()
+        if await self.repo.count_active_members() >= MAX_ACTIVE_MEMBERS:
+            raise AppError(
+                status_code=409,
+                code="ACTIVE_MEMBER_LIMIT_REACHED",
+                message="the first-release active member limit has been reached",
+            )
 
         user = await self.repo.create_user(
             username=normalized_username,

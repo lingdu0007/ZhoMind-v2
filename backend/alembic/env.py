@@ -13,6 +13,7 @@ from app.common.config import get_settings
 from app.model.base import Base
 from app.model.chat import ChatMessage, ChatSession
 from app.model.document import Document, DocumentChunk, DocumentJob
+from app.model.operational_event import OperationalEvent
 from app.model.system_settings import SystemSettingsDraft, SystemSettingsState
 from app.model.team_invitation import TeamInvitation
 from app.model.user import User

@@ -6,12 +6,14 @@ from contextlib import suppress
 import inspect
 
 from app.common.exceptions import AppError
+from app.operations.limits import MAX_DOCUMENT_BUILD_WORKERS
 
 
 class DocumentJobDispatcher:
     def __init__(self) -> None:
         self._tasks: dict[str, tuple[asyncio.Task[None], Awaitable[None]]] = {}
         self._lock = asyncio.Lock()
+        self._worker_slots = asyncio.Semaphore(MAX_DOCUMENT_BUILD_WORKERS)
 
     async def enqueue(self, job_id: str, coro: Awaitable[None]) -> str:
         async with self._lock:
@@ -48,7 +50,8 @@ class DocumentJobDispatcher:
 
     async def _run(self, *, job_id: str, coro: Awaitable[None]) -> None:
         try:
-            await coro
+            async with self._worker_slots:
+                await coro
         except asyncio.CancelledError:
             raise
         except AppError:

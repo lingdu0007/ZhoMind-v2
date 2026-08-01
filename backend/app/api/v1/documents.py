@@ -31,6 +31,7 @@ from app.infra.db import get_db_session
 from app.infra.redis import get_redis_client
 from app.model.chat import ChatMessage
 from app.model.document import Document, DocumentChunk, DocumentJob
+from app.operations.limits import MAX_PUBLISHED_SOURCES, MAX_UPLOAD_BYTES
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 _job_dispatcher = DocumentJobDispatcher()
@@ -172,7 +173,7 @@ def _validate_supported_upload_file_type(file_type: str) -> None:
 
 
 def _validate_upload_content(filename: str, file_type: str, content: bytes) -> None:
-    if len(content) > 25 * 1024 * 1024:
+    if len(content) > MAX_UPLOAD_BYTES:
         raise AppError(
             status_code=413,
             code="DOC_FILE_TOO_LARGE",
@@ -193,6 +194,27 @@ async def _get_document_or_404(session: AsyncSession, document_id: str) -> Docum
     if document is None:
         raise AppError(status_code=404, code="RESOURCE_NOT_FOUND", message="document not found")
     return document
+
+
+async def _ensure_published_source_capacity(session: AsyncSession, *, document: Document) -> None:
+    if document.published_generation > 0:
+        return
+    await session.execute(
+        select(Document.id)
+        .where(Document.deleted_at.is_(None), Document.published_generation > 0)
+        .with_for_update()
+    )
+    published_sources = await session.scalar(
+        select(func.count())
+        .select_from(Document)
+        .where(Document.deleted_at.is_(None), Document.published_generation > 0)
+    )
+    if int(published_sources or 0) >= MAX_PUBLISHED_SOURCES:
+        raise AppError(
+            status_code=409,
+            code="PUBLISHED_SOURCE_LIMIT_REACHED",
+            message="the first-release published source limit has been reached",
+        )
 
 
 async def _ensure_document_mutations_allowed(redis: Redis) -> None:
@@ -670,6 +692,7 @@ async def publish_document(
             message="document has no candidate build ready for publication",
             detail={"document_id": document_id},
         )
+    await _ensure_published_source_capacity(session, document=document)
 
     publish_result = await session.execute(
         Document.__table__.update()
@@ -982,6 +1005,13 @@ async def cancel_job(
     if job is None:
         raise AppError(status_code=404, code="RESOURCE_NOT_FOUND", message="job not found")
 
+    backend = get_task_backend("inmemory")
+    with suppress(Exception):
+        await backend.cancel(job.id)
+    with suppress(Exception):
+        _dispatcher_loop.submit(_job_dispatcher.cancel(job.id))
+    await session.refresh(job)
+
     if job.status in {"queued", "running"}:
         document_result = await session.execute(select(Document).where(Document.id == job.document_id))
         document = document_result.scalar_one_or_none()
@@ -1003,11 +1033,22 @@ async def cancel_job(
         if not job.message:
             job.message = "job canceled by user"
 
+    if job.status == "canceled":
+        document = await session.get(Document, job.document_id)
+        if document is not None and document.deleted_at is None:
+            if job.build_generation is not None and document.latest_requested_generation == job.build_generation:
+                document.latest_requested_generation = document.published_generation
+            if document.published_generation > 0:
+                document.status = "ready"
+            if (
+                job.build_generation is not None
+                and document.active_build_generation == job.build_generation
+                and document.active_build_job_id == job.id
+            ):
+                document.active_build_generation = None
+                document.active_build_job_id = None
+                document.active_build_heartbeat_at = None
+
     await session.commit()
-    backend = get_task_backend("inmemory")
-    with suppress(Exception):
-        await backend.cancel(job.id)
-    with suppress(Exception):
-        _dispatcher_loop.submit(_job_dispatcher.cancel(job.id))
 
     return _ok(_serialize_job(job))
