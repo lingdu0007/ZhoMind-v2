@@ -26,6 +26,11 @@ class _FakeHttpClient:
             self._job_polls += 1
             status = "running" if self._job_polls == 1 else "succeeded"
             return HttpResponse(status_code=200, payload={"code": "OK", "data": {"status": status, "stage": "completed"}})
+        if path == "/api/v1/documents/doc-ingested/publish":
+            return HttpResponse(
+                status_code=200,
+                payload={"code": "OK", "data": {"document_id": "doc-ingested", "status": "ready", "published_generation": 1}},
+            )
         if path == "/api/v1/documents/doc-ingested/chunks?page=1&page_size=1":
             return HttpResponse(
                 status_code=200,
@@ -118,6 +123,10 @@ def test_retrieval_evidence_smoke_writes_non_sensitive_success_manifest(tmp_path
         "job_id": "job-1",
         "status": "succeeded",
         "chunk_count": 1,
+    }
+    assert manifest["checks"]["document_publication"] == {
+        "document_id": "doc-ingested",
+        "published_generation": 1,
     }
     assert manifest["checks"]["live_embedding"] == {
         "provider": "qwen",
