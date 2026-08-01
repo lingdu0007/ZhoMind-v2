@@ -8,6 +8,7 @@ from app.infra.db import get_db_session
 from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
+from tests.support.auth import create_authenticated_test_token
 
 
 class _InMemoryRedis:
@@ -26,12 +27,13 @@ class _InMemoryRedis:
 
 
 def _auth_headers(client: TestClient, username: str = "bob") -> dict[str, str]:
-    response = client.post(
-        "/api/v1/auth/register",
-        json={"username": username, "password": "secret-123", "role": "user"},
+    token = asyncio.run(
+        create_authenticated_test_token(
+            client.app.state.test_auth_session_factory,
+            client.app.state.test_auth_redis,
+            username=username,
+        )
     )
-    assert response.status_code == 200
-    token = response.json()["data"]["access_token"]
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -51,7 +53,9 @@ def test_sessions_route_exists_and_returns_envelope() -> None:
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     try:
         with TestClient(app) as client:

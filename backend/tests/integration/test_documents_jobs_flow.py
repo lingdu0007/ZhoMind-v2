@@ -16,6 +16,7 @@ from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
 from app.model.document import Document, DocumentChunk, DocumentJob
+from tests.support.auth import create_authenticated_test_token
 
 
 class _InMemoryRedis:
@@ -48,17 +49,12 @@ class _InMemoryRedis:
 
 
 async def _create_admin_token(client: TestClient, username: str = "admin") -> str:
-    response = client.post(
-        "/api/v1/auth/register",
-        json={
-            "username": username,
-            "password": "secret-123",
-            "role": "admin",
-            "admin_code": "test-admin-code",
-        },
+    return await create_authenticated_test_token(
+        client.app.state.test_auth_session_factory,
+        client.app.state.test_auth_redis,
+        username=username,
+        role="admin",
     )
-    assert response.status_code == 200
-    return response.json()["data"]["access_token"]
 
 
 def _admin_headers(token: str) -> dict[str, str]:
@@ -394,10 +390,9 @@ def test_documents_and_jobs_flow(monkeypatch) -> None:
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
-
-    previous_admin_code = app.state.__dict__.get("_test_admin_invite_code", None)
-
+    app.state.test_auth_redis = fake_redis
     from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
 
@@ -420,8 +415,6 @@ def test_documents_and_jobs_flow(monkeypatch) -> None:
     monkeypatch.setattr(documents_api, "_build_document_runner", _build_document_runner_with_gate)
 
     settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
 
     try:
         with TestClient(app) as client:
@@ -664,7 +657,6 @@ def test_documents_and_jobs_flow(monkeypatch) -> None:
             post_delete_data = _extract_data(post_delete_docs.json())
             assert post_delete_data["items"] == []
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -688,13 +680,13 @@ def test_documents_and_jobs_flow_tombstone_visibility_after_delete() -> None:
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     from app.common.config import get_settings
 
     settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
 
     try:
         with TestClient(app) as client:
@@ -735,7 +727,6 @@ def test_documents_and_jobs_flow_tombstone_visibility_after_delete() -> None:
             assert tombstoned_document is not None
             assert tombstoned_document.deleted_at is not None
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -759,14 +750,14 @@ def test_documents_migration_drain_status_and_resume(monkeypatch) -> None:
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
 
     settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 1)
 
     try:
@@ -807,7 +798,6 @@ def test_documents_migration_drain_status_and_resume(monkeypatch) -> None:
             )
             assert unblocked_upload.status_code == 200
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -831,14 +821,14 @@ def test_documents_migration_drain_blocks_cancel_job(monkeypatch) -> None:
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
 
     settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
 
     async def _seed_cancel_target() -> None:
@@ -892,7 +882,6 @@ def test_documents_migration_drain_blocks_cancel_job(monkeypatch) -> None:
             assert persisted_job is not None
             assert persisted_job.status == "queued"
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -916,13 +905,13 @@ def test_documents_migration_reconcile_only_cancels_queued_jobs(monkeypatch) -> 
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     from app.common.config import get_settings
 
     settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
     from app.api.v1 import documents as documents_api
 
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
@@ -1088,7 +1077,6 @@ def test_documents_migration_reconcile_only_cancels_queued_jobs(monkeypatch) -> 
             assert persisted_running_job.progress == 60
             assert persisted_running_job.message == "running"
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -1112,13 +1100,13 @@ def test_documents_migration_reconcile_requires_active_drain() -> None:
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     from app.common.config import get_settings
 
     settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
 
     try:
         with TestClient(app) as client:
@@ -1129,7 +1117,6 @@ def test_documents_migration_reconcile_requires_active_drain() -> None:
             assert reconcile_response.status_code == 409
             assert reconcile_response.json()["code"] == "DOC_MIGRATION_DRAIN_INACTIVE"
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -1255,11 +1242,11 @@ def test_documents_dense_status_merges_operator_and_dense_counts(monkeypatch) ->
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 2)
     monkeypatch.setattr(
         documents_api,
@@ -1290,7 +1277,6 @@ def test_documents_dense_status_merges_operator_and_dense_counts(monkeypatch) ->
             assert data["published_live_stale_generation_documents"] == 1
             assert data["tombstoned_current_fingerprint_documents"] == 1
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -1314,14 +1300,14 @@ def test_documents_dense_backfill_and_dense_reconcile_require_active_drain(monke
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
 
     settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
 
     try:
@@ -1337,7 +1323,6 @@ def test_documents_dense_backfill_and_dense_reconcile_require_active_drain(monke
             assert reconcile_response.status_code == 409
             assert reconcile_response.json()["code"] == "DOC_MIGRATION_DRAIN_INACTIVE"
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -1361,7 +1346,9 @@ def test_documents_dense_backfill_returns_dense_mode_inactive_when_drain_ready(m
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
@@ -1379,8 +1366,6 @@ def test_documents_dense_backfill_returns_dense_mode_inactive_when_drain_ready(m
     get_milvus_provider.cache_clear()
 
     settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
 
     try:
@@ -1399,7 +1384,6 @@ def test_documents_dense_backfill_returns_dense_mode_inactive_when_drain_ready(m
             assert reconcile_response.status_code == 409
             assert reconcile_response.json()["code"] == "DOC_DENSE_MODE_INACTIVE"
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         get_milvus_provider.cache_clear()
         get_extension_registry.cache_clear()
@@ -1548,11 +1532,11 @@ def test_documents_dense_backfill_indexes_eligible_published_docs(monkeypatch) -
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
     monkeypatch.setattr(
         documents_api,
@@ -1605,7 +1589,6 @@ def test_documents_dense_backfill_indexes_eligible_published_docs(monkeypatch) -
             assert persisted_active.dense_ready_generation == 0
             assert persisted_active.dense_ready_fingerprint is None
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -1692,11 +1675,11 @@ def test_documents_dense_reconcile_clears_tombstoned_and_stale_current_fingerpri
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
     monkeypatch.setattr(
         documents_api,
@@ -1741,7 +1724,6 @@ def test_documents_dense_reconcile_clears_tombstoned_and_stale_current_fingerpri
             assert persisted_keep.dense_ready_generation == 1
             assert persisted_keep.dense_ready_fingerprint == current_fingerprint
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -1798,14 +1780,14 @@ def test_documents_dense_status_reports_queued_only_drain_as_not_ready_for_dense
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
 
     settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
 
     try:
@@ -1838,7 +1820,6 @@ def test_documents_dense_status_reports_queued_only_drain_as_not_ready_for_dense
             assert reconcile_response.status_code == 409
             assert reconcile_response.json()["code"] == "DOC_MIGRATION_NOT_READY"
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -1976,7 +1957,9 @@ def test_documents_enqueue_failure_compensation(monkeypatch) -> None:
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
@@ -1992,8 +1975,6 @@ def test_documents_enqueue_failure_compensation(monkeypatch) -> None:
     monkeypatch.setattr(documents_api, "_enqueue_document_task", _maybe_fail_enqueue_task)
 
     settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
 
     try:
         with TestClient(app) as client:
@@ -2096,7 +2077,6 @@ def test_documents_enqueue_failure_compensation(monkeypatch) -> None:
             )
             assert reupload_after_tombstone.status_code == 200
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -2120,7 +2100,9 @@ def test_documents_batch_enqueue_failure_compensates_all_items(monkeypatch) -> N
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
@@ -2128,8 +2110,6 @@ def test_documents_batch_enqueue_failure_compensates_all_items(monkeypatch) -> N
     original_enqueue_task = documents_api._enqueue_document_task
     original_enqueue_runner = documents_api._enqueue_document_runner
     settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
 
     try:
         with TestClient(app) as client:
@@ -2218,7 +2198,6 @@ def test_documents_batch_enqueue_failure_compensates_all_items(monkeypatch) -> N
                 for item in created_batch_jobs
             )
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -2242,16 +2221,15 @@ def test_documents_requires_admin_role() -> None:
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     try:
         with TestClient(app) as client:
-            register_response = client.post(
-                "/api/v1/auth/register",
-                json={"username": "user1", "password": "secret-123", "role": "user"},
+            token = asyncio.run(
+                create_authenticated_test_token(session_factory, fake_redis, username="user1")
             )
-            assert register_response.status_code == 200
-            token = register_response.json()["data"]["access_token"]
             headers = _admin_headers(token)
 
             response = client.get("/api/v1/documents", headers=headers)

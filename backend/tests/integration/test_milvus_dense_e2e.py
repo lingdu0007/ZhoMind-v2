@@ -18,10 +18,10 @@ from app.model.base import Base
 from app.model.document import Document, DocumentChunk
 from app.rag.dense_contract import build_embedding_contract_fingerprint, build_milvus_collection_name
 from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
+from tests.support.auth import create_authenticated_test_token
 
 pytestmark = pytest.mark.skipif(not os.getenv("RUN_MILVUS_E2E"), reason="requires RUN_MILVUS_E2E=1")
 
-_TEST_ADMIN_CODE = "test-admin-code"
 _TEST_QUERY = "s3 dense milvus sentinel"
 
 
@@ -75,17 +75,12 @@ def _admin_headers(token: str) -> dict[str, str]:
 
 
 async def _create_admin_token(client: TestClient, username: str = "milvus-admin") -> str:
-    response = client.post(
-        "/api/v1/auth/register",
-        json={
-            "username": username,
-            "password": "secret-123",
-            "role": "admin",
-            "admin_code": _TEST_ADMIN_CODE,
-        },
+    return await create_authenticated_test_token(
+        client.app.state.test_auth_session_factory,
+        client.app.state.test_auth_redis,
+        username=username,
+        role="admin",
     )
-    assert response.status_code == 200
-    return response.json()["data"]["access_token"]
 
 
 def _poll_job_until_terminal(
@@ -262,10 +257,9 @@ def test_milvus_dense_upload_and_retrieval_e2e(tmp_path) -> None:
     registry = get_extension_registry()
     registry.register_embedding("embedding-default", _StubEmbeddingProvider())
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
-
-    original_admin_code = settings.admin_invite_code
-    settings.admin_invite_code = _TEST_ADMIN_CODE
+    app.state.test_auth_redis = fake_redis
     _drop_collection_if_exists(collection_name)
 
     try:
@@ -320,7 +314,6 @@ def test_milvus_dense_upload_and_retrieval_e2e(tmp_path) -> None:
         assert retrieved.items[0]["content_preview"] == hydrated_chunk.content[:160]
         assert _TEST_QUERY in hydrated_chunk.content
     finally:
-        settings.admin_invite_code = original_admin_code
         app.dependency_overrides.clear()
         _drop_collection_if_exists(collection_name)
         asyncio.run(db_engine.dispose())

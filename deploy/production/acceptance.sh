@@ -36,7 +36,7 @@ require_value() {
 [[ -n "${SOURCE_REVISION:-}" ]] || fail "SOURCE_REVISION is required"
 load_env
 
-for variable in ADMIN_INVITE_CODE; do
+for variable in BOOTSTRAP_ADMIN_USERNAME BOOTSTRAP_ADMIN_PASSWORD; do
   require_value "$variable"
 done
 
@@ -66,21 +66,8 @@ homepage=$(curl "${curl_args[@]}" "$base_url/")
 [[ "$homepage" == *'id="app"'* ]] || fail "frontend application shell is missing"
 printf 'Caddy static frontend path passed\n'
 
-acceptance_username="deployment-acceptance-$(date +%s)-$RANDOM"
-acceptance_password="$(openssl rand -hex 24)"
-registration_json=$(curl "${curl_args[@]}" -H 'Content-Type: application/json' \
-  --data "{\"username\":\"$acceptance_username\",\"password\":\"$acceptance_password\",\"role\":\"admin\",\"admin_code\":\"$ADMIN_INVITE_CODE\"}" \
-  "$base_url/api/auth/register")
-printf '%s' "$registration_json" | python3 -c '
-import json
-import sys
-payload = json.load(sys.stdin)
-if payload.get("code") != "OK":
-    raise SystemExit("admin registration did not return code=OK")
-'
-
 login_json=$(curl "${curl_args[@]}" -H 'Content-Type: application/json' \
-  --data "{\"username\":\"$acceptance_username\",\"password\":\"$acceptance_password\"}" \
+  --data "{\"username\":\"$BOOTSTRAP_ADMIN_USERNAME\",\"password\":\"$BOOTSTRAP_ADMIN_PASSWORD\"}" \
   "$base_url/api/auth/login")
 access_token=$(printf '%s' "$login_json" | python3 -c '
 import json
@@ -99,7 +86,7 @@ payload = json.load(sys.stdin)
 if payload.get("data", {}).get("role") != "admin":
     raise SystemExit("authenticated identity did not report admin role")
 '
-printf 'public administrator registration, login, and identity path passed\n'
+printf 'Bootstrap Administrator login and identity path passed\n'
 
 evidence_directory="$DEPLOY_APP_DIR/evidence"
 as_root install -d -m 0750 "$evidence_directory"

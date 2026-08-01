@@ -47,21 +47,9 @@
           <input id="auth-password" v-model="form.password" type="password" autocomplete="current-password" required />
         </div>
 
-        <fieldset v-if="mode === 'register'" class="auth-entry__role-picker">
-          <legend>注册身份</legend>
-          <label>
-            <input v-model="form.role" type="radio" value="user" />
-            <span>知识用户</span>
-          </label>
-          <label>
-            <input v-model="form.role" type="radio" value="admin" />
-            <span>系统管理员</span>
-          </label>
-        </fieldset>
-
-        <div v-if="mode === 'register' && form.role === 'admin'" class="auth-entry__field">
-          <label for="auth-admin-code">管理员邀请码</label>
-          <input id="auth-admin-code" v-model.trim="form.adminCode" autocomplete="off" required />
+        <div v-if="mode === 'register'" class="auth-entry__field">
+          <label for="auth-invitation-code">团队邀请码</label>
+          <input id="auth-invitation-code" v-model.trim="form.invitationCode" autocomplete="off" required />
         </div>
 
         <p v-if="errorMessage" class="auth-entry__error" role="alert">{{ errorMessage }}</p>
@@ -85,13 +73,12 @@ const errorMessage = ref('');
 const form = reactive({
   username: '',
   password: '',
-  role: 'user',
-  adminCode: ''
+  invitationCode: ''
 });
 
 const formatAuthError = (error) => {
   if (error?.code === 'AUTH_INVALID_CREDENTIALS') return '用户名或密码不正确，请核对后重试。';
-  if (error?.code === 'AUTH_FORBIDDEN') return '管理员邀请码无效，请核对后重试。';
+  if (error?.code === 'INVITATION_INVALID') return '团队邀请码无效、已过期或已撤销，请核对后重试。';
   if (error?.code === 'VALIDATION_ERROR') return '请填写用户名和密码。';
   return error?.message || '认证未完成，请稍后重试。';
 };
@@ -102,13 +89,11 @@ const submit = async () => {
     if (mode.value === 'login') {
       await authStore.login({ username: form.username, password: form.password });
     } else {
-      const payload = {
+      await authStore.register({
         username: form.username,
         password: form.password,
-        role: form.role
-      };
-      if (form.role === 'admin') payload.admin_code = form.adminCode;
-      await authStore.register(payload);
+        invitation_code: form.invitationCode
+      });
     }
     await router.replace({ name: 'chat' });
   } catch (error) {
@@ -209,8 +194,7 @@ h1 {
   gap: 18px;
 }
 
-.auth-entry__field,
-.auth-entry__role-picker {
+.auth-entry__field {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -219,8 +203,7 @@ h1 {
   border: 0;
 }
 
-.auth-entry__field label,
-.auth-entry__role-picker legend {
+.auth-entry__field label {
   color: var(--color-ink-soft);
   font-size: 13px;
   font-weight: 600;
@@ -234,18 +217,6 @@ h1 {
   background: var(--color-paper-raised);
   color: var(--color-ink);
   font: inherit;
-}
-
-.auth-entry__role-picker {
-  gap: 10px;
-}
-
-.auth-entry__role-picker label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--color-ink);
-  cursor: pointer;
 }
 
 .auth-entry__error {

@@ -34,8 +34,7 @@ async def register(
     data = await AuthService(session, redis=redis).register(
         username=payload.username,
         password=payload.password,
-        role=payload.role,
-        admin_code=payload.admin_code,
+        invitation_code=payload.invitation_code,
     )
     return ok_response(data=data, request_id=get_request_id())
 

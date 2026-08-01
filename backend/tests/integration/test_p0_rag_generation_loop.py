@@ -11,6 +11,7 @@ from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
 from app.model.document import Document, DocumentChunk
+from tests.support.auth import create_authenticated_test_token
 
 
 class _InMemoryRedis:
@@ -120,17 +121,16 @@ def test_knowledge_user_chat_cites_only_published_document_in_normal_and_streami
             yield session
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
     registry = get_extension_registry()
     registry.register_llm("ark", provider)
 
     try:
         with TestClient(app) as client:
-            registration = client.post(
-                "/api/v1/auth/register",
-                json={"username": "knowledge-user", "password": "secret-123", "role": "user"},
-            )
-            headers = {"Authorization": f"Bearer {registration.json()['data']['access_token']}"}
+            token = asyncio.run(create_authenticated_test_token(session_factory, fake_redis, username="knowledge-user"))
+            headers = {"Authorization": f"Bearer {token}"}
 
             response = client.post(
                 "/api/v1/chat",
@@ -194,17 +194,16 @@ def test_knowledge_user_with_no_published_evidence_is_not_sent_to_generation(mon
             yield session
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
     registry = get_extension_registry()
     registry.register_llm("ark", provider)
 
     try:
         with TestClient(app) as client:
-            registration = client.post(
-                "/api/v1/auth/register",
-                json={"username": "no-evidence-user", "password": "secret-123", "role": "user"},
-            )
-            headers = {"Authorization": f"Bearer {registration.json()['data']['access_token']}"}
+            token = asyncio.run(create_authenticated_test_token(session_factory, fake_redis, username="no-evidence-user"))
+            headers = {"Authorization": f"Bearer {token}"}
 
             response = client.post(
                 "/api/v1/chat",
@@ -249,17 +248,16 @@ def test_narrow_social_reply_is_explicitly_labeled_as_non_knowledge_base(monkeyp
             yield session
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
     registry = get_extension_registry()
     registry.register_llm("ark", provider)
 
     try:
         with TestClient(app) as client:
-            registration = client.post(
-                "/api/v1/auth/register",
-                json={"username": "social-user", "password": "secret-123", "role": "user"},
-            )
-            headers = {"Authorization": f"Bearer {registration.json()['data']['access_token']}"}
+            token = asyncio.run(create_authenticated_test_token(session_factory, fake_redis, username="social-user"))
+            headers = {"Authorization": f"Bearer {token}"}
 
             response = client.post(
                 "/api/v1/chat",
@@ -344,18 +342,17 @@ def test_generation_outage_fails_closed_with_published_sources_in_normal_and_str
             yield session
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
     registry = get_extension_registry()
     registry.register_llm("ark", primary)
     registry.register_llm("openai", secondary)
 
     try:
         with TestClient(app) as client:
-            registration = client.post(
-                "/api/v1/auth/register",
-                json={"username": "outage-user", "password": "secret-123", "role": "user"},
-            )
-            headers = {"Authorization": f"Bearer {registration.json()['data']['access_token']}"}
+            token = asyncio.run(create_authenticated_test_token(session_factory, fake_redis, username="outage-user"))
+            headers = {"Authorization": f"Bearer {token}"}
 
             response = client.post(
                 "/api/v1/chat",

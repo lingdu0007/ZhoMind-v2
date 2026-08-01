@@ -48,7 +48,8 @@ const startApiEnvironment = async (t) => {
       PYTHONPATH: backendDirectory,
       DATABASE_URL: `sqlite+aiosqlite:///${join(tempDirectory, 'acceptance.db')}`,
       JWT_SECRET: 'browser-acceptance-secret',
-      ADMIN_INVITE_CODE: 'browser-acceptance-admin',
+      BOOTSTRAP_ADMIN_USERNAME: 'operator',
+      BOOTSTRAP_ADMIN_PASSWORD: 'safe-password',
       SYSTEM_SETTINGS_DRAFT_ENABLED: 'true',
       SYSTEM_SETTINGS_APPLICATION_ENABLED: 'true',
       SYSTEM_SETTINGS_ENCRYPTION_KEY: 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=',
@@ -121,17 +122,40 @@ const startWorkbench = async (t, { built, viewport = { width: 1440, height: 900 
   return { page, baseUrl: server.resolvedUrls.local[0], api };
 };
 
-const register = async (page, baseUrl, { username, role }) => {
+const createTeamInvitation = async (api) => {
+  const login = await fetch(`${api.baseUrl}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'operator', password: 'safe-password' })
+  });
+  assert.equal(login.status, 200);
+  const token = (await login.json()).data.access_token;
+  const invitation = await fetch(`${api.baseUrl}/members/invitations`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({})
+  });
+  assert.equal(invitation.status, 200);
+  return (await invitation.json()).data.invitation_code;
+};
+
+const register = async (page, baseUrl, api, { username, role }) => {
   await page.goto(`${baseUrl}auth`);
   await page.getByRole('heading', { name: '身份验证' }).waitFor();
   assert.equal(await page.getByRole('navigation').count(), 0);
+  if (role === 'admin') {
+    await page.getByLabel('用户名').fill(username);
+    await page.getByLabel('密码').fill('safe-password');
+    await page.getByRole('button', { name: '登录' }).click();
+    await page.waitForURL(/\/chat$/);
+    await page.getByRole('heading', { name: '对话工作区' }).waitFor();
+    return;
+  }
+
   await page.getByRole('tab', { name: '注册' }).click();
   await page.getByLabel('用户名').fill(username);
   await page.getByLabel('密码').fill('safe-password');
-  if (role === 'admin') {
-    await page.getByRole('radio', { name: '系统管理员' }).check();
-    await page.getByLabel('管理员邀请码').fill('browser-acceptance-admin');
-  }
+  await page.getByLabel('团队邀请码').fill(await createTeamInvitation(api));
   await page.getByRole('button', { name: '完成注册' }).click();
   await page.waitForURL(/\/chat$/);
   await page.getByRole('heading', { name: '对话工作区' }).waitFor();
@@ -251,9 +275,9 @@ for (const runtime of [
   { name: 'built production assets', built: true }
 ]) {
   test(`System Administrator completes the authorized workspace journey on ${runtime.name}`, { timeout: 30000 }, async (t) => {
-    const { page, baseUrl } = await startWorkbench(t, runtime);
+    const { page, baseUrl, api } = await startWorkbench(t, runtime);
 
-    await register(page, baseUrl, { username: 'operator', role: 'admin' });
+    await register(page, baseUrl, api, { username: 'operator', role: 'admin' });
     await page.getByPlaceholder('请输入需要检索的问题').fill('部署前需要做什么？');
     await page.getByRole('button', { name: '发送' }).click();
     const diagnostics = page.getByLabel('检索诊断');
@@ -372,9 +396,9 @@ for (const runtime of [
   });
 
   test(`Knowledge User keeps Conversation Workspace usable and protected on ${runtime.name}`, { timeout: 30000 }, async (t) => {
-    const { page, baseUrl } = await startWorkbench(t, runtime);
+    const { page, baseUrl, api } = await startWorkbench(t, runtime);
 
-    await register(page, baseUrl, { username: 'knowledge-user', role: 'user' });
+    await register(page, baseUrl, api, { username: 'knowledge-user', role: 'user' });
     assert.equal(await page.getByRole('link', { name: '文档库' }).count(), 0);
     assert.equal(await page.getByRole('link', { name: '构建任务' }).count(), 0);
     assert.equal(await page.getByRole('link', { name: '系统设置' }).count(), 0);

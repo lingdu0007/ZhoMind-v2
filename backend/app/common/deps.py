@@ -33,6 +33,8 @@ async def get_current_user(
     user = await UserRepository(session).get_by_username(username)
     if user is None:
         raise AppError(status_code=401, code="AUTH_INVALID_TOKEN", message="user not found")
+    if not user.is_active:
+        raise AppError(status_code=401, code="AUTH_INVALID_TOKEN", message="member is deactivated")
     return user
 
 

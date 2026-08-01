@@ -10,6 +10,7 @@ from app.infra.db import get_db_session
 from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
+from tests.support.auth import create_authenticated_test_token
 
 
 class _InMemoryRedis:
@@ -61,7 +62,6 @@ def test_chat_does_not_fallback_when_the_active_provider_fails(monkeypatch) -> N
 
     monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "ark")
     monkeypatch.setenv("RAG_LLM_FALLBACK_PROVIDERS", "openai")
-    monkeypatch.setenv("ADMIN_INVITE_CODE", "provider-test-admin-code")
     get_settings.cache_clear()
 
     async def _init_db() -> None:
@@ -75,7 +75,9 @@ def test_chat_does_not_fallback_when_the_active_provider_fails(monkeypatch) -> N
             yield session
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     registry = get_extension_registry()
     prev_ark = registry.get_llm("ark")
@@ -89,16 +91,9 @@ def test_chat_does_not_fallback_when_the_active_provider_fails(monkeypatch) -> N
 
     try:
         with TestClient(app) as client:
-            reg = client.post(
-                "/api/v1/auth/register",
-                json={
-                    "username": "fallback-admin",
-                    "password": "secret-123",
-                    "role": "admin",
-                    "admin_code": "provider-test-admin-code",
-                },
+            token = asyncio.run(
+                create_authenticated_test_token(session_factory, fake_redis, username="fallback-admin", role="admin")
             )
-            token = reg.json()["data"]["access_token"]
             headers = {"Authorization": f"Bearer {token}"}
 
             resp = client.post(

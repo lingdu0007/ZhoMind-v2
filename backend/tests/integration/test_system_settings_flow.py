@@ -17,6 +17,7 @@ from app.main import app
 from app.model.base import Base
 from app.settings.runtime import RuntimeApplicationError, get_system_settings_runtime
 from app.settings.service import SystemSettingsDraftService
+from tests.support.auth import create_authenticated_test_token
 
 
 class _InMemoryRedis:
@@ -51,7 +52,6 @@ def client(tmp_path, monkeypatch) -> Generator[TestClient, None, None]:
             yield session
 
     settings = get_settings()
-    monkeypatch.setattr(settings, "admin_invite_code", "test-admin-code")
     monkeypatch.setattr(settings, "system_settings_draft_enabled", True)
     monkeypatch.setattr(settings, "system_settings_application_enabled", True)
     monkeypatch.setattr(settings, "system_settings_encryption_key", Fernet.generate_key().decode("ascii"))
@@ -59,21 +59,25 @@ def client(tmp_path, monkeypatch) -> Generator[TestClient, None, None]:
     app.dependency_overrides[get_db_session] = override_get_db_session
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
     app.state.settings_session_factory = session_factory
+    app.state.test_auth_session_factory = session_factory
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
     app.state.settings_session_factory = SessionLocal
+    delattr(app.state, "test_auth_session_factory")
     get_system_settings_runtime().reset()
     asyncio.run(engine.dispose())
 
 
 def _register(client: TestClient, *, username: str, role: str = "user") -> str:
-    payload = {"username": username, "password": "test-password", "role": role}
-    if role == "admin":
-        payload["admin_code"] = "test-admin-code"
-    response = client.post("/api/v1/auth/register", json=payload)
-    assert response.status_code == 200
-    return response.json()["data"]["access_token"]
+    return asyncio.run(
+        create_authenticated_test_token(
+            client.app.state.test_auth_session_factory,
+            client.app.dependency_overrides[get_redis_client](),
+            username=username,
+            role=role,
+        )
+    )
 
 
 def _headers(token: str) -> dict[str, str]:

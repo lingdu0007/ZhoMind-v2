@@ -11,6 +11,7 @@ from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
 from app.repository.chat_repository import ChatRepository
+from tests.support.auth import create_authenticated_test_token
 
 
 class _InMemoryRedis:
@@ -46,7 +47,6 @@ def test_administrator_chat_response_contract_projects_bounded_retrieval_diagnos
     fake_redis = _InMemoryRedis()
 
     monkeypatch.setenv("RAG_DISABLE_GATE", "false")
-    monkeypatch.setenv("ADMIN_INVITE_CODE", "contract-admin-code")
     get_settings.cache_clear()
 
     async def _init_db() -> None:
@@ -60,20 +60,17 @@ def test_administrator_chat_response_contract_projects_bounded_retrieval_diagnos
             yield session
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     try:
         with TestClient(app) as client:
-            reg = client.post(
-                "/api/v1/auth/register",
-                json={
-                    "username": "contract-admin",
-                    "password": "secret-123",
-                    "role": "admin",
-                    "admin_code": "contract-admin-code",
-                },
+            token = asyncio.run(
+                create_authenticated_test_token(
+                    session_factory, fake_redis, username="contract-admin", role="admin"
+                )
             )
-            token = reg.json()["data"]["access_token"]
             headers = {"Authorization": f"Bearer {token}"}
 
             resp = client.post("/api/v1/chat", headers=headers, json={"message": "合同稳定性随机无证据问题", "session_id": "contract_s1"})
@@ -162,15 +159,13 @@ def test_knowledge_user_chat_projection_excludes_retrieval_diagnostics(monkeypat
             yield session
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     try:
         with TestClient(app) as client:
-            registration = client.post(
-                "/api/v1/auth/register",
-                json={"username": "evidence-user", "password": "secret-123", "role": "user"},
-            )
-            token = registration.json()["data"]["access_token"]
+            token = asyncio.run(create_authenticated_test_token(session_factory, fake_redis, username="evidence-user"))
             headers = {"Authorization": f"Bearer {token}"}
 
             response = client.post(
@@ -250,15 +245,13 @@ def test_knowledge_user_session_history_projects_source_excerpts_without_trace_d
             await session.commit()
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     try:
         with TestClient(app) as client:
-            registration = client.post(
-                "/api/v1/auth/register",
-                json={"username": "history-user", "password": "secret-123", "role": "user"},
-            )
-            token = registration.json()["data"]["access_token"]
+            token = asyncio.run(create_authenticated_test_token(session_factory, fake_redis, username="history-user"))
             asyncio.run(_seed_history())
 
             response = client.get(
@@ -291,7 +284,6 @@ def test_administrator_session_history_projects_bounded_diagnostics_without_sens
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     fake_redis = _InMemoryRedis()
 
-    monkeypatch.setenv("ADMIN_INVITE_CODE", "diagnostic-admin-code")
     get_settings.cache_clear()
 
     async def _init_db() -> None:
@@ -339,20 +331,17 @@ def test_administrator_session_history_projects_bounded_diagnostics_without_sens
 
     asyncio.run(_init_db())
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     try:
         with TestClient(app) as client:
-            registration = client.post(
-                "/api/v1/auth/register",
-                json={
-                    "username": "diagnostic-admin",
-                    "password": "secret-123",
-                    "role": "admin",
-                    "admin_code": "diagnostic-admin-code",
-                },
+            token = asyncio.run(
+                create_authenticated_test_token(
+                    session_factory, fake_redis, username="diagnostic-admin", role="admin"
+                )
             )
-            token = registration.json()["data"]["access_token"]
             asyncio.run(_seed_history())
 
             response = client.get(
