@@ -107,6 +107,11 @@ htmlcov/
 volumes/
 .claude/
 docs/
+# Keep reviewed operational post-mortems and runbooks versioned; ad-hoc docs
+# outside this directory remain local-only.
+!docs/
+!docs/operations/
+!docs/operations/*.md
 CLAUDE.md
 
 # =========================
