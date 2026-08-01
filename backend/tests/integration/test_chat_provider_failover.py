@@ -110,7 +110,7 @@ def test_chat_does_not_fallback_when_the_active_provider_fails(monkeypatch) -> N
             assert resp.status_code == 200
             data = resp.json()["data"]
             diagnostics = data["retrieval_diagnostics"]
-            assert data["answer"] == "生成服务暂不可用，请稍后重试。"
+            assert data["answer"] == "【生成不可用】生成服务暂不可用，请稍后重试。"
             assert data["message"]["evidence_summary"] == {
                 "coverage": "sufficient",
                 "source_count": 1,

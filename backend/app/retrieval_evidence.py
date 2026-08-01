@@ -29,6 +29,7 @@ _POLL_INTERVAL_SECONDS = 0.5
 class HttpResponse:
     status_code: int
     payload: Mapping[str, Any]
+    body: str = ""
 
 
 class EvidenceHttpClient(Protocol):
@@ -102,9 +103,11 @@ class UrllibHttpClient:
         )
         try:
             with urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310 - localhost service URL is explicit input.
-                return HttpResponse(status_code=response.status, payload=self._decode_payload(response.read()))
+                raw = response.read()
+                return HttpResponse(status_code=response.status, payload=self._decode_payload(raw), body=self._decode_body(raw))
         except HTTPError as exc:
-            return HttpResponse(status_code=exc.code, payload=self._decode_payload(exc.read()))
+            raw = exc.read()
+            return HttpResponse(status_code=exc.code, payload=self._decode_payload(raw), body=self._decode_body(raw))
         except URLError:
             return HttpResponse(status_code=0, payload={})
 
@@ -125,6 +128,10 @@ class UrllibHttpClient:
             return {}
         return payload if isinstance(payload, Mapping) else {}
 
+    @staticmethod
+    def _decode_body(raw: bytes) -> str:
+        return raw.decode("utf-8", errors="replace")
+
 
 class RetrievalEvidenceSmoke:
     """Run the Retrieval Smoke through the existing application and retrieval paths."""
@@ -138,6 +145,7 @@ class RetrievalEvidenceSmoke:
         output_dir: Path,
         source_revision: str,
         run_id: str | None = None,
+        include_generation: bool = False,
         now: Callable[[], datetime] | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -147,6 +155,7 @@ class RetrievalEvidenceSmoke:
         self._output_dir = output_dir
         self._source_revision = source_revision
         self._run_id = run_id or uuid4().hex
+        self._include_generation = include_generation
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._sleep = sleep
 
@@ -169,6 +178,9 @@ class RetrievalEvidenceSmoke:
             chunk_count = await self._verify_chunks(document_id=document_id, headers=headers)
             result = await self._retrieve(f"retrieval-evidence-{self._run_id}")
             candidate = self._verify_dense_retrieval(result=result, document_id=document_id)
+            chat_model_check = {"invoked": False}
+            if self._include_generation:
+                chat_model_check = await self._verify_generation_loop(headers=headers, question=f"retrieval-evidence-{self._run_id}")
 
             manifest = self._manifest_base(started_at=started_at)
             manifest.update(
@@ -196,7 +208,7 @@ class RetrievalEvidenceSmoke:
                             "candidate_chunk_id": str(candidate["chunk_id"]),
                             "candidate_belongs_to_ingested_document": True,
                         },
-                        "chat_model": {"invoked": False},
+                        "chat_model": chat_model_check,
                     },
                 }
             )
@@ -242,6 +254,15 @@ class RetrievalEvidenceSmoke:
             missing.append("DENSE_EMBEDDING_DIM")
         if not self._settings.milvus_uri_normalized:
             missing.append("MILVUS_URI")
+        if self._include_generation:
+            if self._settings.rag_primary_llm_provider != "ark":
+                missing.append("RAG_PRIMARY_LLM_PROVIDER_ARK")
+            if not self._settings.ark_api_key.strip():
+                missing.append("ARK_API_KEY")
+            if not self._settings.llm_base_url.strip():
+                missing.append("BASE_URL")
+            if not self._settings.llm_model.strip():
+                missing.append("MODEL")
         return missing
 
     async def _create_admin_and_login(self) -> str:
@@ -319,6 +340,60 @@ class RetrievalEvidenceSmoke:
                 return item
         raise _SmokeFailure("retrieval", "INGESTED_DOCUMENT_NOT_RETRIEVED")
 
+    async def _verify_generation_loop(self, *, headers: Mapping[str, str], question: str) -> dict[str, Any]:
+        session_id = f"generation-{sha256(self._run_id.encode('utf-8')).hexdigest()[:24]}"
+        response = await self._expect_ok(
+            "generation_normal",
+            "POST",
+            "/api/v1/chat",
+            headers=headers,
+            json_body={"message": question, "session_id": session_id},
+        )
+        answer = response.get("answer")
+        if not isinstance(answer, str) or not answer.strip() or answer.startswith("【生成不可用】"):
+            raise _SmokeFailure("generation_normal", "GENERATION_RESPONSE_INVALID")
+        citation_source_count = self._verify_cited_response(response)
+
+        stream = await self._http_client.request(
+            "POST",
+            "/api/v1/chat/stream",
+            headers=headers,
+            json_body={"message": question, "session_id": session_id},
+        )
+        if stream.status_code < 200 or stream.status_code >= 300:
+            raise _SmokeFailure("generation_stream", "APPLICATION_REQUEST_FAILED")
+        if not all(marker in stream.body for marker in ("event: content", "event: evidence_summary", "event: done", '"coverage": "sufficient"')):
+            raise _SmokeFailure("generation_stream", "STREAM_CONTRACT_INVALID")
+        return {
+            "invoked": True,
+            "normal_contract": "passed",
+            "stream_contract": "passed",
+            "citation_source_count": citation_source_count,
+        }
+
+    @staticmethod
+    def _verify_cited_response(response: Mapping[str, Any]) -> int:
+        message = response.get("message")
+        summary = message.get("evidence_summary") if isinstance(message, Mapping) else None
+        if not isinstance(summary, Mapping) or summary.get("coverage") != "sufficient":
+            raise _SmokeFailure("generation_normal", "CITATION_MISSING")
+        sources = summary.get("sources")
+        if not isinstance(sources, list) or not sources:
+            raise _SmokeFailure("generation_normal", "CITATION_MISSING")
+        for source in sources:
+            metadata = source.get("metadata") if isinstance(source, Mapping) else None
+            if (
+                not isinstance(metadata, Mapping)
+                or not isinstance(metadata.get("title"), str)
+                or not metadata["title"].strip()
+                or not isinstance(metadata.get("publication_version"), str)
+                or not metadata["publication_version"].strip()
+                or not isinstance(source.get("excerpt"), str)
+                or not source["excerpt"].strip()
+            ):
+                raise _SmokeFailure("generation_normal", "CITATION_MISSING")
+        return len(sources)
+
     async def _expect_ok(
         self,
         check: str,
@@ -347,7 +422,7 @@ class RetrievalEvidenceSmoke:
         return {
             "schema_version": 1,
             "run_id": self._run_id,
-            "command": "retrieval-evidence smoke",
+            "command": "retrieval-evidence generation-smoke" if self._include_generation else "retrieval-evidence smoke",
             "source_revision": self._source_revision,
             "started_at": started_at.isoformat(),
             "runtime_configuration": {
@@ -378,12 +453,13 @@ async def _retrieve_from_application(settings: Settings, query: str) -> Retrieve
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="retrieval-evidence")
     subparsers = parser.add_subparsers(dest="profile", required=True)
-    smoke = subparsers.add_parser("smoke")
-    smoke.add_argument("--base-url", required=True)
-    smoke.add_argument("--output-dir", required=True, type=Path)
-    smoke.add_argument("--source-revision", required=True)
-    smoke.add_argument("--run-id")
-    smoke.add_argument("--timeout-seconds", type=float, default=15.0)
+    for profile in ("smoke", "generation-smoke"):
+        command = subparsers.add_parser(profile)
+        command.add_argument("--base-url", required=True)
+        command.add_argument("--output-dir", required=True, type=Path)
+        command.add_argument("--source-revision", required=True)
+        command.add_argument("--run-id")
+        command.add_argument("--timeout-seconds", type=float, default=15.0)
     return parser.parse_args(argv)
 
 
@@ -398,6 +474,7 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=args.output_dir,
         source_revision=args.source_revision,
         run_id=args.run_id,
+        include_generation=args.profile == "generation-smoke",
     )
     manifest = asyncio.run(runner.run())
     print(json.dumps({"outcome": manifest["outcome"], "run_id": manifest["run_id"]}, sort_keys=True))

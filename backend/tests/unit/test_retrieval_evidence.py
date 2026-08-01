@@ -46,6 +46,46 @@ class _DenseResult:
     items = [{"document_id": "doc-ingested", "chunk_id": "chunk-1", "retrieval_source": "dense"}]
 
 
+class _GenerationFakeHttpClient(_FakeHttpClient):
+    async def request(self, method: str, path: str, **kwargs) -> HttpResponse:
+        if path == "/api/v1/chat":
+            self.calls.append((method, path))
+            return HttpResponse(
+                status_code=200,
+                payload={
+                    "code": "OK",
+                    "data": {
+                        "answer": "基于已发布来源的回答",
+                        "message": {
+                            "evidence_summary": {
+                                "coverage": "sufficient",
+                                "source_count": 1,
+                                "sources": [
+                                    {
+                                        "source_id": "chunk-1",
+                                        "metadata": {"title": "smoke.md", "publication_version": "v1"},
+                                        "excerpt": "retrieval evidence excerpt",
+                                    }
+                                ],
+                            }
+                        },
+                    },
+                },
+            )
+        if path == "/api/v1/chat/stream":
+            self.calls.append((method, path))
+            return HttpResponse(
+                status_code=200,
+                payload={},
+                body=(
+                    'event: content\\ndata: {"content": "基于已发布来源的回答"}\\n\\n'
+                    'event: evidence_summary\\ndata: {"evidence_summary": {"coverage": "sufficient"}}\\n\\n'
+                    "event: done\\ndata: [DONE]\\n\\n"
+                ),
+            )
+        return await super().request(method, path, **kwargs)
+
+
 def _settings(**overrides: object) -> Settings:
     values: dict[str, object] = {
         "JWT_SECRET": "test-jwt-value",
@@ -126,6 +166,38 @@ def test_retrieval_evidence_smoke_fails_safely_for_incomplete_runtime_configurat
     assert manifest["failed_check"] == "runtime_configuration"
     assert set(manifest["missing_configuration"]) == {"ADMIN_INVITE_CODE", "EMBEDDING_API_KEY"}
     assert "test-qwen-api-key" not in (tmp_path / "run-002" / "manifest.json").read_text(encoding="utf-8")
+
+
+def test_generation_smoke_proves_cited_normal_and_streaming_chat_without_recording_content_or_secrets(tmp_path) -> None:
+    async def _run() -> dict:
+        runner = RetrievalEvidenceSmoke(
+            settings=_settings(ARK_API_KEY="test-ark-api-key", BASE_URL="https://llm.example.test/v1", MODEL="test-model"),
+            http_client=_GenerationFakeHttpClient(),
+            retrieve=lambda query: _return_dense_result(query),
+            output_dir=tmp_path,
+            source_revision="abc123",
+            run_id="generation-run-001",
+            include_generation=True,
+            now=lambda: datetime(2026, 7, 30, tzinfo=timezone.utc),
+            sleep=lambda _: _return_none(),
+        )
+        return await runner.run()
+
+    manifest = asyncio.run(_run())
+
+    assert manifest["outcome"] == "passed"
+    assert manifest["command"] == "retrieval-evidence generation-smoke"
+    assert manifest["checks"]["chat_model"] == {
+        "invoked": True,
+        "normal_contract": "passed",
+        "stream_contract": "passed",
+        "citation_source_count": 1,
+    }
+    serialized = json.dumps(manifest, ensure_ascii=False)
+    assert "test-ark-api-key" not in serialized
+    assert "https://llm.example.test/v1" not in serialized
+    assert "基于已发布来源的回答" not in serialized
+    assert "retrieval evidence excerpt" not in serialized
 
 
 def test_retrieval_evidence_production_run_ids_create_distinct_administrators(tmp_path) -> None:

@@ -22,6 +22,8 @@ CHAT_LLM_PROVIDER = "chat-default-llm"
 DIAGNOSTIC_MAX_TIMELINE_STEPS = 16
 DIAGNOSTIC_MAX_PROVIDER_ERRORS = 5
 DIAGNOSTIC_MAX_TRACE_PREVIEW_CHARS = 1600
+GENERATION_CONTEXT_MAX_ITEMS = 3
+GENERATION_CONTEXT_MAX_CHARS_PER_SOURCE = 160
 _DIAGNOSTIC_CODE = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
 _DIAGNOSTIC_PREVIEW_COUNTS = frozenset(
     {
@@ -140,8 +142,8 @@ class ChatService:
 
     def _compose_llm_prompt(self, question: str, retrieved: list[dict]) -> str:
         lines = ["请基于以下证据回答用户问题。", f"问题：{question}"]
-        for idx, item in enumerate(retrieved[:3], start=1):
-            content = str(item.get("content_preview") or item.get("content") or "")
+        for idx, item in enumerate(retrieved[:GENERATION_CONTEXT_MAX_ITEMS], start=1):
+            content = str(item.get("content_preview") or item.get("content") or "")[:GENERATION_CONTEXT_MAX_CHARS_PER_SOURCE]
             lines.append(f"证据{idx}：{content}")
         lines.append("请给出简洁中文回答。")
         return "\n".join(lines)
@@ -167,7 +169,7 @@ class ChatService:
         return compact in {"你好", "您好", "hello", "hi", "hey"}
 
     def _smalltalk_reply(self) -> str:
-        return "我是 ZhoMind 智能助手，可以帮你基于知识库问答、梳理文档与会话内容。"
+        return "【非知识库回复】我是 ZhoMind 智能助手，可以帮你基于知识库问答、梳理文档与会话内容。"
 
     async def _assistant_reply(
         self,
@@ -206,7 +208,7 @@ class ChatService:
         if completion:
             return completion, llm_result
 
-        text = "生成服务暂不可用，请稍后重试。"
+        text = "【生成不可用】生成服务暂不可用，请稍后重试。"
         llm_result["text"] = text
         return text, llm_result
 
@@ -273,7 +275,7 @@ class ChatService:
             source_metadata = (
                 {
                     key: metadata[key]
-                    for key in ("title", "filename", "source_file", "source", "document_name", "path")
+                    for key in ("title", "publication_version", "filename", "source_file", "source", "document_name", "path")
                     if isinstance(metadata, dict) and isinstance(metadata.get(key), str) and metadata[key].strip()
                 }
                 if isinstance(metadata, dict)

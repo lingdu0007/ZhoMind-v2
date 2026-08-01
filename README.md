@@ -46,3 +46,13 @@ Run it from the repository root:
 ```
 
 The command requires a clean local experiment branch, then starts a unique Compose project with separate ports and runtime volumes for that run. It stops that Compose project on exit, so repeated runs start with independent databases and indexes. The command writes a non-sensitive manifest to `../../evidence/runs/<run-id>/manifest.json`, reporting the document build, live Qwen embedding, the hashed embedding contract identity, Milvus indexing, and proof that the retrieved dense candidate belongs to the just-ingested document. It exits nonzero for any failed acceptance check.
+
+## Cited Generation Smoke
+
+With the same ignored local configuration plus one active Ark provider (`ARK_API_KEY`, `BASE_URL`, and `MODEL`), run:
+
+```bash
+./retrieval-evidence generation-smoke
+```
+
+This creates a disposable published source, verifies an actual provider answer and both normal and SSE cited-response contracts, and writes only non-sensitive pass/fail fields and citation counts to its manifest. It never write or print provider credentials, prompts, answers, or excerpts. Provider-outage no-fallback behavior is covered by the backend contract tests rather than sending a real question to an intentionally invalid provider.

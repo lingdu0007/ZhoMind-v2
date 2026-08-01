@@ -101,10 +101,11 @@ if payload.get("data", {}).get("role") != "admin":
 '
 printf 'public administrator registration, login, and identity path passed\n'
 
+evidence_directory="$DEPLOY_APP_DIR/evidence"
+as_root install -d -m 0750 "$evidence_directory"
+run_id="production-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+
 if [[ -n "${EMBEDDING_API_KEY:-}" && -n "${EMBEDDING_BASE_URL:-}" && -n "${EMBEDDING_MODEL:-}" && "${DENSE_EMBEDDING_DIM:-0}" != "0" ]]; then
-  evidence_directory="$DEPLOY_APP_DIR/evidence"
-  as_root install -d -m 0750 "$evidence_directory"
-  run_id="production-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
   "${compose[@]}" run --rm --no-deps \
     --volume "$evidence_directory:/evidence" \
     backend python -m app.retrieval_evidence smoke \
@@ -115,4 +116,18 @@ if [[ -n "${EMBEDDING_API_KEY:-}" && -n "${EMBEDDING_BASE_URL:-}" && -n "${EMBED
   printf 'live embedding, Milvus indexing, and Retrieval Smoke passed\n'
 else
   printf 'live Retrieval Smoke skipped because embedding configuration is incomplete\n'
+fi
+
+if [[ -n "${EMBEDDING_API_KEY:-}" && -n "${EMBEDDING_BASE_URL:-}" && -n "${EMBEDDING_MODEL:-}" && "${DENSE_EMBEDDING_DIM:-0}" != "0" && "${RAG_PRIMARY_LLM_PROVIDER:-ark}" == "ark" && -n "${ARK_API_KEY:-}" && -n "${BASE_URL:-}" && -n "${MODEL:-}" ]]; then
+  generation_run_id="${run_id}-generation"
+  "${compose[@]}" run --rm --no-deps \
+    --volume "$evidence_directory:/evidence" \
+    backend python -m app.retrieval_evidence generation-smoke \
+    --base-url http://backend:8000 \
+    --output-dir /evidence \
+    --source-revision "$SOURCE_REVISION" \
+    --run-id "$generation_run_id" >/dev/null
+  printf 'live approved-provider cited chat and stream Generation Smoke passed\n'
+else
+  printf 'live Generation Smoke skipped because retrieval or approved Ark provider configuration is incomplete\n'
 fi
