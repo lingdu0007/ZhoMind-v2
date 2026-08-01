@@ -387,6 +387,7 @@ class RetrievalEvidenceSmoke:
             raise _SmokeFailure("generation_stream", "APPLICATION_REQUEST_FAILED")
         if not all(marker in stream.body for marker in ("event: content", "event: evidence_summary", "event: done", '"coverage": "sufficient"')):
             raise _SmokeFailure("generation_stream", "STREAM_CONTRACT_INVALID")
+        self._verify_stream_cited_response(stream.body, expected_source_id=expected_source_id)
         return {
             "invoked": True,
             "normal_contract": "passed",
@@ -398,6 +399,31 @@ class RetrievalEvidenceSmoke:
     def _verify_cited_response(response: Mapping[str, Any], *, expected_source_id: str) -> int:
         message = response.get("message")
         summary = message.get("evidence_summary") if isinstance(message, Mapping) else None
+        return RetrievalEvidenceSmoke._verify_evidence_summary(summary, expected_source_id=expected_source_id)
+
+    @staticmethod
+    def _verify_stream_cited_response(body: str, *, expected_source_id: str) -> None:
+        for event in body.split("\n\n"):
+            lines = event.splitlines()
+            if not lines or lines[0] != "event: evidence_summary":
+                continue
+            data_line = next((line for line in lines[1:] if line.startswith("data: ")), "")
+            try:
+                payload = json.loads(data_line.removeprefix("data: "))
+            except json.JSONDecodeError:
+                break
+            try:
+                RetrievalEvidenceSmoke._verify_evidence_summary(
+                    payload.get("evidence_summary") if isinstance(payload, Mapping) else None,
+                    expected_source_id=expected_source_id,
+                )
+            except _SmokeFailure as exc:
+                raise _SmokeFailure("generation_stream", "STREAM_CITATION_MISSING") from exc
+            return
+        raise _SmokeFailure("generation_stream", "STREAM_CITATION_MISSING")
+
+    @staticmethod
+    def _verify_evidence_summary(summary: object, *, expected_source_id: str) -> int:
         if not isinstance(summary, Mapping) or summary.get("coverage") != "sufficient":
             raise _SmokeFailure("generation_normal", "CITATION_MISSING")
         sources = summary.get("sources")
