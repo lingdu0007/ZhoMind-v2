@@ -118,7 +118,7 @@ test('System Administrator can scan Document Library and filter the loaded inven
   await page.getByRole('heading', { name: '文档库' }).waitFor();
   assert.equal(await page.getByRole('link', { name: '文档库' }).isVisible(), true);
   assert.equal(await page.getByRole('link', { name: '构建任务' }).isVisible(), true);
-  assert.equal(await page.getByText('支持的格式：TXT、Markdown (.md)、PDF。').isVisible(), true);
+  assert.equal(await page.getByText('支持的格式：UTF-8 TXT、Markdown (.md)、可提取文本的 PDF；单个文件不超过 25 MiB。').isVisible(), true);
   assert.equal(await page.getByText('待处理 (pending)').isVisible(), true);
   assert.equal(await page.getByText('处理中 (processing)').isVisible(), true);
   assert.equal(await page.getByText('可检索 (ready)').isVisible(), true);
@@ -489,9 +489,9 @@ test('System Administrator can inspect paginated published chunks for a ready do
   await page.goto(`${baseUrl}documents`);
   await page.getByRole('heading', { name: '文档库' }).waitFor();
 
-  await page.getByRole('button', { name: '查看文档 doc-ready 的已发布分块' }).click();
-  await page.getByText('正在加载已发布分块...').waitFor();
-  await page.getByRole('heading', { name: '已发布分块' }).waitFor();
+  await page.getByRole('button', { name: '查看文档 doc-ready 的候选或已发布分块' }).click();
+  await page.getByText('正在加载已发布版本分块...').waitFor();
+  await page.getByRole('heading', { name: '已发布版本分块' }).waitFor();
   assert.equal(await page.getByText('文档 ID：doc-ready').isVisible(), true);
   await page.getByText('发布代际只会在构建任务成功后切换。').waitFor();
   assert.equal(await page.getByText('关键词：发布、构建').isVisible(), true);
@@ -572,18 +572,18 @@ test('chunk inspection keeps not-ready, empty, and failed responses recoverable'
   await authenticateAdmin(page);
   await page.goto(`${baseUrl}documents`);
   await page.getByRole('heading', { name: '文档库' }).waitFor();
-  assert.equal(await page.getByRole('button', { name: '查看文档 doc-failed 的已发布分块' }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: '查看文档 doc-failed 的候选或已发布分块' }).isVisible(), true);
 
-  await page.getByRole('button', { name: '查看文档 doc-stale 的已发布分块' }).click();
+  await page.getByRole('button', { name: '查看文档 doc-stale 的候选或已发布分块' }).click();
   await page.getByRole('alert').waitFor();
-  assert.match(await page.getByRole('alert').innerText(), /当前文档尚未产生可查看的已发布分块，请等待构建完成后重试。/);
+  assert.match(await page.getByRole('alert').innerText(), /当前文档尚未产生可查看的候选或已发布分块，请等待构建完成后重试。/);
   await page.getByRole('button', { name: '重新检查' }).click();
   await page.getByText('当前已发布版本没有可展示的分块。').waitFor();
 
   await page.keyboard.press('Escape');
-  await page.getByRole('button', { name: '查看文档 doc-read-failure 的已发布分块' }).click();
+  await page.getByRole('button', { name: '查看文档 doc-read-failure 的候选或已发布分块' }).click();
   await page.getByRole('alert').waitFor();
-  assert.match(await page.getByRole('alert').innerText(), /加载已发布分块失败，请重新检查。/);
+  assert.match(await page.getByRole('alert').innerText(), /加载候选或已发布分块失败，请重新检查。/);
 });
 
 test('closing chunk inspection prevents an older response from replacing a newer document', { timeout: 30000 }, async (t) => {
@@ -657,12 +657,12 @@ test('closing chunk inspection prevents an older response from replacing a newer
   await authenticateAdmin(page);
   await page.goto(`${baseUrl}documents`);
   await page.getByRole('heading', { name: '文档库' }).waitFor();
-  await page.getByRole('button', { name: '查看文档 doc-first 的已发布分块' }).click();
+  await page.getByRole('button', { name: '查看文档 doc-first 的候选或已发布分块' }).click();
   await firstChunkRequest;
   await page.keyboard.press('Escape');
-  await page.getByRole('heading', { name: '已发布分块' }).waitFor({ state: 'hidden' });
+  await page.getByRole('heading', { name: '已发布版本分块' }).waitFor({ state: 'hidden' });
 
-  await page.getByRole('button', { name: '查看文档 doc-second 的已发布分块' }).click();
+  await page.getByRole('button', { name: '查看文档 doc-second 的候选或已发布分块' }).click();
   await page.getByText('当前文档内容').waitFor();
   const firstChunkSettled = page.waitForResponse(
     (response) => new URL(response.url()).pathname === '/api/documents/doc-first/chunks'
@@ -750,13 +750,13 @@ test('Document Library retains a published generation through rebuild enqueue an
   await authenticateAdmin(page);
   await page.goto(`${baseUrl}documents`);
   await page.getByRole('heading', { name: '文档库' }).waitFor();
-  assert.equal(await page.getByRole('button', { name: '查看文档 doc-unpublished 的已发布分块' }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: '查看文档 doc-unpublished 的候选或已发布分块' }).count(), 0);
 
   await page.getByRole('button', { name: '重新构建文档 doc-published' }).click();
   await page.getByRole('button', { name: '创建重建任务' }).click();
   await page.getByRole('alert').waitFor();
   assert.equal(await page.getByRole('alert').innerText(), '创建重建任务失败，请稍后重试。');
-  assert.equal(await page.getByRole('button', { name: '查看文档 doc-published 的已发布分块' }).isVisible(), true);
+  assert.equal(await page.getByRole('button', { name: '查看文档 doc-published 的候选或已发布分块' }).isVisible(), true);
   await page.getByRole('button', { name: '取消', exact: true }).click();
 
   await page.getByRole('button', { name: '重新构建文档 doc-published' }).click();
@@ -766,6 +766,51 @@ test('Document Library retains a published generation through rebuild enqueue an
   await page.getByText('最近一次重建失败；当前已发布版本的 12 个分块仍可用于检索。候选分块未发布。').waitFor();
   assert.equal(await page.getByText('构建失败 (failed)').isVisible(), true);
   assert.equal(await page.getByRole('cell', { name: 'published-handbook.md' }).isVisible(), true);
+});
+
+test('System Administrator can inspect and explicitly publish a Candidate Build', { timeout: 30000 }, async (t) => {
+  const candidate = {
+    document_id: 'doc-candidate',
+    filename: 'candidate-runbook.md',
+    file_type: 'md',
+    file_size: 1024,
+    status: 'candidate',
+    chunk_count: 5,
+    published_generation: 1,
+    candidate_generation: 2,
+    candidate_chunk_count: 6,
+    uploaded_at: '2026-08-01T10:00:00Z'
+  };
+  const requests = [];
+  const { page, baseUrl } = await startDocumentLibrary(t, async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === '/api/auth/me') {
+      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin' }));
+      return;
+    }
+    if (path === '/api/documents' && request.method() === 'GET') {
+      await route.fulfill(jsonResponse({ items: [candidate] }));
+      return;
+    }
+    if (path === '/api/documents/doc-candidate/publish' && request.method() === 'POST') {
+      requests.push(`${request.method()} ${path}`);
+      await route.fulfill(jsonResponse({ ...candidate, status: 'ready', published_generation: 2, candidate_generation: null, candidate_chunk_count: 0 }));
+      return;
+    }
+    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
+  });
+
+  await authenticateAdmin(page);
+  await page.goto(`${baseUrl}documents`);
+  await page.getByRole('heading', { name: '文档库' }).waitFor();
+  assert.equal(await page.getByText('待发布候选 (candidate)').isVisible(), true);
+  await page.getByRole('button', { name: '发布候选构建 doc-candidate' }).click();
+  await page.getByRole('dialog').getByText('确认发布文档“candidate-runbook.md”的候选构建？发布后它将立即用于后续检索。').waitFor();
+  await page.getByRole('dialog').getByRole('button', { name: '发布', exact: true }).click();
+  await page.getByText('可检索 (ready)').waitFor();
+  assert.deepEqual(requests, ['POST /api/documents/doc-candidate/publish']);
+  assert.equal(await page.getByRole('button', { name: '发布候选构建 doc-candidate' }).count(), 0);
 });
 
 test('System Administrator can rebuild with every supported strategy while the published generation remains available', { timeout: 30000 }, async (t) => {

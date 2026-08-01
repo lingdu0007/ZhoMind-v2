@@ -284,6 +284,15 @@ class ChatService:
                 else {}
             )
             source_id = item.get("chunk_id") or item.get("source_id") or item.get("document_id") or f"source-{index}"
+            if item.get("withdrawn") is True:
+                sources.append(
+                    {
+                        "source_id": str(source_id),
+                        "metadata": source_metadata,
+                        "withdrawal_notice": "This source has been withdrawn.",
+                    }
+                )
+                continue
             excerpt = item.get("content_preview") or item.get("content") or ""
             sources.append(
                 {

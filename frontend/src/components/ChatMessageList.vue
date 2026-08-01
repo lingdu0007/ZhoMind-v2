@@ -30,7 +30,11 @@
         <p class="evidence-summary__count">{{ msg.evidence_summary.source_count || 0 }} 个来源</p>
         <ul v-if="msg.evidence_summary.sources?.length" class="evidence-summary__sources">
           <li v-for="source in msg.evidence_summary.sources" :key="source.source_id">
+            <p v-if="source.withdrawal_notice" class="evidence-summary__withdrawn">
+              {{ getEvidenceSourceLabel(source) }}：{{ source.withdrawal_notice }}
+            </p>
             <button
+              v-else
               type="button"
               class="evidence-summary__source"
               :aria-label="`查看来源 ${getEvidenceSourceLabel(source)}`"
@@ -272,6 +276,15 @@ watch(
   margin: 8px 0 0;
   color: var(--color-ink-soft);
   font-size: 12px;
+  line-height: 1.6;
+}
+
+.evidence-summary__withdrawn {
+  margin: 0;
+  padding: 8px 0;
+  border-top: 1px solid color-mix(in srgb, var(--color-moss) 28%, transparent);
+  color: var(--color-ink-soft);
+  font-size: 13px;
   line-height: 1.6;
 }
 

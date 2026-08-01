@@ -3,7 +3,7 @@
     <div class="document-upload__copy">
       <p class="document-upload__eyebrow">初始导入</p>
       <h2 id="document-upload-title">上传文档</h2>
-      <p>支持的格式：TXT、Markdown (.md)、PDF。</p>
+      <p>支持的格式：UTF-8 TXT、Markdown (.md)、可提取文本的 PDF；单个文件不超过 25 MiB。</p>
       <p>初始上传将自动使用通用分块策略。</p>
     </div>
 
@@ -49,6 +49,7 @@ import { apiAdapter } from '../api/adapters';
 const emit = defineEmits(['uploaded']);
 
 const supportedExtensions = new Set(['txt', 'md', 'pdf']);
+const maxUploadBytes = 25 * 1024 * 1024;
 const fileInput = ref(null);
 const file = ref(null);
 const loading = ref(false);
@@ -77,6 +78,13 @@ const handleFileChange = (event) => {
     file.value = null;
     event.target.value = '';
     errorMessage.value = '不支持的文件格式。仅支持 TXT、Markdown (.md) 和 PDF。';
+    return;
+  }
+
+  if (selectedFile.size > maxUploadBytes) {
+    file.value = null;
+    event.target.value = '';
+    errorMessage.value = '文件超过 25 MiB 限制，无法上传。';
     return;
   }
 
