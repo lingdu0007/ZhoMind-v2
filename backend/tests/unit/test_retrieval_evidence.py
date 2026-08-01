@@ -248,11 +248,11 @@ def test_generation_smoke_uses_a_natural_language_question_for_the_published_fix
     upload = next(details for method, path, details in client.request_details if (method, path) == ("POST", "/api/v1/documents/upload"))
     filename, content = upload["upload"]
     assert filename.endswith(".md")
-    assert "已发布知识版本" in content.decode("utf-8")
+    assert "蓝松石版本" in content.decode("utf-8")
 
     normal_chat = next(details for method, path, details in client.request_details if (method, path) == ("POST", "/api/v1/chat"))
     question = normal_chat["json_body"]["message"]
-    assert question == "生成带引用的回答应依据哪个知识版本？"
+    assert question == "根据验收事实，蓝松石版本在生成带引用回答时具有什么作用？"
     assert "retrieval-evidence-" not in question
 
 
@@ -309,7 +309,7 @@ def test_retrieval_evidence_production_run_ids_do_not_create_administrators(tmp_
 
 
 async def _return_dense_result(query: str) -> _DenseResult:
-    assert query == "生成带引用的回答应依据哪个知识版本？"
+    assert query == "根据验收事实，蓝松石版本在生成带引用回答时具有什么作用？"
     return _DenseResult()
 
 
