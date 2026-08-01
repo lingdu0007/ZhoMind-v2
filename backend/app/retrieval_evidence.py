@@ -22,6 +22,7 @@ from app.service.document_retrieval_service import MixedModeDocumentRetrieverSer
 
 _POLL_ATTEMPTS = 120
 _POLL_INTERVAL_SECONDS = 0.5
+_GENERATION_SMOKE_QUESTION = "生成带引用的回答应依据哪个知识版本？"
 
 
 @dataclass(frozen=True)
@@ -182,7 +183,7 @@ class RetrievalEvidenceSmoke:
             if self._include_generation:
                 chat_model_check = await self._verify_generation_loop(
                     headers=headers,
-                    question=f"retrieval-evidence-{self._run_id}",
+                    question=_GENERATION_SMOKE_QUESTION,
                     expected_source_id=str(candidate["chunk_id"]),
                 )
 
@@ -292,12 +293,17 @@ class RetrievalEvidenceSmoke:
 
     async def _upload_markdown(self, *, headers: Mapping[str, str]) -> tuple[str, str]:
         sentinel = f"retrieval-evidence-{self._run_id}"
+        source = (
+            "# Generation Smoke Source\n\n"
+            "已发布知识版本是生成带引用回答的唯一依据。\n\n"
+            f"验证标识：{sentinel}\n"
+        )
         upload = await self._expect_ok(
             "document_ingestion",
             "POST",
             "/api/v1/documents/upload",
             headers=headers,
-            upload=(f"{sentinel}.md", f"# Retrieval Smoke\n\n{sentinel}\n".encode("utf-8")),
+            upload=(f"{sentinel}.md", source.encode("utf-8")),
         )
         document_id = upload.get("document_id")
         job_id = upload.get("job_id")

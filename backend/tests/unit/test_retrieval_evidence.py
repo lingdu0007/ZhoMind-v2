@@ -12,10 +12,12 @@ from app.retrieval_evidence import HttpResponse, RetrievalEvidenceSmoke
 class _FakeHttpClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.request_details: list[tuple[str, str, dict]] = []
         self._job_polls = 0
 
     async def request(self, method: str, path: str, **kwargs) -> HttpResponse:
         self.calls.append((method, path))
+        self.request_details.append((method, path, kwargs))
         if path == "/api/v1/health":
             return HttpResponse(status_code=200, payload={"code": "OK", "data": {"status": "up"}})
         if path == "/api/v1/auth/login":
@@ -50,6 +52,7 @@ class _GenerationFakeHttpClient(_FakeHttpClient):
     async def request(self, method: str, path: str, **kwargs) -> HttpResponse:
         if path == "/api/v1/chat":
             self.calls.append((method, path))
+            self.request_details.append((method, path, kwargs))
             return HttpResponse(
                 status_code=200,
                 payload={
@@ -74,6 +77,7 @@ class _GenerationFakeHttpClient(_FakeHttpClient):
             )
         if path == "/api/v1/chat/stream":
             self.calls.append((method, path))
+            self.request_details.append((method, path, kwargs))
             return HttpResponse(
                 status_code=200,
                 payload={},
@@ -203,6 +207,36 @@ def test_generation_smoke_proves_cited_normal_and_streaming_chat_without_recordi
     assert "https://llm.example.test/v1" not in serialized
     assert "基于已发布来源的回答" not in serialized
     assert "retrieval evidence excerpt" not in serialized
+
+
+def test_generation_smoke_uses_a_natural_language_question_for_the_published_fixture(tmp_path) -> None:
+    async def _run() -> tuple[dict, _GenerationFakeHttpClient]:
+        client = _GenerationFakeHttpClient()
+        runner = RetrievalEvidenceSmoke(
+            settings=_settings(ARK_API_KEY="test-ark-api-key", BASE_URL="https://llm.example.test/v1", MODEL="test-model"),
+            http_client=client,
+            retrieve=lambda query: _return_dense_result(query),
+            output_dir=tmp_path,
+            source_revision="abc123",
+            run_id="generation-run-002",
+            include_generation=True,
+            now=lambda: datetime(2026, 7, 30, tzinfo=timezone.utc),
+            sleep=lambda _: _return_none(),
+        )
+        return await runner.run(), client
+
+    manifest, client = asyncio.run(_run())
+
+    assert manifest["outcome"] == "passed"
+    upload = next(details for method, path, details in client.request_details if (method, path) == ("POST", "/api/v1/documents/upload"))
+    filename, content = upload["upload"]
+    assert filename.endswith(".md")
+    assert "已发布知识版本" in content.decode("utf-8")
+
+    normal_chat = next(details for method, path, details in client.request_details if (method, path) == ("POST", "/api/v1/chat"))
+    question = normal_chat["json_body"]["message"]
+    assert question == "生成带引用的回答应依据哪个知识版本？"
+    assert "retrieval-evidence-" not in question
 
 
 def test_retrieval_evidence_production_run_ids_do_not_create_administrators(tmp_path) -> None:
