@@ -23,6 +23,7 @@ from app.service.document_retrieval_service import MixedModeDocumentRetrieverSer
 
 _POLL_ATTEMPTS = 120
 _POLL_INTERVAL_SECONDS = 0.5
+_ACCEPTANCE_MARKER_WORDS = ("晨雾", "海棠", "松林", "星河", "竹影", "云雀", "银杏", "潮汐")
 
 
 @dataclass(frozen=True)
@@ -162,7 +163,8 @@ class RetrievalEvidenceSmoke:
     async def run(self) -> dict[str, Any]:
         started_at = self._now()
         acceptance_time = self._acceptance_time(started_at)
-        question = self._generation_smoke_question(acceptance_time)
+        acceptance_marker = self._acceptance_marker()
+        question = self._generation_smoke_question(acceptance_marker, acceptance_time)
         try:
             missing = self._missing_configuration()
             if missing:
@@ -175,7 +177,11 @@ class RetrievalEvidenceSmoke:
             await self._expect_ok("health", "GET", "/api/v1/health")
             access_token = await self._login_bootstrap_administrator()
             headers = {"Authorization": f"Bearer {access_token}"}
-            document_id, job_id = await self._upload_markdown(headers=headers, acceptance_time=acceptance_time)
+            document_id, job_id = await self._upload_markdown(
+                headers=headers,
+                acceptance_marker=acceptance_marker,
+                acceptance_time=acceptance_time,
+            )
             job = await self._wait_for_job(job_id=job_id, headers=headers)
             chunk_count = await self._verify_chunks(document_id=document_id, headers=headers)
             published_generation = await self._publish_document(document_id=document_id, headers=headers)
@@ -332,14 +338,25 @@ class RetrievalEvidenceSmoke:
         )
 
     @staticmethod
-    def _generation_smoke_question(acceptance_time: str) -> str:
-        return f"根据{acceptance_time}的验收事实，蓝松石版本在生成带引用回答时具有什么作用？"
+    def _generation_smoke_question(acceptance_marker: str, acceptance_time: str) -> str:
+        return f"根据{acceptance_marker}（{acceptance_time}）的验收事实，蓝松石版本在生成带引用回答时具有什么作用？"
 
-    async def _upload_markdown(self, *, headers: Mapping[str, str], acceptance_time: str) -> tuple[str, str]:
+    def _acceptance_marker(self) -> str:
+        digest = sha256(self._run_id.encode("utf-8")).digest()
+        words = "".join(_ACCEPTANCE_MARKER_WORDS[value % len(_ACCEPTANCE_MARKER_WORDS)] for value in digest[:3])
+        return f"{words}验收"
+
+    async def _upload_markdown(
+        self,
+        *,
+        headers: Mapping[str, str],
+        acceptance_marker: str,
+        acceptance_time: str,
+    ) -> tuple[str, str]:
         sentinel = f"retrieval-evidence-{self._run_id}"
         source = (
             "# Generation Smoke Source\n\n"
-            f"验收事实：蓝松石版本在{acceptance_time}的生产验收中，是生成带引用回答的唯一已发布知识版本。\n\n"
+            f"验收事实：蓝松石版本在{acceptance_marker}（{acceptance_time}）的生产验收中，是生成带引用回答的唯一已发布知识版本。\n\n"
             f"验证标识：{sentinel}\n"
         )
         upload = await self._expect_ok(
