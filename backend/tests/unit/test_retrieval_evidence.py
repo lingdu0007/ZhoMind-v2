@@ -82,9 +82,26 @@ class _GenerationFakeHttpClient(_FakeHttpClient):
                 status_code=200,
                 payload={},
                 body=(
-                    'event: content\\ndata: {"content": "基于已发布来源的回答"}\\n\\n'
-                    'event: evidence_summary\\ndata: {"evidence_summary": {"coverage": "sufficient"}}\\n\\n'
-                    "event: done\\ndata: [DONE]\\n\\n"
+                    'event: content\ndata: {"content": "基于已发布来源的回答"}\n\n'
+                    'event: evidence_summary\ndata: {"evidence_summary": {"coverage": "sufficient", "sources": [{"source_id": "chunk-1", "metadata": {"title": "smoke.md", "publication_version": "v1"}, "excerpt": "retrieval evidence excerpt"}]}}\n\n'
+                    "event: done\ndata: [DONE]\n\n"
+                ),
+            )
+        return await super().request(method, path, **kwargs)
+
+
+class _StreamCitationMissingFakeHttpClient(_GenerationFakeHttpClient):
+    async def request(self, method: str, path: str, **kwargs) -> HttpResponse:
+        if path == "/api/v1/chat/stream":
+            self.calls.append((method, path))
+            self.request_details.append((method, path, kwargs))
+            return HttpResponse(
+                status_code=200,
+                payload={},
+                body=(
+                    'event: content\ndata: {"content": "基于已发布来源的回答"}\n\n'
+                    'event: evidence_summary\ndata: {"evidence_summary": {"coverage": "sufficient", "sources": []}}\n\n'
+                    "event: done\ndata: [DONE]\n\n"
                 ),
             )
         return await super().request(method, path, **kwargs)
@@ -237,6 +254,28 @@ def test_generation_smoke_uses_a_natural_language_question_for_the_published_fix
     question = normal_chat["json_body"]["message"]
     assert question == "生成带引用的回答应依据哪个知识版本？"
     assert "retrieval-evidence-" not in question
+
+
+def test_generation_smoke_fails_when_the_stream_omits_the_cited_source(tmp_path) -> None:
+    async def _run() -> dict:
+        runner = RetrievalEvidenceSmoke(
+            settings=_settings(ARK_API_KEY="test-ark-api-key", BASE_URL="https://llm.example.test/v1", MODEL="test-model"),
+            http_client=_StreamCitationMissingFakeHttpClient(),
+            retrieve=lambda query: _return_dense_result(query),
+            output_dir=tmp_path,
+            source_revision="abc123",
+            run_id="generation-run-003",
+            include_generation=True,
+            now=lambda: datetime(2026, 7, 30, tzinfo=timezone.utc),
+            sleep=lambda _: _return_none(),
+        )
+        return await runner.run()
+
+    manifest = asyncio.run(_run())
+
+    assert manifest["outcome"] == "failed"
+    assert manifest["failed_check"] == "generation_stream"
+    assert manifest["failure_code"] == "STREAM_CITATION_MISSING"
 
 
 def test_retrieval_evidence_production_run_ids_do_not_create_administrators(tmp_path) -> None:
