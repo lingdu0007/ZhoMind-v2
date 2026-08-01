@@ -135,15 +135,9 @@ async def _seed_test_data() -> None:
         await SystemSettingsDraftService(session).save(
             actor="browser-bootstrap",
             payload={
-                "model_provider": "ark",
-                "llm_model": "Qwen/Qwen3-32B",
-                "embedding_model": "BAAI/bge-m3",
-                "retrieval_strategy": "migration",
-                "retrieval_top_k": 8,
-                "score_threshold": 0.3,
-                "milvus_uri": "http://milvus.internal:19530",
-                "index_name": "zhomind_docs",
-                "runtime_timeout_ms": 8000,
+                "provider_type": "ark",
+                "model": "Qwen/Qwen3-32B",
+                "service_url": "https://provider.example.test/v1",
                 "provider_api_key": None,
             },
         )

@@ -11,15 +11,9 @@ const jsonResponse = (data, status = 200) => ({
 
 const settingsDraft = {
   draft: {
-    model_provider: 'ark',
-    llm_model: 'Qwen/Qwen3-32B',
-    embedding_model: 'BAAI/bge-m3',
-    retrieval_strategy: 'migration',
-    retrieval_top_k: 8,
-    score_threshold: 0.3,
-    milvus_uri: 'http://milvus.internal:19530',
-    index_name: 'zhomind_docs',
-    runtime_timeout_ms: 8000,
+    provider_type: 'ark',
+    model: 'Qwen/Qwen3-32B',
+    service_url: 'https://provider.example.test/v1',
     provider_api_key: { configured: true }
   },
   saved_version: 2,
@@ -63,7 +57,7 @@ test('System Administrator saves and applies a dirty draft without optimisticall
           applicationStarted
             ? {
                 ...settingsDraft,
-                draft: { ...settingsDraft.draft, llm_model: 'Qwen/Qwen3-14B' },
+                draft: { ...settingsDraft.draft, model: 'Qwen/Qwen3-14B' },
                 saved_version: 3,
                 active_version: 3,
                 application_state: 'active',
@@ -79,7 +73,7 @@ test('System Administrator saves and applies a dirty draft without optimisticall
       await route.fulfill(
         jsonResponse({
           ...settingsDraft,
-          draft: { ...settingsDraft.draft, llm_model: 'Qwen/Qwen3-14B' },
+          draft: { ...settingsDraft.draft, model: 'Qwen/Qwen3-14B' },
           saved_version: 3,
           active_version: 1,
           last_modified: { actor: 'operator', at: '2026-07-31T10:20:00Z' },
@@ -95,7 +89,7 @@ test('System Administrator saves and applies a dirty draft without optimisticall
       await route.fulfill(
         jsonResponse({
           ...settingsDraft,
-          draft: { ...settingsDraft.draft, llm_model: 'Qwen/Qwen3-14B' },
+          draft: { ...settingsDraft.draft, model: 'Qwen/Qwen3-14B' },
           saved_version: 3,
           active_version: 1,
           application_state: 'applying',
@@ -116,10 +110,8 @@ test('System Administrator saves and applies a dirty draft without optimisticall
   await page.getByRole('heading', { name: '系统设置' }).waitFor();
   assert.equal(await page.getByRole('link', { name: '系统设置' }).isVisible(), true);
   assert.equal(await page.getByRole('heading', { name: '模型与提供方' }).isVisible(), true);
-  assert.equal(await page.getByRole('heading', { name: '检索策略' }).isVisible(), true);
-  assert.equal(await page.getByRole('heading', { name: '存储与索引' }).isVisible(), true);
-  assert.equal(await page.getByRole('heading', { name: '安全与运行时' }).isVisible(), true);
-  assert.equal(await page.getByLabel('语言模型').inputValue(), 'Qwen/Qwen3-32B');
+  assert.equal(await page.getByLabel('生成模型').inputValue(), 'Qwen/Qwen3-32B');
+  assert.equal(await page.getByLabel('服务 URL').inputValue(), 'https://provider.example.test/v1');
   assert.equal(await page.getByText('Provider API 密钥已配置，内容已隐藏。').isVisible(), true);
   assert.equal(await page.getByText('已保存版本 2').isVisible(), true);
   assert.equal(await page.getByText('生效版本 1').isVisible(), true);
@@ -134,7 +126,7 @@ test('System Administrator saves and applies a dirty draft without optimisticall
   assert.ok(geometry.rightEdge <= geometry.viewportWidth);
   const [stateBarBounds, timeoutFieldBounds] = await Promise.all([
     page.getByLabel('草稿状态').evaluate((element) => element.getBoundingClientRect().toJSON()),
-    page.getByLabel('运行时超时（毫秒）').evaluate((element) => element.getBoundingClientRect().toJSON())
+    page.getByLabel('服务 URL').evaluate((element) => element.getBoundingClientRect().toJSON())
   ]);
   const verticalGeometry = {
     stateTop: stateBarBounds.top,
@@ -144,11 +136,11 @@ test('System Administrator saves and applies a dirty draft without optimisticall
   };
   assert.ok(verticalGeometry.fieldBottom <= verticalGeometry.stateTop || verticalGeometry.fieldTop >= verticalGeometry.stateBottom);
 
-  await page.getByLabel('语言模型').fill('Qwen/Qwen3-14B');
+  await page.getByLabel('生成模型').fill('Qwen/Qwen3-14B');
   assert.equal(await page.getByText('存在未保存的草稿修改').isVisible(), true);
-  assert.equal(await page.getByText('语言模型已修改').isVisible(), true);
+  assert.equal(await page.getByText('模型已修改').isVisible(), true);
   await page.getByRole('button', { name: '重置到已保存草稿' }).click();
-  assert.equal(await page.getByLabel('语言模型').inputValue(), 'Qwen/Qwen3-32B');
+  assert.equal(await page.getByLabel('生成模型').inputValue(), 'Qwen/Qwen3-32B');
   assert.equal(await page.getByText('存在未保存的草稿修改').count(), 0);
 
   await page.getByLabel('Provider API 密钥').fill('replacement-value');
@@ -156,17 +148,17 @@ test('System Administrator saves and applies a dirty draft without optimisticall
   await page.getByRole('button', { name: '重置到已保存草稿' }).click();
   assert.equal(await page.getByText('Provider API 密钥已修改').count(), 0);
 
-  await page.getByLabel('语言模型').fill('Qwen/Qwen3-14B');
+  await page.getByLabel('生成模型').fill('Qwen/Qwen3-14B');
   await page.getByRole('button', { name: '保存并应用', exact: true }).click();
   await page.getByRole('button', { name: '正在应用版本 3。' }).waitFor();
   assert.equal(saves.length, 1);
-  assert.equal(saves[0].llm_model, 'Qwen/Qwen3-14B');
+  assert.equal(saves[0].model, 'Qwen/Qwen3-14B');
   assert.equal(saves[0].provider_api_key, null);
   assert.deepEqual(applications, [{ version: 3 }]);
   assert.equal(await page.getByText('已保存版本 3').isVisible(), true);
   assert.equal(await page.getByText('生效版本 1').isVisible(), true);
   assert.equal(await page.getByRole('button', { name: '正在应用版本 3。' }).isDisabled(), true);
-  assert.equal(await page.getByLabel('语言模型').isDisabled(), true);
+  assert.equal(await page.getByLabel('生成模型').isDisabled(), true);
   await page.getByText('生效版本 3').waitFor();
   assert.equal(await page.getByText('设置已生效。').isVisible(), true);
   await page.reload();
@@ -250,7 +242,7 @@ test('settings draft validation keeps edits visible and exposes field-level feed
         body: JSON.stringify({
           code: 'VALIDATION_ERROR',
           message: 'system settings draft is invalid',
-          detail: { fields: { llm_model: 'model identifier is unsafe or unsupported' } }
+          detail: { fields: { model: 'model identifier is unsafe or unsupported' } }
         })
       });
       return;
@@ -261,13 +253,13 @@ test('settings draft validation keeps edits visible and exposes field-level feed
   await page.addInitScript(() => localStorage.setItem('access_token', 'admin-token'));
   await page.goto(`${baseUrl}config`);
   await page.getByRole('heading', { name: '系统设置' }).waitFor();
-  await page.getByLabel('语言模型').fill('unsafe value');
+  await page.getByLabel('生成模型').fill('unsafe value');
   await page.getByRole('button', { name: '保存并应用', exact: true }).click();
 
   await page.getByRole('alert').waitFor();
   assert.equal(await page.getByRole('alert').innerText(), '草稿未保存，请修正标记字段后重试。');
   assert.equal(await page.getByText('model identifier is unsafe or unsupported').isVisible(), true);
-  assert.equal(await page.getByLabel('语言模型').inputValue(), 'unsafe value');
+  assert.equal(await page.getByLabel('生成模型').inputValue(), 'unsafe value');
   assert.equal(await page.getByText('存在未保存的草稿修改').isVisible(), true);
 });
 
@@ -323,4 +315,42 @@ test('System Settings keeps its desktop-only boundary explicit on a mobile viewp
   assert.equal(await page.getByRole('form').count(), 0);
   assert.equal(await page.getByLabel('草稿状态').count(), 0);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+});
+
+test('System Settings exposes only one non-secret generation provider configuration', { timeout: 30000 }, async (t) => {
+  const { page, baseUrl } = await startSettingsWorkspace(t, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/me') {
+      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin', capabilities: { system_settings: true } }));
+      return;
+    }
+    if (path === '/api/settings/draft') {
+      await route.fulfill(
+        jsonResponse({
+          draft: {
+            provider_type: 'openai',
+            model: 'gpt-4o-mini',
+            service_url: 'https://provider.example.test/v1',
+            provider_api_key: { configured: true }
+          },
+          saved_version: 1,
+          active_version: 1,
+          last_modified: { actor: 'operator', at: '2026-08-01T12:00:00Z' },
+          application_state: 'active',
+          application: { version: 1, actor: 'operator', at: '2026-08-01T12:00:00Z', message: 'settings version is active' }
+        })
+      );
+      return;
+    }
+    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
+  });
+
+  await page.addInitScript(() => localStorage.setItem('access_token', 'admin-token'));
+  await page.goto(`${baseUrl}config`);
+
+  await page.getByLabel('服务 URL').waitFor();
+  assert.equal(await page.getByLabel('模型提供方').inputValue(), 'openai');
+  assert.equal(await page.getByLabel('生成模型').inputValue(), 'gpt-4o-mini');
+  assert.equal(await page.getByLabel('嵌入模型').count(), 0);
+  assert.equal(await page.getByText('Provider API 密钥已配置，内容已隐藏。').isVisible(), true);
 });

@@ -86,15 +86,9 @@ def _headers(token: str) -> dict[str, str]:
 
 def _valid_draft(**overrides: object) -> dict[str, object]:
     draft: dict[str, object] = {
-        "model_provider": "ark",
-        "llm_model": "Qwen/Qwen3-32B",
-        "embedding_model": "BAAI/bge-m3",
-        "retrieval_strategy": "migration",
-        "retrieval_top_k": 8,
-        "score_threshold": 0.3,
-        "milvus_uri": "http://milvus.internal:19530",
-        "index_name": "zhomind_docs",
-        "runtime_timeout_ms": 8000,
+        "provider_type": "ark",
+        "model": "Qwen/Qwen3-32B",
+        "service_url": "https://provider.example.test/v1",
     }
     draft.update(overrides)
     return draft
@@ -117,6 +111,57 @@ def test_system_settings_draft_is_admin_only_and_masks_first_read(client: TestCl
     assert data["last_modified"] is None
 
 
+def test_system_settings_read_exposes_only_non_secret_generation_configuration(client: TestClient) -> None:
+    admin_token = _register(client, username="settings-admin", role="admin")
+
+    response = client.get("/api/v1/settings/draft", headers=_headers(admin_token))
+
+    assert response.status_code == 200
+    assert set(response.json()["data"]["draft"]) == {
+        "provider_type",
+        "model",
+        "service_url",
+        "provider_api_key",
+    }
+
+
+def test_validated_provider_replacement_activates_a_new_generation_snapshot(client: TestClient, monkeypatch) -> None:
+    admin_token = _register(client, username="settings-admin", role="admin")
+    validation_calls: list[dict] = []
+
+    async def accept_connection(**kwargs: object) -> None:
+        validation_calls.append(kwargs)
+
+    monkeypatch.setattr(get_system_settings_runtime(), "validate", accept_connection)
+    saved = client.put(
+        "/api/v1/settings/draft",
+        headers=_headers(admin_token),
+        json={
+            "provider_type": "openai",
+            "model": "gpt-4o-mini",
+            "service_url": "https://provider.example.test/v1",
+            "provider_api_key": secrets.token_urlsafe(32),
+        },
+    )
+    assert saved.status_code == 200
+
+    applying = client.post("/api/v1/settings/apply", headers=_headers(admin_token), json={"version": 1})
+
+    assert applying.status_code == 200
+    active = client.get("/api/v1/settings/draft", headers=_headers(admin_token)).json()["data"]
+    assert active["active_version"] == 1
+    assert active["application_state"] == "active"
+    assert validation_calls and validation_calls[0]["settings"] == {
+        "provider_type": "openai",
+        "model": "gpt-4o-mini",
+        "service_url": "https://provider.example.test/v1",
+    }
+    runtime_settings = get_system_settings_runtime().current_settings()
+    assert runtime_settings.rag_primary_llm_provider == "openai"
+    assert runtime_settings.openai_model == "gpt-4o-mini"
+    assert runtime_settings.openai_base_url == "https://provider.example.test/v1"
+
+
 def test_system_settings_save_validates_versions_and_never_returns_secret(client: TestClient) -> None:
     admin_token = _register(client, username="settings-admin", role="admin")
     secret_value = secrets.token_urlsafe(32)
@@ -124,11 +169,11 @@ def test_system_settings_save_validates_versions_and_never_returns_secret(client
     invalid = client.put(
         "/api/v1/settings/draft",
         headers=_headers(admin_token),
-        json=_valid_draft(retrieval_strategy="hybrid_rrf"),
+        json=_valid_draft(embedding_model="BAAI/bge-m3"),
     )
     assert invalid.status_code == 400
     assert invalid.json()["code"] == "VALIDATION_ERROR"
-    assert invalid.json()["detail"]["fields"] == {"retrieval_strategy": "unsupported retrieval strategy"}
+    assert invalid.json()["detail"]["fields"] == {"embedding_model": "unsupported setting"}
 
     saved = client.put(
         "/api/v1/settings/draft",
@@ -153,7 +198,7 @@ def test_system_settings_save_validates_versions_and_never_returns_secret(client
     saved_again = client.put(
         "/api/v1/settings/draft",
         headers=_headers(admin_token),
-        json=_valid_draft(llm_model="Qwen/Qwen3-14B"),
+        json=_valid_draft(model="Qwen/Qwen3-14B"),
     )
     assert saved_again.status_code == 200
     assert saved_again.json()["data"]["saved_version"] == 2
@@ -198,7 +243,7 @@ def test_system_settings_never_echoes_a_secret_from_missing_or_unknown_fields(cl
     )
     assert missing_fields.status_code == 400
     assert missing_fields.json()["code"] == "VALIDATION_ERROR"
-    assert missing_fields.json()["detail"]["fields"]["model_provider"] == "is required"
+    assert missing_fields.json()["detail"]["fields"]["provider_type"] == "is required"
     assert secret_value not in missing_fields.text
 
     unknown_field = client.put(
@@ -221,9 +266,14 @@ def test_system_settings_draft_gate_stays_closed_when_disabled(client: TestClien
     assert response.json()["code"] == "SETTINGS_DRAFT_DISABLED"
 
 
-def test_system_settings_application_requires_current_admin_saved_version_and_preserves_active_version(client: TestClient) -> None:
+def test_system_settings_application_requires_current_admin_saved_version_and_preserves_active_version(client: TestClient, monkeypatch) -> None:
     user_token = _register(client, username="knowledge-user")
     admin_token = _register(client, username="settings-admin", role="admin")
+
+    async def accept_connection(**_: object) -> None:
+        return None
+
+    monkeypatch.setattr(get_system_settings_runtime(), "validate", accept_connection)
 
     forbidden = client.post("/api/v1/settings/apply", headers=_headers(user_token), json={"version": 1})
     assert forbidden.status_code == 403
@@ -237,7 +287,11 @@ def test_system_settings_application_requires_current_admin_saved_version_and_pr
     assert invalid.status_code == 400
     assert invalid.json()["code"] == "SETTINGS_VERSION_INVALID"
 
-    saved_v1 = client.put("/api/v1/settings/draft", headers=_headers(admin_token), json=_valid_draft())
+    saved_v1 = client.put(
+        "/api/v1/settings/draft",
+        headers=_headers(admin_token),
+        json=_valid_draft(provider_api_key=secrets.token_urlsafe(32)),
+    )
     assert saved_v1.status_code == 200
     assert saved_v1.json()["data"]["application_state"] == "saved"
     assert saved_v1.json()["data"]["active_version"] is None
@@ -267,17 +321,24 @@ def test_system_settings_application_requires_current_admin_saved_version_and_pr
     restored = client.get("/api/v1/settings/draft", headers=_headers(admin_token)).json()["data"]
     assert restored["active_version"] == 1
     assert get_system_settings_runtime().current_settings().llm_model == "Qwen/Qwen3-32B"
-    assert get_system_settings_runtime().current_settings().runtime_retrieval_top_k == 8
+    assert get_system_settings_runtime().current_settings().rag_primary_llm_provider == "ark"
 
     saved_v2 = client.put(
         "/api/v1/settings/draft",
         headers=_headers(admin_token),
-        json=_valid_draft(llm_model="Qwen/Qwen3-14B"),
+        json=_valid_draft(model="Qwen/Qwen3-14B"),
     )
     assert saved_v2.status_code == 200
     assert saved_v2.json()["data"]["saved_version"] == 2
     assert saved_v2.json()["data"]["active_version"] == 1
     assert saved_v2.json()["data"]["application_state"] == "saved"
+    assert saved_v2.json()["data"]["active"] == {
+        "provider_type": "ark",
+        "model": "Qwen/Qwen3-32B",
+        "service_url": "https://provider.example.test/v1",
+        "provider_api_key": {"configured": True},
+        "version": 1,
+    }
 
     stale = client.post("/api/v1/settings/apply", headers=_headers(admin_token), json={"version": 1})
     assert stale.status_code == 409
@@ -289,9 +350,14 @@ def test_system_settings_application_requires_current_admin_saved_version_and_pr
     assert active_after_stale.json()["data"]["application_state"] == "saved"
 
 
-def test_system_settings_application_rejects_unsupported_versions_and_records_a_safe_failure(client: TestClient, monkeypatch) -> None:
+def test_failed_provider_validation_preserves_active_provider_and_returns_a_sanitized_error(client: TestClient, monkeypatch) -> None:
     admin_token = _register(client, username="settings-admin", role="admin")
     secret_value = secrets.token_urlsafe(32)
+
+    async def accept_connection(**_: object) -> None:
+        return None
+
+    monkeypatch.setattr(get_system_settings_runtime(), "validate", accept_connection)
 
     saved_v1 = client.put(
         "/api/v1/settings/draft",
@@ -303,52 +369,25 @@ def test_system_settings_application_rejects_unsupported_versions_and_records_a_
     assert active_v1.status_code == 200
     assert client.get("/api/v1/settings/draft", headers=_headers(admin_token)).json()["data"]["active_version"] == 1
 
-    unsupported = client.put(
+    replacement = client.put(
         "/api/v1/settings/draft",
         headers=_headers(admin_token),
-        json=_valid_draft(model_provider="openai"),
+        json=_valid_draft(provider_type="openai", model="gpt-4o-mini"),
     )
-    assert unsupported.status_code == 200
+    assert replacement.status_code == 200
+
+    async def reject_connection(**_: object) -> None:
+        raise RuntimeApplicationError("raw provider details must not escape")
+
+    monkeypatch.setattr(get_system_settings_runtime(), "validate", reject_connection)
     rejected = client.post("/api/v1/settings/apply", headers=_headers(admin_token), json={"version": 2})
     assert rejected.status_code == 409
     assert rejected.json()["code"] == "SETTINGS_VERSION_UNSUPPORTED"
-    assert rejected.json()["detail"]["fields"] == {"model_provider": "requires an Ark runtime lifecycle"}
+    assert rejected.json()["detail"]["fields"] == {"settings": "cannot be applied by the running system"}
     assert secret_value not in rejected.text
-
-    async def fail_runtime_application(**_: object) -> None:
-        raise RuntimeApplicationError("runtime rejected the saved configuration")
-
-    monkeypatch.setattr(get_system_settings_runtime(), "apply", fail_runtime_application)
-    saved_v3 = client.put(
-        "/api/v1/settings/draft",
-        headers=_headers(admin_token),
-        json=_valid_draft(llm_model="Qwen/Qwen3-14B"),
-    )
-    assert saved_v3.status_code == 200
-    applying = client.post("/api/v1/settings/apply", headers=_headers(admin_token), json={"version": 3})
-    assert applying.status_code == 200
-    assert applying.json()["data"]["application_state"] == "applying"
-
-    failed = client.get("/api/v1/settings/draft", headers=_headers(admin_token))
-    failed_data = failed.json()["data"]
-    assert failed_data["saved_version"] == 3
-    assert failed_data["active_version"] == 1
-    assert failed_data["application_state"] == "failed"
-    assert failed_data["application"]["version"] == 3
-    assert failed_data["application"]["actor"] == "settings-admin"
-    assert failed_data["application"]["message"] == "runtime rejected the saved configuration"
-    assert secret_value not in failed.text
-
-    get_system_settings_runtime().reset()
-
-    async def _restore_rejected_active_runtime() -> None:
-        async with client.app.state.settings_session_factory() as session:
-            await SystemSettingsDraftService(session).restore_active_application()
-
-    asyncio.run(_restore_rejected_active_runtime())
-    restored_failure = client.get("/api/v1/settings/draft", headers=_headers(admin_token)).json()["data"]
-    assert restored_failure["active_version"] is None
-    assert restored_failure["application_state"] == "failed"
+    active = client.get("/api/v1/settings/draft", headers=_headers(admin_token)).json()["data"]
+    assert active["active_version"] == 1
+    assert active["application_state"] == "saved"
 
 
 def test_system_settings_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> None:

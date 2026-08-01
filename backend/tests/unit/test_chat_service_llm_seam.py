@@ -47,6 +47,8 @@ def test_assistant_reply_uses_provider_router_when_gate_passed(monkeypatch, serv
             retrieved=[{"content_preview": "证据A"}],
             gate_passed=True,
             gate_reason="passed",
+            generation_settings=get_settings(),
+            provider_router=service._provider_router(),
         )
     )
     assert answer == "基于证据的回答"
@@ -63,6 +65,8 @@ def test_assistant_reply_rejects_when_gate_failed(service: ChatService) -> None:
             retrieved=[],
             gate_passed=False,
             gate_reason="reject_insufficient_evidence",
+            generation_settings=get_settings(),
+            provider_router=service._provider_router(),
         )
     )
     assert "未检索到足够相关的知识片段" in answer

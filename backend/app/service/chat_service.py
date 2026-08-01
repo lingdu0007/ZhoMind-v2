@@ -180,6 +180,8 @@ class ChatService:
         gate_passed: bool,
         *,
         gate_reason: str,
+        generation_settings,
+        provider_router: ProviderRouter,
     ) -> tuple[str, dict]:
         if gate_reason == "smalltalk_fallback":
             text = self._smalltalk_reply()
@@ -200,9 +202,8 @@ class ChatService:
             }
 
         prompt = self._compose_llm_prompt(question=question, retrieved=retrieved)
-        settings = get_runtime_settings()
-        llm_result = await self._provider_router().complete(
-            primary=settings.rag_primary_llm_provider,
+        llm_result = await provider_router.complete(
+            primary=generation_settings.rag_primary_llm_provider,
             fallbacks=[],
             prompt=prompt,
         )
@@ -566,6 +567,10 @@ class ChatService:
         return deleted
 
     async def run_chat(self, user_id: str, question: str, session_id: str | None) -> dict:
+        # Capture generation dependencies at request admission. A later provider
+        # replacement only affects requests admitted after its atomic cutover.
+        generation_settings = get_runtime_settings()
+        provider_router = self._provider_router()
         sid = await self.ensure_session_id(session_id)
         session = await self.repo.get_or_create_session(session_id=sid, user_id=user_id)
 
@@ -613,6 +618,8 @@ class ChatService:
             retrieved=reranked,
             gate_passed=gate_passed,
             gate_reason=gate_reason,
+            generation_settings=generation_settings,
+            provider_router=provider_router,
         )
         llm_name = str(llm_result.get("final_provider") or CHAT_LLM_PROVIDER)
         rag_steps = self._rag_steps(
