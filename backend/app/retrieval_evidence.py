@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
+from secrets import token_urlsafe
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -181,8 +182,9 @@ class RetrievalEvidenceSmoke:
             candidate = self._verify_dense_retrieval(result=result, document_id=document_id)
             chat_model_check = {"invoked": False}
             if self._include_generation:
+                knowledge_user_headers = await self._admit_knowledge_user(administrator_headers=headers)
                 chat_model_check = await self._verify_generation_loop(
-                    headers=headers,
+                    headers=knowledge_user_headers,
                     question=_GENERATION_SMOKE_QUESTION,
                     expected_source_id=str(candidate["chunk_id"]),
                 )
@@ -290,6 +292,36 @@ class RetrievalEvidenceSmoke:
         if not isinstance(access_token, str) or not access_token:
             raise _SmokeFailure("administrator_login", "ACCESS_TOKEN_MISSING")
         return access_token
+
+    async def _admit_knowledge_user(self, *, administrator_headers: Mapping[str, str]) -> Mapping[str, str]:
+        invitation = await self._expect_ok(
+            "knowledge_user_admission",
+            "POST",
+            "/api/v1/members/invitations",
+            headers=administrator_headers,
+            json_body={},
+        )
+        invitation_code = invitation.get("invitation_code")
+        if not isinstance(invitation_code, str) or not invitation_code:
+            raise _SmokeFailure("knowledge_user_admission", "INVITATION_CODE_MISSING")
+
+        suffix = sha256(self._run_id.encode("utf-8")).hexdigest()[:24]
+        username = f"generation-smoke-{suffix}"
+        password = token_urlsafe(32)
+        registration = await self._expect_ok(
+            "knowledge_user_admission",
+            "POST",
+            "/api/v1/auth/register",
+            json_body={
+                "username": username,
+                "password": password,
+                "invitation_code": invitation_code,
+            },
+        )
+        access_token = registration.get("access_token")
+        if not isinstance(access_token, str) or not access_token:
+            raise _SmokeFailure("knowledge_user_admission", "KNOWLEDGE_USER_ACCESS_TOKEN_MISSING")
+        return {"Authorization": f"Bearer {access_token}"}
 
     async def _upload_markdown(self, *, headers: Mapping[str, str]) -> tuple[str, str]:
         sentinel = f"retrieval-evidence-{self._run_id}"

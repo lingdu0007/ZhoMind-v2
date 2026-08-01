@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timezone
+from pathlib import Path
+import subprocess
 
 from app.common.config import Settings
 from app.rag.dense_contract import build_embedding_contract_fingerprint
@@ -22,6 +24,13 @@ class _FakeHttpClient:
             return HttpResponse(status_code=200, payload={"code": "OK", "data": {"status": "up"}})
         if path == "/api/v1/auth/login":
             return HttpResponse(status_code=200, payload={"code": "OK", "data": {"access_token": "login-token"}})
+        if path == "/api/v1/members/invitations":
+            return HttpResponse(
+                status_code=200,
+                payload={"code": "OK", "data": {"id": "invitation-1", "invitation_code": "team-invitation-code"}},
+            )
+        if path == "/api/v1/auth/register":
+            return HttpResponse(status_code=200, payload={"code": "OK", "data": {"access_token": "knowledge-user-token"}})
         if path == "/api/v1/documents/upload":
             return HttpResponse(status_code=200, payload={"code": "OK", "data": {"document_id": "doc-ingested", "job_id": "job-1"}})
         if path == "/api/v1/documents/jobs/job-1":
@@ -224,6 +233,104 @@ def test_generation_smoke_proves_cited_normal_and_streaming_chat_without_recordi
     assert "https://llm.example.test/v1" not in serialized
     assert "基于已发布来源的回答" not in serialized
     assert "retrieval evidence excerpt" not in serialized
+
+
+def test_generation_smoke_admits_a_knowledge_user_before_calling_chat(tmp_path) -> None:
+    async def _run() -> tuple[dict, _GenerationFakeHttpClient]:
+        client = _GenerationFakeHttpClient()
+        runner = RetrievalEvidenceSmoke(
+            settings=_settings(ARK_API_KEY="test-ark-api-key", BASE_URL="https://llm.example.test/v1", MODEL="test-model"),
+            http_client=client,
+            retrieve=lambda query: _return_dense_result(query),
+            output_dir=tmp_path,
+            source_revision="abc123",
+            run_id="generation-run-knowledge-user",
+            include_generation=True,
+            now=lambda: datetime(2026, 7, 30, tzinfo=timezone.utc),
+            sleep=lambda _: _return_none(),
+        )
+        return await runner.run(), client
+
+    manifest, client = asyncio.run(_run())
+
+    assert manifest["outcome"] == "passed"
+    invitation = next(details for method, path, details in client.request_details if (method, path) == ("POST", "/api/v1/members/invitations"))
+    assert invitation["headers"] == {"Authorization": "Bearer login-token"}
+    registration = next(details for method, path, details in client.request_details if (method, path) == ("POST", "/api/v1/auth/register"))
+    assert registration["json_body"]["invitation_code"] == "team-invitation-code"
+    assert registration["json_body"]["username"].startswith("generation-smoke-")
+    assert not registration["json_body"]["password"].startswith("generation-smoke-")
+    assert registration["json_body"]["password"] not in json.dumps(manifest)
+    for method, path, details in client.request_details:
+        if (method, path) in {("POST", "/api/v1/chat"), ("POST", "/api/v1/chat/stream")}:
+            assert details["headers"] == {"Authorization": "Bearer knowledge-user-token"}
+
+
+def test_production_acceptance_rejects_a_missing_generation_configuration(tmp_path) -> None:
+    repository_root = Path(__file__).resolve().parents[3]
+    script = repository_root / "deploy" / "production" / "acceptance.sh"
+    app_directory = tmp_path / "app"
+    fake_bin = tmp_path / "bin"
+    app_directory.mkdir()
+    fake_bin.mkdir()
+    (app_directory / ".env").write_text(
+        "\n".join(
+            (
+                "BOOTSTRAP_ADMIN_USERNAME=test-admin",
+                "BOOTSTRAP_ADMIN_PASSWORD=test-password",
+                "EMBEDDING_API_KEY=test-embedding-key",
+                "EMBEDDING_BASE_URL=https://embedding.example.test/v1",
+                "EMBEDDING_MODEL=Qwen/Qwen3-Embedding-8B",
+                "DENSE_EMBEDDING_DIM=1024",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    _write_executable(
+        fake_bin / "sudo",
+        "#!/usr/bin/env bash\nshift\nexec \"$@\"\n",
+    )
+    _write_executable(
+        fake_bin / "docker",
+        "#!/usr/bin/env bash\n"
+        "if [[ \" $* \" == *\" ps \"* ]]; then\n"
+        "  printf '%s\\n' postgres redis etcd minio milvus backend caddy\n"
+        "fi\n",
+    )
+    _write_executable(fake_bin / "openssl", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(
+        fake_bin / "curl",
+        "#!/usr/bin/env bash\n"
+        "url=${!#}\n"
+        "case \"$url\" in\n"
+        "  */api/health) printf '%s' '{\"data\":{\"status\":\"up\"}}' ;;\n"
+        "  */api/auth/login) printf '%s' '{\"data\":{\"access_token\":\"test-token\"}}' ;;\n"
+        "  */api/auth/me) printf '%s' '{\"data\":{\"role\":\"admin\"}}' ;;\n"
+        "  *) printf '%s' '<div id=\"app\"></div>' ;;\n"
+        "esac\n",
+    )
+
+    result = subprocess.run(
+        ["bash", str(script)],
+        capture_output=True,
+        check=False,
+        env={
+            "DEPLOY_APP_DIR": str(app_directory),
+            "DEPLOY_CADDY_SITE_ADDRESS": "zhomind.example.test",
+            "PATH": f"{fake_bin}:{Path('/usr/bin')}:{Path('/bin')}",
+            "SOURCE_REVISION": "test-revision",
+        },
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "live Generation Smoke requires complete approved-provider configuration" in result.stderr
+
+
+def _write_executable(path: Path, content: str) -> None:
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o755)
 
 
 def test_generation_smoke_uses_a_natural_language_question_for_the_published_fixture(tmp_path) -> None:
