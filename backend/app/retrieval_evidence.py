@@ -177,7 +177,7 @@ class RetrievalEvidenceSmoke:
             job = await self._wait_for_job(job_id=job_id, headers=headers)
             chunk_count = await self._verify_chunks(document_id=document_id, headers=headers)
             published_generation = await self._publish_document(document_id=document_id, headers=headers)
-            result = await self._retrieve(f"retrieval-evidence-{self._run_id}")
+            result = await self._retrieve(_GENERATION_SMOKE_QUESTION)
             candidate = self._verify_dense_retrieval(result=result, document_id=document_id)
             chat_model_check = {"invoked": False}
             if self._include_generation:

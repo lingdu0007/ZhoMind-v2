@@ -270,7 +270,7 @@ def test_retrieval_evidence_production_run_ids_do_not_create_administrators(tmp_
 
 
 async def _return_dense_result(query: str) -> _DenseResult:
-    assert query.startswith("retrieval-evidence-")
+    assert query == "生成带引用的回答应依据哪个知识版本？"
     return _DenseResult()
 
 
