@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.model.user import User
@@ -27,6 +27,15 @@ class UserRepository:
     async def list_members(self) -> list[User]:
         result = await self.session.execute(select(User).order_by(User.created_at.asc(), User.username.asc()))
         return list(result.scalars())
+
+    async def count_active_members(self) -> int:
+        result = await self.session.scalar(
+            select(func.count()).select_from(User).where(User.is_active.is_(True))
+        )
+        return int(result or 0)
+
+    async def lock_active_members(self) -> None:
+        await self.session.execute(select(User.id).where(User.is_active.is_(True)).with_for_update())
 
     async def promote(self, user: User) -> User:
         user.role = "admin"

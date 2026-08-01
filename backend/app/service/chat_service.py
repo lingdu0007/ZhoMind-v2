@@ -528,6 +528,8 @@ class ChatService:
         return f"session_{uuid.uuid4().hex[:16]}"
 
     async def list_sessions(self, user_id: str) -> list[dict]:
+        if await self.repo.purge_expired_sessions():
+            await self.session.commit()
         sessions = await self.repo.list_sessions(user_id=user_id, limit=20)
         items: list[dict] = []
         for session in sessions:
@@ -542,6 +544,8 @@ class ChatService:
         return items
 
     async def get_session_messages(self, session_id: str, user_id: str, role: str) -> list[dict]:
+        if await self.repo.purge_expired_sessions():
+            await self.session.commit()
         session = await self.repo.get_session(session_id=session_id, user_id=user_id)
         if session is None:
             return []
@@ -571,6 +575,7 @@ class ChatService:
         # replacement only affects requests admitted after its atomic cutover.
         generation_settings = get_runtime_settings()
         provider_router = self._provider_router()
+        await self.repo.purge_expired_sessions()
         sid = await self.ensure_session_id(session_id)
         session = await self.repo.get_or_create_session(session_id=sid, user_id=user_id)
 
