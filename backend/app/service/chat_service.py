@@ -13,6 +13,7 @@ from app.rag.runtime.graph_runner import RagGraphRunner
 from app.repository.chat_repository import ChatRepository
 from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
 from app.service.runtime_trace_mapper import RuntimeTraceMapper
+from app.settings.runtime import get_runtime_settings
 
 CHAT_RETRIEVER_PROVIDER = "chat-default-retriever"
 CHAT_RERANK_PROVIDER = "chat-default-reranker"
@@ -195,21 +196,17 @@ class ChatService:
             }
 
         prompt = self._compose_llm_prompt(question=question, retrieved=retrieved)
-        settings = get_settings()
+        settings = get_runtime_settings()
         llm_result = await self._provider_router().complete(
             primary=settings.rag_primary_llm_provider,
-            fallbacks=settings.rag_llm_fallback_providers,
+            fallbacks=[],
             prompt=prompt,
         )
         completion = str(llm_result.get("text") or "").strip()
         if completion:
             return completion, llm_result
 
-        lines = ["根据检索到的知识片段，先给你一个最小可用回答："]
-        for idx, item in enumerate(retrieved[:3], start=1):
-            content = str(item.get("content_preview") or item.get("content") or "")
-            lines.append(f"{idx}. {content}")
-        text = "\n".join(lines)
+        text = "生成服务暂不可用，请稍后重试。"
         llm_result["text"] = text
         return text, llm_result
 
@@ -593,10 +590,6 @@ class ChatService:
         if not reranked and gate_passed:
             gate_passed = False
             gate_reason = "reject_insufficient_evidence"
-
-        if get_settings().rag_disable_gate:
-            gate_passed = True
-            gate_reason = "gate_disabled"
 
         if not gate_passed and self._is_smalltalk_question(normalized_question):
             gate_passed = True

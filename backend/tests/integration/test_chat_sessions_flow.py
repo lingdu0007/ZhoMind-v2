@@ -298,7 +298,7 @@ def test_chat_and_sessions_flow(monkeypatch) -> None:
             chat_data = _extract_data(chat_body)
             assert chat_data["session_id"] == "session_test_1"
             assert isinstance(chat_data["answer"], str)
-            assert "高优先级证据" in chat_data["answer"]
+            assert chat_data["answer"] == "生成服务暂不可用，请稍后重试。"
             assert chat_data["message"]["type"] == "assistant"
             diagnostics = chat_data["retrieval_diagnostics"]
             assert diagnostics["candidate_counts"] == {"retrieved": 2, "reranked": 1}
@@ -645,7 +645,7 @@ def test_chat_dense_trace_uses_default_mixed_mode_retriever(monkeypatch) -> None
 
             evidence = saved_trace["evidence"]
             assert [item["retrieval_source"] for item in evidence] == ["dense", "lexical"]
-            assert "alpha evidence from dense corpus" in data["answer"]
+            assert data["answer"] == "生成服务暂不可用，请稍后重试。"
     finally:
         if prev_retriever is not None:
             registry.register_retriever(CHAT_RETRIEVER_PROVIDER, prev_retriever)
@@ -875,7 +875,7 @@ def test_chat_dense_failure_full_lexical_fallback_reads_tail_of_published_live_c
 
             evidence = saved_trace["evidence"]
             assert [item["document_id"] for item in evidence] == ["doc-chat-tail-match"]
-            assert "xqvzjk chat tail evidence" in data["answer"]
+            assert data["answer"] == "生成服务暂不可用，请稍后重试。"
     finally:
         if prev_retriever is not None:
             registry.register_retriever(CHAT_RETRIEVER_PROVIDER, prev_retriever)

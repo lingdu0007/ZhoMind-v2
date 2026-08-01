@@ -32,16 +32,33 @@ class _RetryableFailProvider:
 
 
 class _OkProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
     async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
+        self.calls += 1
         return "fallback-ok"
 
 
-def test_chat_fallback_to_secondary_provider(monkeypatch) -> None:
+class _PublishedEvidenceRetriever:
+    async def retrieve(self, query: str, top_k: int) -> list[dict]:
+        return [
+            {
+                "chunk_id": "published-chunk-1",
+                "document_id": "published-document-1",
+                "generation": 1,
+                "content_preview": "已发布资料中的可引用事实。",
+                "metadata": {"title": "已发布资料", "published_generation": 1},
+                "retrieval_source": "lexical",
+            }
+        ]
+
+
+def test_chat_does_not_fallback_when_the_active_provider_fails(monkeypatch) -> None:
     db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     fake_redis = _InMemoryRedis()
 
-    monkeypatch.setenv("RAG_DISABLE_GATE", "true")
     monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "ark")
     monkeypatch.setenv("RAG_LLM_FALLBACK_PROVIDERS", "openai")
     monkeypatch.setenv("ADMIN_INVITE_CODE", "provider-test-admin-code")
@@ -63,9 +80,12 @@ def test_chat_fallback_to_secondary_provider(monkeypatch) -> None:
     registry = get_extension_registry()
     prev_ark = registry.get_llm("ark")
     prev_openai = registry.get_llm("openai")
+    prev_retriever = registry.get_retriever("chat-default-retriever")
 
     registry.register_llm("ark", _RetryableFailProvider())
-    registry.register_llm("openai", _OkProvider())
+    secondary = _OkProvider()
+    registry.register_llm("openai", secondary)
+    registry.register_retriever("chat-default-retriever", _PublishedEvidenceRetriever())
 
     try:
         with TestClient(app) as client:
@@ -90,8 +110,20 @@ def test_chat_fallback_to_secondary_provider(monkeypatch) -> None:
             assert resp.status_code == 200
             data = resp.json()["data"]
             diagnostics = data["retrieval_diagnostics"]
-            assert data["answer"] == "fallback-ok"
-            assert diagnostics["fallback"] == {"state": "used", "hops": 1, "final_provider": "openai"}
+            assert data["answer"] == "生成服务暂不可用，请稍后重试。"
+            assert data["message"]["evidence_summary"] == {
+                "coverage": "sufficient",
+                "source_count": 1,
+                "sources": [
+                    {
+                        "source_id": "published-chunk-1",
+                        "metadata": {"title": "已发布资料"},
+                        "excerpt": "已发布资料中的可引用事实。",
+                    }
+                ],
+            }
+            assert secondary.calls == 0
+            assert diagnostics["fallback"] == {"state": "not_used", "hops": 0, "final_provider": "ark"}
             assert diagnostics["provider_errors"] == [{"stage": "generate", "code": "TimeoutError", "type": None}]
             assert "rag_trace" not in data
     finally:
@@ -104,6 +136,11 @@ def test_chat_fallback_to_secondary_provider(monkeypatch) -> None:
             registry.llm_providers.pop("openai", None)
         else:
             registry.register_llm("openai", prev_openai)
+
+        if prev_retriever is None:
+            registry.retrievers.pop("chat-default-retriever", None)
+        else:
+            registry.register_retriever("chat-default-retriever", prev_retriever)
 
         app.dependency_overrides.clear()
         get_settings.cache_clear()
