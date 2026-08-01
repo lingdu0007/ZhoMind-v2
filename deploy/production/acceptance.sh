@@ -116,5 +116,5 @@ if [[ -n "${EMBEDDING_API_KEY:-}" && -n "${EMBEDDING_BASE_URL:-}" && -n "${EMBED
     --run-id "$generation_run_id" >/dev/null
   printf 'live approved-provider cited chat and stream Generation Smoke passed\n'
 else
-  printf 'live Generation Smoke skipped because retrieval or approved Ark provider configuration is incomplete\n'
+  fail 'live Generation Smoke requires complete approved-provider configuration'
 fi
