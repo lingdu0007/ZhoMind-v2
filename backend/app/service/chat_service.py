@@ -153,7 +153,7 @@ class ChatService:
         if not compact:
             return False
 
-        patterns = (
+        patterns = {
             "你是谁",
             "你叫什麼",
             "你叫什么",
@@ -162,11 +162,13 @@ class ChatService:
             "whoareyou",
             "whatyourname",
             "whatareyou",
-        )
-        if any(pattern in compact for pattern in patterns):
-            return True
-
-        return compact in {"你好", "您好", "hello", "hi", "hey"}
+            "你好",
+            "您好",
+            "hello",
+            "hi",
+            "hey",
+        }
+        return compact in patterns
 
     def _smalltalk_reply(self) -> str:
         return "【非知识库回复】我是 ZhoMind 智能助手，可以帮你基于知识库问答、梳理文档与会话内容。"

@@ -180,7 +180,11 @@ class RetrievalEvidenceSmoke:
             candidate = self._verify_dense_retrieval(result=result, document_id=document_id)
             chat_model_check = {"invoked": False}
             if self._include_generation:
-                chat_model_check = await self._verify_generation_loop(headers=headers, question=f"retrieval-evidence-{self._run_id}")
+                chat_model_check = await self._verify_generation_loop(
+                    headers=headers,
+                    question=f"retrieval-evidence-{self._run_id}",
+                    expected_source_id=str(candidate["chunk_id"]),
+                )
 
             manifest = self._manifest_base(started_at=started_at)
             manifest.update(
@@ -340,7 +344,13 @@ class RetrievalEvidenceSmoke:
                 return item
         raise _SmokeFailure("retrieval", "INGESTED_DOCUMENT_NOT_RETRIEVED")
 
-    async def _verify_generation_loop(self, *, headers: Mapping[str, str], question: str) -> dict[str, Any]:
+    async def _verify_generation_loop(
+        self,
+        *,
+        headers: Mapping[str, str],
+        question: str,
+        expected_source_id: str,
+    ) -> dict[str, Any]:
         session_id = f"generation-{sha256(self._run_id.encode('utf-8')).hexdigest()[:24]}"
         response = await self._expect_ok(
             "generation_normal",
@@ -352,7 +362,7 @@ class RetrievalEvidenceSmoke:
         answer = response.get("answer")
         if not isinstance(answer, str) or not answer.strip() or answer.startswith("【生成不可用】"):
             raise _SmokeFailure("generation_normal", "GENERATION_RESPONSE_INVALID")
-        citation_source_count = self._verify_cited_response(response)
+        citation_source_count = self._verify_cited_response(response, expected_source_id=expected_source_id)
 
         stream = await self._http_client.request(
             "POST",
@@ -372,7 +382,7 @@ class RetrievalEvidenceSmoke:
         }
 
     @staticmethod
-    def _verify_cited_response(response: Mapping[str, Any]) -> int:
+    def _verify_cited_response(response: Mapping[str, Any], *, expected_source_id: str) -> int:
         message = response.get("message")
         summary = message.get("evidence_summary") if isinstance(message, Mapping) else None
         if not isinstance(summary, Mapping) or summary.get("coverage") != "sufficient":
@@ -380,6 +390,8 @@ class RetrievalEvidenceSmoke:
         sources = summary.get("sources")
         if not isinstance(sources, list) or not sources:
             raise _SmokeFailure("generation_normal", "CITATION_MISSING")
+        if not any(isinstance(source, Mapping) and source.get("source_id") == expected_source_id for source in sources):
+            raise _SmokeFailure("generation_normal", "INGESTED_SOURCE_NOT_CITED")
         for source in sources:
             metadata = source.get("metadata") if isinstance(source, Mapping) else None
             if (

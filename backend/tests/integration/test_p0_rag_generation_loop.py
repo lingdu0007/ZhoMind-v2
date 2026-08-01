@@ -276,6 +276,19 @@ def test_narrow_social_reply_is_explicitly_labeled_as_non_knowledge_base(monkeyp
                 "sources": [],
             }
             assert provider.prompts == []
+
+            substantive_response = client.post(
+                "/api/v1/chat",
+                headers=headers,
+                json={"message": "你是谁？再根据知识库说明部署流程", "session_id": "not-smalltalk"},
+            )
+
+            assert substantive_response.status_code == 200
+            substantive_data = substantive_response.json()["data"]
+            assert "未检索到足够相关的知识片段" in substantive_data["answer"]
+            assert not substantive_data["answer"].startswith("【非知识库回复】")
+            assert substantive_data["message"]["evidence_summary"]["coverage"] == "insufficient"
+            assert provider.prompts == []
     finally:
         app.dependency_overrides.clear()
         get_extension_registry.cache_clear()
