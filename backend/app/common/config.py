@@ -64,8 +64,6 @@ class Settings(BaseSettings):
     rag_tool_timeout_ms: int = Field(8000, alias="RAG_TOOL_TIMEOUT_MS")
     rag_default_llm_provider: str = Field("chat-default-llm", alias="RAG_DEFAULT_LLM_PROVIDER")
     rag_primary_llm_provider: str = Field("ark", alias="RAG_PRIMARY_LLM_PROVIDER")
-    rag_llm_fallback_providers_raw: str = Field("openai,anthropic", alias="RAG_LLM_FALLBACK_PROVIDERS")
-    rag_disable_gate: bool = Field(False, alias="RAG_DISABLE_GATE")
 
     # OpenAI / Anthropic
     openai_api_key: str = Field("", alias="OPENAI_API_KEY")
@@ -110,12 +108,6 @@ class Settings(BaseSettings):
     @property
     def milvus_uri_normalized(self) -> str:
         return self._normalize_optional_text(self.milvus_uri)
-
-    @property
-    def rag_llm_fallback_providers(self) -> list[str]:
-        parts = [item.strip() for item in self.rag_llm_fallback_providers_raw.split(",")]
-        return [item for item in parts if item]
-
 
 @lru_cache
 def get_settings() -> Settings:
