@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 1 || "$1" != "smoke" ]]; then
-  printf 'usage: retrieval-evidence smoke\n' >&2
+if [[ $# -ne 1 || ( "$1" != "smoke" && "$1" != "generation-smoke" ) ]]; then
+  printf 'usage: retrieval-evidence {smoke|generation-smoke}\n' >&2
   exit 2
 fi
+
+profile=$1
 
 repository_root=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)
 workspace_root=$(cd "$repository_root/../.." && pwd)
@@ -61,7 +63,7 @@ for _ in $(seq 1 60); do
     source_revision=$(git -C "$repository_root" rev-parse HEAD)
     "${compose[@]}" run --rm --no-deps \
       --volume "$evidence_output:/evidence" \
-      backend python -m app.retrieval_evidence smoke \
+      backend python -m app.retrieval_evidence "$profile" \
       --base-url http://backend:8000 \
       --output-dir /evidence \
       --source-revision "$source_revision" \

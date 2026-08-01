@@ -142,7 +142,7 @@ class MixedModeDocumentRetrieverService:
         lexical_scope: str,
         fingerprint: str | None = None,
     ) -> list[dict[str, Any]]:
-        stmt = select(DocumentChunk).join(Document, DocumentChunk.document_id == Document.id).where(
+        stmt = select(DocumentChunk, Document).join(Document, DocumentChunk.document_id == Document.id).where(
             Document.deleted_at.is_(None),
             Document.published_generation > 0,
             DocumentChunk.generation == Document.published_generation,
@@ -159,10 +159,11 @@ class MixedModeDocumentRetrieverService:
             stmt = stmt.limit(self._candidate_limit)
 
         result = await self._session.execute(stmt)
-        candidates = list(result.scalars().all())
+        candidates = list(result.all())
 
         ranked: list[dict[str, Any]] = []
-        for chunk in candidates:
+        for candidate in candidates:
+            chunk, document = self._chunk_and_document(candidate)
             score = self._score_chunk(query=query, content=chunk.content)
             if score <= self._settings.runtime_score_threshold:
                 continue
@@ -174,7 +175,7 @@ class MixedModeDocumentRetrieverService:
                     "chunk_index": chunk.chunk_index,
                     "score": round(score, 4),
                     "content_preview": chunk.content[:160],
-                    "metadata": chunk.chunk_metadata,
+                    "metadata": self._citation_metadata(chunk=chunk, document=document),
                     "retrieval_source": "lexical",
                 }
             )
@@ -216,7 +217,7 @@ class MixedModeDocumentRetrieverService:
 
         document_ids = sorted({str(item["document_id"]) for item in dense_candidates})
         result = await self._session.execute(
-            select(DocumentChunk)
+            select(DocumentChunk, Document)
             .join(Document, DocumentChunk.document_id == Document.id)
             .where(
                 Document.id.in_(document_ids),
@@ -227,11 +228,11 @@ class MixedModeDocumentRetrieverService:
                 DocumentChunk.generation == Document.published_generation,
             )
         )
-        chunks = list(result.scalars().all())
-        chunk_map = {
-            (chunk.document_id, chunk.generation, chunk.chunk_index, chunk.content_sha256): chunk
-            for chunk in chunks
-        }
+        chunks = list(result.all())
+        chunk_map = {}
+        for candidate in chunks:
+            chunk, document = self._chunk_and_document(candidate)
+            chunk_map[(chunk.document_id, chunk.generation, chunk.chunk_index, chunk.content_sha256)] = (chunk, document)
 
         hydrated: list[dict[str, Any]] = []
         seen: set[tuple[str, int, int]] = set()
@@ -242,9 +243,10 @@ class MixedModeDocumentRetrieverService:
                 int(candidate["chunk_index"]),
                 str(candidate["content_sha256"]),
             )
-            chunk = chunk_map.get(key)
-            if chunk is None:
+            source = chunk_map.get(key)
+            if source is None:
                 continue
+            chunk, document = source
             merged_key = (chunk.document_id, chunk.generation, chunk.chunk_index)
             if merged_key in seen:
                 continue
@@ -257,11 +259,27 @@ class MixedModeDocumentRetrieverService:
                     "chunk_index": chunk.chunk_index,
                     "score": round(float(candidate.get("score") or 0.0), 4),
                     "content_preview": chunk.content[:160],
-                    "metadata": chunk.chunk_metadata,
+                    "metadata": self._citation_metadata(chunk=chunk, document=document),
                     "retrieval_source": "dense",
                 }
             )
         return hydrated
+
+    @staticmethod
+    def _citation_metadata(*, chunk: DocumentChunk, document: Document | None) -> dict[str, Any]:
+        metadata = dict(chunk.chunk_metadata) if isinstance(chunk.chunk_metadata, dict) else {}
+        if document is None:
+            return metadata
+        metadata["title"] = document.filename
+        metadata["publication_version"] = f"v{document.published_generation}"
+        return metadata
+
+    @staticmethod
+    def _chunk_and_document(row: Any) -> tuple[DocumentChunk, Document | None]:
+        if isinstance(row, DocumentChunk):
+            return row, None
+        chunk, document = row
+        return chunk, document
 
     def _merge_items(
         self,
