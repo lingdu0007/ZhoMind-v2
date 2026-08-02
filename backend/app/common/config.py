@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     system_settings_encryption_key: str = Field("", alias="SYSTEM_SETTINGS_ENCRYPTION_KEY")
 
     # Applied System Settings are process-local runtime values, never browser input.
-    runtime_retrieval_top_k: int = 3
+    runtime_retrieval_top_k: int = 5
     runtime_score_threshold: float = 0.0
     runtime_generation_settings_managed: bool = False
 
