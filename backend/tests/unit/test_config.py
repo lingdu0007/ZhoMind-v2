@@ -18,6 +18,7 @@ def test_settings_defaults() -> None:
     assert settings.api_v1_prefix == "/api/v1"
     assert settings.rag_graph_alias == "default_v1"
     assert settings.rag_default_llm_provider == "chat-default-llm"
+    assert settings.runtime_retrieval_top_k == 5
 
 
 def test_ok_response_shape() -> None:
