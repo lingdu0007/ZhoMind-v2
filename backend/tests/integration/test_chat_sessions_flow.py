@@ -756,7 +756,7 @@ def test_knowledge_user_chat_hydrates_published_evidence_beyond_stale_dense_cand
             },
             "distance": 1.0 - (index / 100),
         }
-        for index in range(12)
+        for index in range(24)
     ]
     current_published_row = {
         "entity": {
