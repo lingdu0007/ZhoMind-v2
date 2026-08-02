@@ -70,8 +70,11 @@ class MixedModeDocumentRetrieverService:
         dense_provider_error: dict[str, str] | None = None
 
         try:
-            dense_candidates = await self._dense_search(normalized_query, top_k=top_k, fingerprint=fingerprint)
-            dense_items = await self._hydrate_dense_hits(dense_candidates=dense_candidates, fingerprint=fingerprint)
+            dense_candidates, dense_items = await self._dense_search(
+                normalized_query,
+                top_k=top_k,
+                fingerprint=fingerprint,
+            )
         except Exception as exc:
             dense_candidates = []
             dense_items = []
@@ -189,22 +192,43 @@ class MixedModeDocumentRetrieverService:
         *,
         top_k: int,
         fingerprint: str,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         embedding_provider = self._resolve_embedding_provider()
         if embedding_provider is None:
             raise RuntimeError("dense embedding provider is unavailable")
 
         vectors = await embedding_provider.embed([query])
         if not vectors:
-            return []
+            return [], []
 
-        search_results = await self._resolve_document_index().search(
-            collection_name=build_milvus_collection_name(fingerprint),
-            vector=vectors[0],
-            limit=max(top_k, top_k * self._dense_search_multiplier),
-            output_fields=["document_id", "generation", "chunk_index", "content_sha256"],
-        )
-        return [candidate for candidate in (self._normalize_dense_candidate(row) for row in search_results) if candidate is not None]
+        document_index = self._resolve_document_index()
+        collection_name = build_milvus_collection_name(fingerprint)
+        search_limit = min(self._candidate_limit, max(top_k, top_k * self._dense_search_multiplier))
+
+        while True:
+            search_results = await document_index.search(
+                collection_name=collection_name,
+                vector=vectors[0],
+                limit=search_limit,
+                output_fields=["document_id", "generation", "chunk_index", "content_sha256"],
+            )
+            dense_candidates = [
+                candidate
+                for candidate in (self._normalize_dense_candidate(row) for row in search_results)
+                if candidate is not None
+            ]
+            dense_items = await self._hydrate_dense_hits(
+                dense_candidates=dense_candidates,
+                fingerprint=fingerprint,
+            )
+            if (
+                len(dense_items) >= top_k
+                or len(search_results) < search_limit
+                or search_limit >= self._candidate_limit
+            ):
+                return dense_candidates, dense_items
+
+            search_limit = min(self._candidate_limit, search_limit * 2)
 
     async def _hydrate_dense_hits(
         self,
