@@ -90,6 +90,15 @@ class _CustomJudge:
         return len(context) > 0
 
 
+class _RecordingLlmProvider:
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
+        self.prompts.append(prompt)
+        return "已基于发布资料生成回答。"
+
+
 class _StubEmbeddingProvider:
     async def embed(self, texts: list[str]) -> list[list[float]]:
         return [[0.9, 0.1] for _ in texts]
@@ -671,6 +680,147 @@ def test_chat_dense_trace_uses_default_mixed_mode_retriever(monkeypatch) -> None
             registry.register_judge(CHAT_JUDGE_PROVIDER, prev_judge)
         else:
             registry.judges.pop(CHAT_JUDGE_PROVIDER, None)
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+        get_extension_registry.cache_clear()
+        asyncio.run(db_engine.dispose())
+
+
+def test_knowledge_user_chat_hydrates_published_evidence_beyond_stale_dense_candidates(monkeypatch) -> None:
+    from app.rag.dense_contract import build_embedding_contract_fingerprint
+    from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
+
+    db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    fake_redis = _InMemoryRedis()
+    provider = _RecordingLlmProvider()
+
+    monkeypatch.delenv("RUNTIME_RETRIEVAL_TOP_K", raising=False)
+    monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "ark")
+    get_settings.cache_clear()
+    get_extension_registry.cache_clear()
+
+    settings = Settings(
+        EMBEDDING_API_KEY="emb-key",
+        EMBEDDING_BASE_URL="https://emb.example.com/v1",
+        EMBEDDING_MODEL="emb-model",
+        DENSE_EMBEDDING_DIM=2,
+        MILVUS_URI="http://milvus.example.com:19530",
+    )
+    fingerprint = build_embedding_contract_fingerprint(settings)
+    published_content = "发布验收锚点：当前发布版本必须经过产品对话路径返回引用。"
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        async with session_factory() as session:
+            session.add_all(
+                [
+                    Document(
+                        id="doc-chat-current-published",
+                        filename="当前发布验收.md",
+                        file_type="md",
+                        file_size=100,
+                        status="ready",
+                        chunk_strategy="general",
+                        chunk_count=1,
+                        published_generation=1,
+                        dense_ready_generation=1,
+                        dense_ready_fingerprint=fingerprint,
+                        next_generation=2,
+                        latest_requested_generation=1,
+                    ),
+                    DocumentChunk(
+                        id="chunk-chat-current-published",
+                        document_id="doc-chat-current-published",
+                        generation=1,
+                        chunk_index=0,
+                        content=published_content,
+                        keywords=[],
+                        generated_questions=[],
+                        chunk_metadata={},
+                    ),
+                ]
+            )
+            await session.commit()
+
+    asyncio.run(_init_db())
+
+    stale_rows = [
+        {
+            "entity": {
+                "document_id": f"withdrawn-document-{index}",
+                "generation": 1,
+                "chunk_index": 0,
+                "content_sha256": hashlib.sha256(f"stale-{index}".encode()).hexdigest(),
+            },
+            "distance": 1.0 - (index / 100),
+        }
+        for index in range(12)
+    ]
+    current_published_row = {
+        "entity": {
+            "document_id": "doc-chat-current-published",
+            "generation": 1,
+            "chunk_index": 0,
+            "content_sha256": hashlib.sha256(published_content.encode()).hexdigest(),
+        },
+        "distance": 0.8,
+    }
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
+
+    registry = get_extension_registry()
+    registry.register_embedding("embedding-default", _StubEmbeddingProvider())
+    registry.register_llm("ark", provider)
+    registry.retrievers.pop(CHAT_RETRIEVER_PROVIDER, None)
+    registry.rerank_providers.pop(CHAT_RERANK_PROVIDER, None)
+    registry.judges.pop(CHAT_JUDGE_PROVIDER, None)
+
+    class _InjectedMixedModeRetriever(MixedModeDocumentRetrieverService):
+        def __init__(self, session: AsyncSession) -> None:
+            super().__init__(
+                session,
+                settings=settings,
+                embedding_provider=_StubEmbeddingProvider(),
+                document_index=_FakeDenseDocumentIndex(rows=[*stale_rows, current_published_row]),
+            )
+
+    monkeypatch.setattr("app.service.chat_service.MixedModeDocumentRetrieverService", _InjectedMixedModeRetriever)
+
+    try:
+        with TestClient(app) as client:
+            headers = _auth_headers(client, username="published-window-user", role="user")
+            response = client.post(
+                "/api/v1/chat",
+                headers=headers,
+                json={"message": "发布验收锚点", "session_id": "published-window"},
+            )
+
+            assert response.status_code == 200
+            data = _extract_data(response.json())
+            assert data["answer"] == "已基于发布资料生成回答。"
+            assert data["message"]["evidence_summary"] == {
+                "coverage": "sufficient",
+                "source_count": 1,
+                "sources": [
+                    {
+                        "source_id": "chunk-chat-current-published",
+                        "metadata": {"title": "当前发布验收.md", "publication_version": "v1"},
+                        "excerpt": published_content,
+                    }
+                ],
+            }
+            assert len(provider.prompts) == 1
+            assert published_content in provider.prompts[0]
+    finally:
         app.dependency_overrides.clear()
         get_settings.cache_clear()
         get_extension_registry.cache_clear()
