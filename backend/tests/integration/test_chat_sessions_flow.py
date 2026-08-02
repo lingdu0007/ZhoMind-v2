@@ -122,6 +122,20 @@ class _FakeDenseDocumentIndex:
             raise self._error
         return self._rows[:limit]
 
+    async def search_batches(
+        self,
+        *,
+        collection_name: str,
+        vector: list[float],
+        batch_size: int,
+        filter: str = "",
+        output_fields: list[str] | None = None,
+    ):
+        if self._error is not None:
+            raise self._error
+        for offset in range(0, len(self._rows), batch_size):
+            yield self._rows[offset : offset + batch_size]
+
 
 async def _seed_chat_retrieval_docs(
     session_factory,
@@ -756,7 +770,7 @@ def test_knowledge_user_chat_hydrates_published_evidence_beyond_stale_dense_cand
             },
             "distance": 1.0 - (index / 100),
         }
-        for index in range(24)
+        for index in range(224)
     ]
     current_published_row = {
         "entity": {

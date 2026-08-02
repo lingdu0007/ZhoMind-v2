@@ -203,32 +203,29 @@ class MixedModeDocumentRetrieverService:
 
         document_index = self._resolve_document_index()
         collection_name = build_milvus_collection_name(fingerprint)
-        search_limit = min(self._candidate_limit, max(top_k, top_k * self._dense_search_multiplier))
+        batch_size = max(top_k, top_k * self._dense_search_multiplier)
+        dense_candidates: list[dict[str, Any]] = []
+        dense_items: list[dict[str, Any]] = []
 
-        while True:
-            search_results = await document_index.search(
-                collection_name=collection_name,
-                vector=vectors[0],
-                limit=search_limit,
-                output_fields=["document_id", "generation", "chunk_index", "content_sha256"],
-            )
-            dense_candidates = [
+        async for search_results in document_index.search_batches(
+            collection_name=collection_name,
+            vector=vectors[0],
+            batch_size=batch_size,
+            output_fields=["document_id", "generation", "chunk_index", "content_sha256"],
+        ):
+            dense_candidates.extend(
                 candidate
                 for candidate in (self._normalize_dense_candidate(row) for row in search_results)
                 if candidate is not None
-            ]
+            )
             dense_items = await self._hydrate_dense_hits(
                 dense_candidates=dense_candidates,
                 fingerprint=fingerprint,
             )
-            if (
-                len(dense_items) >= top_k
-                or len(search_results) < search_limit
-                or search_limit >= self._candidate_limit
-            ):
-                return dense_candidates, dense_items
+            if len(dense_items) >= top_k:
+                break
 
-            search_limit = min(self._candidate_limit, search_limit * 2)
+        return dense_candidates, dense_items
 
     async def _hydrate_dense_hits(
         self,

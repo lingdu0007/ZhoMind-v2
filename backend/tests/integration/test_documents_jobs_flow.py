@@ -146,6 +146,20 @@ class _FakeDenseDocumentIndex:
             raise self._error
         return self._rows[:limit]
 
+    async def search_batches(
+        self,
+        *,
+        collection_name: str,
+        vector: list[float],
+        batch_size: int,
+        filter: str = "",
+        output_fields: list[str] | None = None,
+    ):
+        if self._error is not None:
+            raise self._error
+        for offset in range(0, len(self._rows), batch_size):
+            yield self._rows[offset : offset + batch_size]
+
 
 class _DenseMaintenanceIndexResult:
     def __init__(self, *, fingerprint: str) -> None:
