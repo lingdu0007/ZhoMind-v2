@@ -304,11 +304,11 @@ for (const runtime of [
 
     await page.getByRole('link', { name: '文档库' }).click();
     await page.getByRole('heading', { name: '文档库' }).waitFor();
-    await page.getByRole('button', { name: '查看文档 browser-inspection 的已发布分块' }).click();
-    await page.getByRole('heading', { name: '已发布分块' }).waitFor();
+    await page.getByRole('button', { name: '查看文档 browser-inspection 的候选或已发布分块' }).click();
+    await page.getByRole('heading', { name: '已发布版本分块' }).waitFor();
     await page.getByText('已发布分块可用于检查部署审批记录。').waitFor();
     await page.keyboard.press('Escape');
-    await page.getByRole('heading', { name: '已发布分块' }).waitFor({ state: 'detached' });
+    await page.getByRole('heading', { name: '已发布版本分块' }).waitFor({ state: 'detached' });
 
     await page.getByRole('button', { name: '删除文档 browser-single-delete' }).click();
     await page.getByRole('dialog').getByRole('button', { name: '删除', exact: true }).click();
@@ -365,7 +365,7 @@ for (const runtime of [
 
     await page.getByRole('link', { name: '系统设置' }).click();
     await page.getByRole('heading', { name: '系统设置' }).waitFor();
-    await page.getByLabel('语言模型').fill('Qwen/Qwen3-14B');
+    await page.getByLabel('生成模型').fill('Qwen/Qwen3-14B');
     await page.getByRole('button', { name: '保存并应用' }).click();
     await page.getByText('设置已生效。').waitFor({ timeout: 8000 });
     assert.equal(await page.getByText('生效版本 2').isVisible(), true);

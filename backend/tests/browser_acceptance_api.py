@@ -11,6 +11,8 @@ from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
 from app.model.document import Document, DocumentChunk, DocumentJob
+from app.settings import runtime as settings_runtime
+from app.settings.runtime import SystemSettingsRuntime
 from app.settings.service import SystemSettingsDraftService
 
 
@@ -47,6 +49,14 @@ class _DeterministicLlm:
     async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
         del prompt, system_prompt
         return "部署前需要完成变更审批。"
+
+
+class _DeterministicSettingsRuntime(SystemSettingsRuntime):
+    async def validate(self, *, settings: dict, provider_api_key: str | None) -> None:
+        self._candidate_settings(settings=settings, provider_api_key=provider_api_key)
+
+    async def apply(self, *, version: int, settings: dict, provider_api_key: str | None) -> None:
+        await super().apply(version=version, settings=settings, provider_api_key=provider_api_key)
 
 
 async def _create_schema() -> None:
@@ -138,7 +148,7 @@ async def _seed_test_data() -> None:
                 "provider_type": "ark",
                 "model": "Qwen/Qwen3-32B",
                 "service_url": "https://provider.example.test/v1",
-                "provider_api_key": None,
+                "provider_api_key": "browser-acceptance-placeholder",
             },
         )
 
@@ -152,6 +162,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    settings_runtime._runtime = _DeterministicSettingsRuntime()
     asyncio.run(_create_schema())
     asyncio.run(_seed_test_data())
     redis = _InMemoryRedis()
