@@ -1,4 +1,5 @@
 from app.settings.runtime import get_runtime_settings
+from app.rag.answer_evidence import select_answer_evidence
 from app.rag.dense_contract import dense_mode_active
 from app.rag.runtime.provider_adapters import JudgeAdapter, RerankerAdapter, RetrieverAdapter
 from app.rag.runtime.state import RagStateDict
@@ -162,7 +163,15 @@ class VerifyNode:
         self.judge = judge
 
     async def run(self, state: RagStateDict) -> RagStateDict:
-        passed, exec_detail = await self.judge.judge(state["query_norm"], state["candidates_reranked"])
+        if state["evidence_pack"]:
+            passed, exec_detail = await self.judge.judge(state["query_norm"], state["evidence_pack"])
+        else:
+            passed = False
+            exec_detail = {
+                "provider": self.judge.provider_name,
+                "fallback_used": False,
+                "error": None,
+            }
         state["gate_result"] = {
             "passed": passed,
             "reason": "sufficient_evidence" if passed else "reject_insufficient_evidence",
@@ -187,11 +196,17 @@ class VerifyNode:
 
 
 class ContextPackNode:
-    def __init__(self, *, top_k: int = 3) -> None:
+    def __init__(self, *, top_k: int = 3, max_excerpt_chars: int = 160) -> None:
         self.top_k = top_k
+        self.max_excerpt_chars = max_excerpt_chars
 
     async def run(self, state: RagStateDict) -> RagStateDict:
-        state["evidence_pack"] = list(state["candidates_reranked"][: self.top_k])
+        evidence = select_answer_evidence(
+            state["candidates_reranked"],
+            max_items=self.top_k,
+            max_excerpt_chars=self.max_excerpt_chars,
+        )
+        state["evidence_pack"] = [item.to_record() for item in evidence]
         state["trace_steps"].append(
             {
                 "step": "context_pack",
@@ -205,13 +220,6 @@ class ContextPackNode:
 
 class GenerateNode:
     async def run(self, state: RagStateDict) -> RagStateDict:
-        if state["gate_result"].get("passed") and state["evidence_pack"]:
-            lines = ["根据检索到的知识片段，先给你一个最小可用回答："]
-            for idx, item in enumerate(state["evidence_pack"][:3], start=1):
-                content = str(item.get("content_preview") or item.get("content") or "")
-                lines.append(f"{idx}. {content}")
-            state["answer"] = "\n".join(lines)
-
         state["trace_steps"].append(
             {
                 "step": "generate",
@@ -277,10 +285,5 @@ class MemoryWriteNode:
 
 class FinalizeNode:
     async def run(self, state: RagStateDict) -> RagStateDict:
-        if not state["gate_result"].get("passed"):
-            state["answer"] = "未检索到足够相关的知识片段，请补充更具体的问题或关键词。"
-        elif not state["answer"]:
-            state["answer"] = "根据检索到的知识片段，先给你一个最小可用回答："
-
         state["trace_steps"].append({"step": "finalize", "detail": {"ok": True}})
         return state

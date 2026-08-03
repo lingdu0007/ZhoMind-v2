@@ -5,25 +5,21 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.common.config import get_settings
 from app.extensions.provider_router import ProviderRouter
 from app.extensions.registry import get_extension_registry
+from app.rag.answer_evidence import evidence_summary_from_trace
+from app.rag.answer_execution import EvidenceGatedAnswerExecutor
 from app.rag.interfaces import RelevanceJudge, Reranker, Retriever
-from app.rag.runtime.graph_runner import RagGraphRunner
 from app.repository.chat_repository import ChatRepository
 from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
-from app.service.runtime_trace_mapper import RuntimeTraceMapper
 from app.settings.runtime import get_runtime_settings
 
 CHAT_RETRIEVER_PROVIDER = "chat-default-retriever"
 CHAT_RERANK_PROVIDER = "chat-default-reranker"
 CHAT_JUDGE_PROVIDER = "chat-default-judge"
-CHAT_LLM_PROVIDER = "chat-default-llm"
 DIAGNOSTIC_MAX_TIMELINE_STEPS = 16
 DIAGNOSTIC_MAX_PROVIDER_ERRORS = 5
 DIAGNOSTIC_MAX_TRACE_PREVIEW_CHARS = 1600
-GENERATION_CONTEXT_MAX_ITEMS = 3
-GENERATION_CONTEXT_MAX_CHARS_PER_SOURCE = 160
 _DIAGNOSTIC_CODE = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
 _DIAGNOSTIC_PREVIEW_COUNTS = frozenset(
     {
@@ -110,9 +106,6 @@ class ChatService:
         self.session = session
         self.repo = ChatRepository(session)
 
-    def _compact(self, text: str) -> str:
-        return "".join(ch for ch in text.lower() if ch.isalnum())
-
     def _resolve_retriever(self) -> tuple[Retriever, str]:
         provider = get_extension_registry().get_retriever(CHAT_RETRIEVER_PROVIDER)
         if provider is not None:
@@ -140,181 +133,8 @@ class ChatService:
     def _provider_router(self) -> ProviderRouter:
         return ProviderRouter(providers=get_extension_registry().llm_providers)
 
-    def _compose_llm_prompt(self, question: str, retrieved: list[dict]) -> str:
-        lines = ["请基于以下证据回答用户问题。", f"问题：{question}"]
-        for idx, item in enumerate(retrieved[:GENERATION_CONTEXT_MAX_ITEMS], start=1):
-            content = str(item.get("content_preview") or item.get("content") or "")[:GENERATION_CONTEXT_MAX_CHARS_PER_SOURCE]
-            lines.append(f"证据{idx}：{content}")
-        lines.append("请给出简洁中文回答。")
-        return "\n".join(lines)
-
-    def _is_smalltalk_question(self, question: str) -> bool:
-        compact = self._compact(question.strip().lower())
-        if not compact:
-            return False
-
-        patterns = {
-            "你是谁",
-            "你叫什麼",
-            "你叫什么",
-            "介绍你自己",
-            "自我介绍",
-            "whoareyou",
-            "whatyourname",
-            "whatareyou",
-            "你好",
-            "您好",
-            "hello",
-            "hi",
-            "hey",
-        }
-        return compact in patterns
-
-    def _smalltalk_reply(self) -> str:
-        return "【非知识库回复】我是 ZhoMind 智能助手，可以帮你基于知识库问答、梳理文档与会话内容。"
-
-    async def _assistant_reply(
-        self,
-        question: str,
-        retrieved: list[dict],
-        gate_passed: bool,
-        *,
-        gate_reason: str,
-        generation_settings,
-        provider_router: ProviderRouter,
-    ) -> tuple[str, dict]:
-        if gate_reason == "smalltalk_fallback":
-            text = self._smalltalk_reply()
-            return text, {
-                "text": text,
-                "final_provider": "smalltalk",
-                "provider_attempts": [],
-                "fallback_hops": 0,
-            }
-
-        if not gate_passed:
-            text = "未检索到足够相关的知识片段，请补充更具体的问题或关键词。"
-            return text, {
-                "text": text,
-                "final_provider": None,
-                "provider_attempts": [],
-                "fallback_hops": 0,
-            }
-
-        prompt = self._compose_llm_prompt(question=question, retrieved=retrieved)
-        llm_result = await provider_router.complete(
-            primary=generation_settings.rag_primary_llm_provider,
-            fallbacks=[],
-            prompt=prompt,
-        )
-        completion = str(llm_result.get("text") or "").strip()
-        if completion:
-            return completion, llm_result
-
-        text = "【生成不可用】生成服务暂不可用，请稍后重试。"
-        llm_result["text"] = text
-        return text, llm_result
-
-    def _rag_steps(
-        self,
-        *,
-        question: str,
-        retriever_name: str,
-        reranker_name: str,
-        judge_name: str,
-        llm_name: str,
-        retrieved_count: int,
-        reranked_count: int,
-        gate_passed: bool,
-        gate_reason: str,
-    ) -> list[dict]:
-        return [
-            {
-                "step": "retrieve",
-                "detail": {
-                    "query": question,
-                    "retriever": retriever_name,
-                    "retrieved_count": retrieved_count,
-                    "gate_passed": gate_passed,
-                    "gate_reason": gate_reason,
-                },
-            },
-            {
-                "step": "rerank",
-                "detail": {
-                    "model": reranker_name,
-                    "reranked_count": reranked_count,
-                },
-            },
-            {
-                "step": "verify",
-                "detail": {
-                    "judge": judge_name,
-                },
-            },
-            {
-                "step": "generate",
-                "detail": {
-                    "llm": llm_name,
-                },
-            },
-        ]
-
-    def _runtime_trace(self, runtime_result: dict) -> dict:
-        return RuntimeTraceMapper.map_runtime(runtime_result)
-
     def _evidence_summary(self, rag_trace: dict | None) -> dict:
-        trace = rag_trace if isinstance(rag_trace, dict) else {}
-        evidence = trace.get("evidence")
-        evidence_items = evidence if isinstance(evidence, list) else []
-        gate = trace.get("gate") if isinstance(trace.get("gate"), dict) else {}
-        gate_passed = gate.get("passed")
-
-        sources: list[dict] = []
-        for index, item in enumerate(evidence_items, start=1):
-            if not isinstance(item, dict):
-                continue
-            metadata = item.get("metadata")
-            source_metadata = (
-                {
-                    key: metadata[key]
-                    for key in ("title", "publication_version", "filename", "source_file", "source", "document_name", "path")
-                    if isinstance(metadata, dict) and isinstance(metadata.get(key), str) and metadata[key].strip()
-                }
-                if isinstance(metadata, dict)
-                else {}
-            )
-            source_id = item.get("chunk_id") or item.get("source_id") or item.get("document_id") or f"source-{index}"
-            if item.get("withdrawn") is True:
-                sources.append(
-                    {
-                        "source_id": str(source_id),
-                        "metadata": source_metadata,
-                        "withdrawal_notice": "This source has been withdrawn.",
-                    }
-                )
-                continue
-            excerpt = item.get("content_preview") or item.get("content") or ""
-            sources.append(
-                {
-                    "source_id": str(source_id),
-                    "metadata": source_metadata,
-                    "excerpt": str(excerpt),
-                }
-            )
-
-        if gate_passed is False:
-            coverage = "insufficient"
-        elif sources:
-            coverage = "sufficient"
-        else:
-            coverage = "unavailable"
-
-        return {
-            "coverage": coverage,
-            "source_count": len(sources),
-            "sources": sources,
-        }
+        return evidence_summary_from_trace(rag_trace)
 
     @staticmethod
     def _diagnostic_code(value: object) -> str | None:
@@ -506,9 +326,12 @@ class ChatService:
             "timestamp": message.get("timestamp"),
         }
         if projection["type"] == "assistant":
-            projection["evidence_summary"] = self._evidence_summary(message.get("rag_trace"))
+            rag_trace = message.get("rag_trace")
+            projection["evidence_summary"] = self._evidence_summary(rag_trace)
+            if isinstance(rag_trace, dict) and isinstance(rag_trace.get("outcome"), str):
+                projection["outcome"] = rag_trace["outcome"]
             if role == "admin":
-                projection["retrieval_diagnostics"] = self._retrieval_diagnostics(message.get("rag_trace"))
+                projection["retrieval_diagnostics"] = self._retrieval_diagnostics(rag_trace)
         return projection
 
     def project_chat_result(self, result: dict, role: str) -> dict:
@@ -518,6 +341,8 @@ class ChatService:
             "answer": message["content"],
             "message": message,
         }
+        if message.get("outcome") is not None:
+            projection["outcome"] = message["outcome"]
         if role == "admin":
             projection["retrieval_diagnostics"] = message["retrieval_diagnostics"]
         return projection
@@ -592,80 +417,32 @@ class ChatService:
         reranker, reranker_name = self._resolve_reranker()
         judge, judge_name = self._resolve_judge()
 
-        runner = RagGraphRunner(
+        executor = EvidenceGatedAnswerExecutor(
             retriever=retriever,
             reranker=reranker,
             judge=judge,
+            provider_router=provider_router,
+            primary_provider=generation_settings.rag_primary_llm_provider,
+            retriever_name=retriever_name,
+            reranker_name=reranker_name,
+            judge_name=judge_name,
+            retrieval_top_k=generation_settings.runtime_retrieval_top_k,
+            max_evidence_items=generation_settings.runtime_answer_evidence_max_items,
+            max_excerpt_chars=generation_settings.runtime_answer_evidence_max_chars_per_source,
         )
-        runtime_result = await runner.run(
+        outcome = await executor.execute(
             request_id=f"chat-{uuid.uuid4().hex[:8]}",
             user_id=user_id,
             session_id=session.id,
             question=normalized_question,
         )
-
-        gate = runtime_result["gate"]
-        gate_passed = bool(gate.get("passed"))
-        gate_reason = str(gate.get("reason") or "reject_insufficient_evidence")
-        reranked = runtime_result["evidence"]
-        retrieved = runtime_result.get("retrieved") or reranked
-
-        if not reranked and gate_passed:
-            gate_passed = False
-            gate_reason = "reject_insufficient_evidence"
-
-        if not gate_passed and self._is_smalltalk_question(normalized_question):
-            gate_passed = True
-            gate_reason = "smalltalk_fallback"
-
-        reply, llm_result = await self._assistant_reply(
-            question=normalized_question,
-            retrieved=reranked,
-            gate_passed=gate_passed,
-            gate_reason=gate_reason,
-            generation_settings=generation_settings,
-            provider_router=provider_router,
-        )
-        llm_name = str(llm_result.get("final_provider") or CHAT_LLM_PROVIDER)
-        rag_steps = self._rag_steps(
-            question=normalized_question,
-            retriever_name=retriever_name,
-            reranker_name=reranker_name,
-            judge_name=judge_name,
-            llm_name=llm_name,
-            retrieved_count=len(retrieved),
-            reranked_count=len(reranked),
-            gate_passed=gate_passed,
-            gate_reason=gate_reason,
-        )
-
-        runtime_result["final_provider"] = llm_result.get("final_provider")
-        runtime_result["provider_attempts"] = list(llm_result.get("provider_attempts") or [])
-        runtime_result["fallback_hops"] = int(llm_result.get("fallback_hops") or 0)
-
-        runtime_trace = self._runtime_trace(runtime_result)
-        runtime_trace["gate"] = {
-            "passed": gate_passed,
-            "reason": gate_reason,
-        }
-
-        rag_trace = {
-            "query": normalized_question,
-            "steps": rag_steps,
-            "gate": {
-                "passed": gate_passed,
-                "reason": gate_reason,
-            },
-            "evidence": reranked,
-            "answer_preview": reply[:120],
-            "runtime": runtime_trace,
-        }
+        rag_trace = outcome.to_rag_trace()
 
         assistant_message = await self.repo.add_message(
             session_id=session.id,
             user_id=user_id,
             message_type="assistant",
-            content=reply,
+            content=outcome.text,
             rag_trace=rag_trace,
         )
 
@@ -681,5 +458,5 @@ class ChatService:
                 "timestamp": assistant_message.created_at.isoformat(),
                 "rag_trace": rag_trace,
             },
-            "rag_steps": rag_steps,
+            "rag_steps": list(rag_trace["steps"]),
         }

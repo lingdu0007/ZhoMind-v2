@@ -49,4 +49,4 @@ With the same ignored local configuration plus one active Ark provider (`ARK_API
 ./retrieval-evidence generation-smoke
 ```
 
-This creates a disposable published source, verifies an actual provider answer and both normal and SSE cited-response contracts, and writes only non-sensitive pass/fail fields and citation counts to its manifest. It never write or print provider credentials, prompts, answers, or excerpts. Provider-outage no-fallback behavior is covered by the backend contract tests rather than sending a real question to an intentionally invalid provider.
+This creates a disposable published source, verifies one `evidence_gated_answer` through authenticated normal chat and SSE, then proves the same citation set in conversation history. Direct retrieval remains a separate health diagnostic and is not used as a citation oracle. The command writes only non-sensitive pass/fail fields and citation counts to its manifest; it never writes or prints provider credentials, prompts, answers, or excerpts. Provider-outage no-fallback behavior is covered by the backend contract tests rather than sending a real question to an intentionally invalid provider.

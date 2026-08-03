@@ -112,6 +112,8 @@ async def chat_stream(
 
     async def event_generator():
         content = projected_message["content"]
+        if projected_message.get("outcome") is not None:
+            yield _sse_event("outcome", {"outcome": projected_message["outcome"]})
         for chunk in _chunk_text(content):
             yield _sse_event("content", {"content": chunk})
 

@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     runtime_retrieval_top_k: int = 5
     runtime_score_threshold: float = 0.0
     runtime_generation_settings_managed: bool = False
+    runtime_answer_evidence_max_items: int = Field(3, alias="RUNTIME_ANSWER_EVIDENCE_MAX_ITEMS", ge=1, le=10)
+    runtime_answer_evidence_max_chars_per_source: int = Field(
+        160,
+        alias="RUNTIME_ANSWER_EVIDENCE_MAX_CHARS_PER_SOURCE",
+        ge=1,
+        le=4000,
+    )
 
     # LLM / ARK
     ark_api_key: str = Field("", alias="ARK_API_KEY")

@@ -110,10 +110,10 @@ def test_chat_does_not_fallback_when_the_active_provider_fails(monkeypatch) -> N
                 "coverage": "sufficient",
                 "source_count": 1,
                 "sources": [
-                    {
-                        "source_id": "published-chunk-1",
-                        "metadata": {"title": "已发布资料"},
-                        "excerpt": "已发布资料中的可引用事实。",
+                        {
+                            "source_id": "published-chunk-1",
+                            "metadata": {"title": "已发布资料", "publication_version": "v1"},
+                            "excerpt": "已发布资料中的可引用事实。",
                     }
                 ],
             }
