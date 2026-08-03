@@ -45,8 +45,9 @@ command -v openssl >/dev/null 2>&1 || fail "openssl is required for acceptance c
 source_directory="$DEPLOY_APP_DIR/source"
 compose=(as_root env DEPLOY_CADDY_SITE_ADDRESS="$DEPLOY_CADDY_SITE_ADDRESS" docker compose --env-file "$DEPLOY_APP_DIR/.env" -f "$source_directory/deploy/production/compose.yml")
 
+running_services=$("${compose[@]}" ps --status running --services)
 for service in postgres redis etcd minio milvus backend caddy; do
-  "${compose[@]}" ps --status running --services | grep -Fqx "$service" || fail "service is not running: $service"
+  grep -Fqx "$service" <<<"$running_services" || fail "service is not running: $service"
 done
 printf 'compose services are running\n'
 
@@ -114,7 +115,7 @@ if [[ -n "${EMBEDDING_API_KEY:-}" && -n "${EMBEDDING_BASE_URL:-}" && -n "${EMBED
     --output-dir /evidence \
     --source-revision "$SOURCE_REVISION" \
     --run-id "$generation_run_id" >/dev/null
-  printf 'live approved-provider cited chat and stream Generation Smoke passed\n'
+  printf 'live approved-provider cited chat, stream, and history Generation Smoke passed\n'
 else
   fail 'live Generation Smoke requires complete approved-provider configuration'
 fi

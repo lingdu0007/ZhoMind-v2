@@ -64,6 +64,13 @@ class _ExistingPublishedDenseResult:
     items = [{"document_id": "doc-existing", "chunk_id": "chunk-1", "retrieval_source": "dense"}]
 
 
+class _DifferentDiagnosticChunkResult:
+    dense_candidate_count = 1
+    dense_hydrated_count = 1
+    dense_query_failed = False
+    items = [{"document_id": "doc-ingested", "chunk_id": "diagnostic-chunk", "retrieval_source": "dense"}]
+
+
 class _GenerationFakeHttpClient(_FakeHttpClient):
     async def request(self, method: str, path: str, **kwargs) -> HttpResponse:
         if path == "/api/v1/chat":
@@ -74,8 +81,10 @@ class _GenerationFakeHttpClient(_FakeHttpClient):
                 payload={
                     "code": "OK",
                     "data": {
+                        "outcome": "evidence_gated_answer",
                         "answer": "基于已发布来源的回答",
                         "message": {
+                            "outcome": "evidence_gated_answer",
                             "evidence_summary": {
                                 "coverage": "sufficient",
                                 "source_count": 1,
@@ -98,10 +107,37 @@ class _GenerationFakeHttpClient(_FakeHttpClient):
                 status_code=200,
                 payload={},
                 body=(
+                    'event: outcome\ndata: {"outcome": "evidence_gated_answer"}\n\n'
                     'event: content\ndata: {"content": "基于已发布来源的回答"}\n\n'
-                    'event: evidence_summary\ndata: {"evidence_summary": {"coverage": "sufficient", "sources": [{"source_id": "chunk-1", "metadata": {"title": "smoke.md", "publication_version": "v1"}, "excerpt": "retrieval evidence excerpt"}]}}\n\n'
+                    'event: evidence_summary\ndata: {"evidence_summary": {"coverage": "sufficient", "source_count": 1, "sources": [{"source_id": "chunk-1", "metadata": {"title": "smoke.md", "publication_version": "v1"}, "excerpt": "retrieval evidence excerpt"}]}}\n\n'
                     "event: done\ndata: [DONE]\n\n"
                 ),
+            )
+        if path.startswith("/api/v1/sessions/generation-"):
+            self.calls.append((method, path))
+            self.request_details.append((method, path, kwargs))
+            evidence_summary = {
+                "coverage": "sufficient",
+                "source_count": 1,
+                "sources": [
+                    {
+                        "source_id": "chunk-1",
+                        "metadata": {"title": "smoke.md", "publication_version": "v1"},
+                        "excerpt": "retrieval evidence excerpt",
+                    }
+                ],
+            }
+            return HttpResponse(
+                status_code=200,
+                payload={
+                    "code": "OK",
+                    "data": {
+                        "messages": [
+                            {"type": "assistant", "outcome": "evidence_gated_answer", "evidence_summary": evidence_summary},
+                            {"type": "assistant", "outcome": "evidence_gated_answer", "evidence_summary": evidence_summary},
+                        ]
+                    },
+                },
             )
         return await super().request(method, path, **kwargs)
 
@@ -115,8 +151,9 @@ class _StreamCitationMissingFakeHttpClient(_GenerationFakeHttpClient):
                 status_code=200,
                 payload={},
                 body=(
+                    'event: outcome\ndata: {"outcome": "evidence_gated_answer"}\n\n'
                     'event: content\ndata: {"content": "基于已发布来源的回答"}\n\n'
-                    'event: evidence_summary\ndata: {"evidence_summary": {"coverage": "sufficient", "sources": []}}\n\n'
+                    'event: evidence_summary\ndata: {"evidence_summary": {"coverage": "sufficient", "source_count": 0, "sources": []}}\n\n'
                     "event: done\ndata: [DONE]\n\n"
                 ),
             )
@@ -255,6 +292,7 @@ def test_generation_smoke_proves_cited_normal_and_streaming_chat_without_recordi
         "invoked": True,
         "normal_contract": "passed",
         "stream_contract": "passed",
+        "history_contract": "passed",
         "citation_source_count": 1,
     }
     serialized = json.dumps(manifest, ensure_ascii=False)
@@ -262,6 +300,28 @@ def test_generation_smoke_proves_cited_normal_and_streaming_chat_without_recordi
     assert "https://llm.example.test/v1" not in serialized
     assert "基于已发布来源的回答" not in serialized
     assert "retrieval evidence excerpt" not in serialized
+
+
+def test_generation_smoke_does_not_use_direct_retrieval_as_a_citation_oracle(tmp_path) -> None:
+    async def _run() -> dict:
+        runner = RetrievalEvidenceSmoke(
+            settings=_settings(ARK_API_KEY="test-ark-api-key", BASE_URL="https://llm.example.test/v1", MODEL="test-model"),
+            http_client=_GenerationFakeHttpClient(),
+            retrieve=lambda query: _return_different_diagnostic_chunk(query),
+            output_dir=tmp_path,
+            source_revision="abc123",
+            run_id="generation-run-independent-chat-seam",
+            include_generation=True,
+            now=lambda: datetime(2026, 7, 30, tzinfo=timezone.utc),
+            sleep=lambda _: _return_none(),
+        )
+        return await runner.run()
+
+    manifest = asyncio.run(_run())
+
+    assert manifest["outcome"] == "passed"
+    assert manifest["checks"]["retrieval"]["candidate_chunk_id"] == "diagnostic-chunk"
+    assert manifest["checks"]["chat_model"]["history_contract"] == "passed"
 
 
 def test_generation_smoke_admits_a_knowledge_user_before_calling_chat(tmp_path) -> None:
@@ -456,6 +516,11 @@ async def _return_existing_published_dense_result(query: str) -> _ExistingPublis
     assert "蓝松石版本" in query
     assert "retrieval-evidence-" not in query
     return _ExistingPublishedDenseResult()
+
+
+async def _return_different_diagnostic_chunk(query: str) -> _DifferentDiagnosticChunkResult:
+    assert "蓝松石版本" in query
+    return _DifferentDiagnosticChunkResult()
 
 
 async def _return_none() -> None:

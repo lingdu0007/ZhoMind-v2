@@ -183,7 +183,7 @@ class RetrievalEvidenceSmoke:
                 acceptance_time=acceptance_time,
             )
             job = await self._wait_for_job(job_id=job_id, headers=headers)
-            chunk_count = await self._verify_chunks(document_id=document_id, headers=headers)
+            chunk_count, published_source_id = await self._verify_chunks(document_id=document_id, headers=headers)
             published_generation = await self._publish_document(document_id=document_id, headers=headers)
             result = await self._retrieve(question)
             candidate = self._verify_dense_retrieval(result=result, document_id=document_id)
@@ -193,7 +193,7 @@ class RetrievalEvidenceSmoke:
                 chat_model_check = await self._verify_generation_loop(
                     headers=knowledge_user_headers,
                     question=question,
-                    expected_source_id=str(candidate["chunk_id"]),
+                    expected_source_id=published_source_id,
                 )
 
             manifest = self._manifest_base(started_at=started_at)
@@ -383,7 +383,7 @@ class RetrievalEvidenceSmoke:
             await self._sleep(_POLL_INTERVAL_SECONDS)
         raise _SmokeFailure("document_build", "DOCUMENT_BUILD_TIMED_OUT")
 
-    async def _verify_chunks(self, *, document_id: str, headers: Mapping[str, str]) -> int:
+    async def _verify_chunks(self, *, document_id: str, headers: Mapping[str, str]) -> tuple[int, str]:
         payload = await self._expect_ok(
             "document_build",
             "GET",
@@ -394,7 +394,12 @@ class RetrievalEvidenceSmoke:
         chunk_count = pagination.get("total") if isinstance(pagination, Mapping) else None
         if not isinstance(chunk_count, int) or chunk_count <= 0:
             raise _SmokeFailure("document_build", "DOCUMENT_CHUNKS_MISSING")
-        return chunk_count
+        items = payload.get("items")
+        first_chunk = items[0] if isinstance(items, list) and items else None
+        source_id = first_chunk.get("chunk_id") if isinstance(first_chunk, Mapping) else None
+        if not isinstance(source_id, str) or not source_id:
+            raise _SmokeFailure("document_build", "DOCUMENT_CHUNK_ID_MISSING")
+        return chunk_count, source_id
 
     async def _publish_document(self, *, document_id: str, headers: Mapping[str, str]) -> int:
         payload = await self._expect_ok(
@@ -434,9 +439,18 @@ class RetrievalEvidenceSmoke:
             json_body={"message": question, "session_id": session_id},
         )
         answer = response.get("answer")
-        if not isinstance(answer, str) or not answer.strip() or answer.startswith("【生成不可用】"):
+        message = response.get("message")
+        if (
+            not isinstance(answer, str)
+            or not answer.strip()
+            or answer.startswith("【生成不可用】")
+            or response.get("outcome") != "evidence_gated_answer"
+            or not isinstance(message, Mapping)
+            or message.get("outcome") != "evidence_gated_answer"
+        ):
             raise _SmokeFailure("generation_normal", "GENERATION_RESPONSE_INVALID")
         citation_source_count = self._verify_cited_response(response, expected_source_id=expected_source_id)
+        normal_summary = message.get("evidence_summary")
 
         stream = await self._http_client.request(
             "POST",
@@ -446,13 +460,38 @@ class RetrievalEvidenceSmoke:
         )
         if stream.status_code < 200 or stream.status_code >= 300:
             raise _SmokeFailure("generation_stream", "APPLICATION_REQUEST_FAILED")
-        if not all(marker in stream.body for marker in ("event: content", "event: evidence_summary", "event: done", '"coverage": "sufficient"')):
+        if not all(
+            marker in stream.body
+            for marker in (
+                "event: outcome",
+                "event: content",
+                "event: evidence_summary",
+                "event: done",
+                '"outcome": "evidence_gated_answer"',
+                '"coverage": "sufficient"',
+            )
+        ):
             raise _SmokeFailure("generation_stream", "STREAM_CONTRACT_INVALID")
-        self._verify_stream_cited_response(stream.body, expected_source_id=expected_source_id)
+        stream_summary = self._verify_stream_cited_response(stream.body, expected_source_id=expected_source_id)
+        if stream_summary != normal_summary:
+            raise _SmokeFailure("generation_stream", "STREAM_EVIDENCE_MISMATCH")
+
+        history = await self._expect_ok(
+            "generation_history",
+            "GET",
+            f"/api/v1/sessions/{session_id}",
+            headers=headers,
+        )
+        self._verify_history_citations(
+            history,
+            expected_source_id=expected_source_id,
+            expected_summary=normal_summary,
+        )
         return {
             "invoked": True,
             "normal_contract": "passed",
             "stream_contract": "passed",
+            "history_contract": "passed",
             "citation_source_count": citation_source_count,
         }
 
@@ -463,7 +502,7 @@ class RetrievalEvidenceSmoke:
         return RetrievalEvidenceSmoke._verify_evidence_summary(summary, expected_source_id=expected_source_id)
 
     @staticmethod
-    def _verify_stream_cited_response(body: str, *, expected_source_id: str) -> None:
+    def _verify_stream_cited_response(body: str, *, expected_source_id: str) -> Mapping[str, Any]:
         for event in body.split("\n\n"):
             lines = event.splitlines()
             if not lines or lines[0] != "event: evidence_summary":
@@ -474,14 +513,40 @@ class RetrievalEvidenceSmoke:
             except json.JSONDecodeError:
                 break
             try:
+                summary = payload.get("evidence_summary") if isinstance(payload, Mapping) else None
                 RetrievalEvidenceSmoke._verify_evidence_summary(
-                    payload.get("evidence_summary") if isinstance(payload, Mapping) else None,
+                    summary,
                     expected_source_id=expected_source_id,
                 )
             except _SmokeFailure as exc:
                 raise _SmokeFailure("generation_stream", "STREAM_CITATION_MISSING") from exc
-            return
+            if isinstance(summary, Mapping):
+                return summary
+            break
         raise _SmokeFailure("generation_stream", "STREAM_CITATION_MISSING")
+
+    @staticmethod
+    def _verify_history_citations(
+        history: Mapping[str, Any],
+        *,
+        expected_source_id: str,
+        expected_summary: object,
+    ) -> None:
+        messages = history.get("messages")
+        assistant_messages = (
+            [item for item in messages if isinstance(item, Mapping) and item.get("type") == "assistant"]
+            if isinstance(messages, list)
+            else []
+        )
+        if len(assistant_messages) < 2:
+            raise _SmokeFailure("generation_history", "HISTORY_OUTCOME_MISSING")
+        for message in assistant_messages[-2:]:
+            if message.get("outcome") != "evidence_gated_answer":
+                raise _SmokeFailure("generation_history", "HISTORY_OUTCOME_MISSING")
+            summary = message.get("evidence_summary")
+            RetrievalEvidenceSmoke._verify_evidence_summary(summary, expected_source_id=expected_source_id)
+            if summary != expected_summary:
+                raise _SmokeFailure("generation_history", "HISTORY_EVIDENCE_MISMATCH")
 
     @staticmethod
     def _verify_evidence_summary(summary: object, *, expected_source_id: str) -> int:

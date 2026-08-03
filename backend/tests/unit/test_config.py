@@ -19,6 +19,8 @@ def test_settings_defaults() -> None:
     assert settings.rag_graph_alias == "default_v1"
     assert settings.rag_default_llm_provider == "chat-default-llm"
     assert settings.runtime_retrieval_top_k == 5
+    assert settings.runtime_answer_evidence_max_items == 3
+    assert settings.runtime_answer_evidence_max_chars_per_source == 160
 
 
 def test_ok_response_shape() -> None:
@@ -46,6 +48,8 @@ def test_settings_rag_fields_from_env_aliases() -> None:
         RAG_TOOL_MAX_PARALLEL=4,
         RAG_TOOL_TIMEOUT_MS=12000,
         RAG_DEFAULT_LLM_PROVIDER="provider-x",
+        RUNTIME_ANSWER_EVIDENCE_MAX_ITEMS=4,
+        RUNTIME_ANSWER_EVIDENCE_MAX_CHARS_PER_SOURCE=240,
     )
     assert settings.rag_graph_alias == "experimental_graph"
     assert settings.rag_enable_tools is True
@@ -53,6 +57,8 @@ def test_settings_rag_fields_from_env_aliases() -> None:
     assert settings.rag_tool_max_parallel == 4
     assert settings.rag_tool_timeout_ms == 12000
     assert settings.rag_default_llm_provider == "provider-x"
+    assert settings.runtime_answer_evidence_max_items == 4
+    assert settings.runtime_answer_evidence_max_chars_per_source == 240
 
 
 def test_document_pipeline_settings_aliases() -> None:

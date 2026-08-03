@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Generator
+import json
 
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -140,6 +141,8 @@ def test_knowledge_user_chat_cites_only_published_document_in_normal_and_streami
 
             assert response.status_code == 200
             data = response.json()["data"]
+            assert data["outcome"] == "evidence_gated_answer"
+            assert data["message"]["outcome"] == "evidence_gated_answer"
             assert data["answer"] == "已基于发布资料生成回答。"
             assert data["message"]["evidence_summary"] == {
                 "coverage": "sufficient",
@@ -163,9 +166,21 @@ def test_knowledge_user_chat_cites_only_published_document_in_normal_and_streami
             )
 
             assert stream_response.status_code == 200
+            assert 'event: outcome\ndata: {"outcome": "evidence_gated_answer"}' in stream_response.text
             assert "已基于发布资料生成回答。" in stream_response.text
-            assert _stream_event_data(stream_response.text, "evidence_summary") is not None
+            streamed_evidence = _stream_event_data(stream_response.text, "evidence_summary")
+            assert streamed_evidence is not None
+            assert json.loads(streamed_evidence)["evidence_summary"] == data["message"]["evidence_summary"]
             assert "event: done" in stream_response.text
+
+            history_response = client.get("/api/v1/sessions/published-loop", headers=headers)
+            assert history_response.status_code == 200
+            assistant_messages = [
+                item for item in history_response.json()["data"]["messages"] if item["type"] == "assistant"
+            ]
+            assert len(assistant_messages) == 2
+            assert all(item["outcome"] == "evidence_gated_answer" for item in assistant_messages)
+            assert all(item["evidence_summary"] == data["message"]["evidence_summary"] for item in assistant_messages)
     finally:
         app.dependency_overrides.clear()
         get_extension_registry.cache_clear()
@@ -213,6 +228,7 @@ def test_knowledge_user_with_no_published_evidence_is_not_sent_to_generation(mon
 
             assert response.status_code == 200
             data = response.json()["data"]
+            assert data["outcome"] == "insufficient_evidence_reply"
             assert "未检索到足够相关的知识片段" in data["answer"]
             assert data["message"]["evidence_summary"] == {
                 "coverage": "insufficient",
@@ -267,6 +283,7 @@ def test_narrow_social_reply_is_explicitly_labeled_as_non_knowledge_base(monkeyp
 
             assert response.status_code == 200
             data = response.json()["data"]
+            assert data["outcome"] == "non_knowledge_base_reply"
             assert data["answer"].startswith("【非知识库回复】")
             assert data["message"]["evidence_summary"] == {
                 "coverage": "unavailable",
@@ -362,6 +379,7 @@ def test_generation_outage_fails_closed_with_published_sources_in_normal_and_str
 
             assert response.status_code == 200
             data = response.json()["data"]
+            assert data["outcome"] == "generation_unavailable"
             assert data["answer"].startswith("【生成不可用】")
             assert data["message"]["evidence_summary"] == {
                 "coverage": "sufficient",
@@ -385,6 +403,7 @@ def test_generation_outage_fails_closed_with_published_sources_in_normal_and_str
             )
 
             assert stream_response.status_code == 200
+            assert 'event: outcome\ndata: {"outcome": "generation_unavailable"}' in stream_response.text
             assert "【生成不可用】" in stream_response.text
             assert _stream_event_data(stream_response.text, "evidence_summary") is not None
             assert "event: done" in stream_response.text

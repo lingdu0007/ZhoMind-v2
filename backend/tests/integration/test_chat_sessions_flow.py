@@ -62,18 +62,20 @@ class _CustomRetriever:
             {
                 "chunk_id": "custom-chunk-1",
                 "document_id": "doc-custom",
+                "generation": 1,
                 "chunk_index": 0,
                 "score": 0.4,
                 "content_preview": f"来自自定义检索器：{query}",
-                "metadata": {"source": "custom-retriever"},
+                "metadata": {"title": "自定义资料.md", "publication_version": "v1"},
             },
             {
                 "chunk_id": "custom-chunk-2",
                 "document_id": "doc-custom",
+                "generation": 1,
                 "chunk_index": 1,
                 "score": 0.9,
                 "content_preview": "高优先级证据",
-                "metadata": {"source": "custom-retriever"},
+                "metadata": {"title": "自定义资料.md", "publication_version": "v1"},
             },
         ][:top_k]
 
@@ -351,8 +353,8 @@ def test_chat_and_sessions_flow(monkeypatch) -> None:
                 "retrieve",
                 "fusion",
                 "rerank",
-                "verify",
                 "context_pack",
+                "verify",
                 "generate",
                 "memory_write_gate",
                 "finalize",
@@ -513,7 +515,7 @@ def test_chat_reject_gate_when_no_evidence(monkeypatch) -> None:
         asyncio.run(db_engine.dispose())
 
 
-def test_chat_smalltalk_fallback_without_evidence(monkeypatch) -> None:
+def test_chat_returns_non_knowledge_base_reply_without_retrieval_evidence(monkeypatch) -> None:
     db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -562,9 +564,10 @@ def test_chat_smalltalk_fallback_without_evidence(monkeypatch) -> None:
             body = response.json()
             data = _extract_data(body)
             assert data["retrieval_diagnostics"]["evidence_gate"] == {
-                "outcome": "passed",
-                "reason": "smalltalk_fallback",
+                "outcome": "unavailable",
+                "reason": "not_applicable_non_knowledge_base",
             }
+            assert data["outcome"] == "non_knowledge_base_reply"
             assert "rag_trace" not in data
             assert "我是 ZhoMind 智能助手" in data["answer"]
             assert "request_id" in body
