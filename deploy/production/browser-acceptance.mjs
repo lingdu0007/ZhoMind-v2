@@ -9,24 +9,21 @@ const repositoryRoot = resolve(import.meta.dirname, '../..');
 const require = createRequire(resolve(repositoryRoot, 'frontend/package.json'));
 const { chromium } = require('@playwright/test');
 const baseUrl = `https://${siteAddress}`;
-const username = `deploy-browser-${Date.now()}`;
-const password = 'deployment-browser-password';
 
 const browser = await chromium.launch({ headless: true });
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   page.setDefaultTimeout(10000);
 
-  await page.goto(`${baseUrl}/auth`, { waitUntil: 'networkidle' });
+  await page.goto(`${baseUrl}/documents`, { waitUntil: 'networkidle' });
+  await page.waitForURL(/\/auth$/);
   await page.getByRole('heading', { name: '身份验证' }).waitFor();
   await page.getByRole('tab', { name: '注册' }).click();
-  await page.getByLabel('用户名').fill(username);
-  await page.getByLabel('密码').fill(password);
-  await page.getByRole('button', { name: '完成注册' }).click();
-  await page.waitForURL(/\/chat$/);
-  await page.getByRole('heading', { name: '对话工作区' }).waitFor();
+  const invitationCode = page.getByLabel('团队邀请码');
+  await invitationCode.waitFor();
+  assert.equal(await invitationCode.evaluate((input) => input.required), true);
   assert.equal(await page.getByText('文档库', { exact: true }).count(), 0);
-  printf('public browser registration and Knowledge User route guard passed\n');
+  printf('public browser invitation gate and unauthenticated route guard passed\n');
 } finally {
   await browser.close();
 }
