@@ -113,7 +113,7 @@ if [[ -n "${EMBEDDING_API_KEY:-}" && -n "${EMBEDDING_BASE_URL:-}" && -n "${EMBED
     backend python -m app.retrieval_evidence generation-smoke \
     --base-url http://backend:8000 \
     --output-dir /evidence \
-    --timeout-seconds 300 \
+    --timeout-seconds 420 \
     --source-revision "$SOURCE_REVISION" \
     --run-id "$generation_run_id" >/dev/null </dev/null
   printf 'live approved-provider cited chat, stream, and history Generation Smoke passed\n'

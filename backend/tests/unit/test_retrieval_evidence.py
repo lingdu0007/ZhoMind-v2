@@ -423,7 +423,7 @@ def test_production_acceptance_closes_compose_run_stdin() -> None:
 
     assert script.count(">/dev/null </dev/null") == 2
     assert "generation-smoke \\\n" in script
-    assert "--timeout-seconds 300" in script
+    assert "--timeout-seconds 420" in script
 
 
 def test_retrieval_evidence_http_client_normalizes_timeouts(monkeypatch) -> None:
