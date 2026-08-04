@@ -58,8 +58,12 @@ trap cleanup EXIT
 
 known_hosts="$temporary_directory/known_hosts"
 bundle="$temporary_directory/zhomind.bundle"
-ssh-keyscan -T 10 -p "$DEPLOY_SSH_PORT" "$DEPLOY_HOST" > "$known_hosts" 2>/dev/null || \
-  fail "could not obtain an SSH host key from $DEPLOY_HOST:$DEPLOY_SSH_PORT"
+: > "$known_hosts"
+for key_type in ed25519 ecdsa rsa; do
+  ssh-keyscan -T 10 -p "$DEPLOY_SSH_PORT" -t "$key_type" "$DEPLOY_HOST" >> "$known_hosts" 2>/dev/null || true
+done
+[[ -s "$known_hosts" ]] || fail "could not obtain an SSH host key from $DEPLOY_HOST:$DEPLOY_SSH_PORT"
+sort -u -o "$known_hosts" "$known_hosts"
 
 if ! ssh-keygen -lf "$known_hosts" -E sha256 | awk '{print $2}' | grep -Fqx "$DEPLOY_SSH_HOST_KEY_SHA256"; then
   printf 'received SSH host-key fingerprints:\n' >&2
