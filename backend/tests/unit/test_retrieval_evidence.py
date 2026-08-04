@@ -8,7 +8,7 @@ import subprocess
 
 from app.common.config import Settings
 from app.rag.dense_contract import build_embedding_contract_fingerprint
-from app.retrieval_evidence import HttpResponse, RetrievalEvidenceSmoke
+from app.retrieval_evidence import HttpResponse, RetrievalEvidenceSmoke, UrllibHttpClient
 
 
 class _FakeHttpClient:
@@ -422,6 +422,21 @@ def test_production_acceptance_closes_compose_run_stdin() -> None:
     script = (repository_root / "deploy" / "production" / "acceptance.sh").read_text(encoding="utf-8")
 
     assert script.count(">/dev/null </dev/null") == 2
+    assert "generation-smoke \\\n" in script
+    assert "--timeout-seconds 75" in script
+
+
+def test_retrieval_evidence_http_client_normalizes_timeouts(monkeypatch) -> None:
+    def raise_timeout(*args, **kwargs):
+        raise TimeoutError
+
+    monkeypatch.setattr("app.retrieval_evidence.urlopen", raise_timeout)
+    client = UrllibHttpClient(base_url="http://backend:8000", timeout_seconds=1)
+
+    response = asyncio.run(client.request("GET", "/api/v1/health"))
+
+    assert response.status_code == 0
+    assert response.payload == {}
 
 
 def _write_executable(path: Path, content: str) -> None:

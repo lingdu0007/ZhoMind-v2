@@ -109,7 +109,7 @@ class UrllibHttpClient:
         except HTTPError as exc:
             raw = exc.read()
             return HttpResponse(status_code=exc.code, payload=self._decode_payload(raw), body=self._decode_body(raw))
-        except URLError:
+        except (URLError, TimeoutError):
             return HttpResponse(status_code=0, payload={})
 
     @staticmethod
