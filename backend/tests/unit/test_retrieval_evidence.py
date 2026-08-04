@@ -417,6 +417,13 @@ def test_production_acceptance_rejects_a_missing_generation_configuration(tmp_pa
     assert "live Generation Smoke requires complete approved-provider configuration" in result.stderr
 
 
+def test_production_acceptance_closes_compose_run_stdin() -> None:
+    repository_root = Path(__file__).resolve().parents[3]
+    script = (repository_root / "deploy" / "production" / "acceptance.sh").read_text(encoding="utf-8")
+
+    assert script.count(">/dev/null </dev/null") == 2
+
+
 def _write_executable(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
     path.chmod(0o755)

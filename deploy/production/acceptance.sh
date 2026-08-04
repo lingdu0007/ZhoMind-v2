@@ -100,7 +100,7 @@ if [[ -n "${EMBEDDING_API_KEY:-}" && -n "${EMBEDDING_BASE_URL:-}" && -n "${EMBED
     --base-url http://backend:8000 \
     --output-dir /evidence \
     --source-revision "$SOURCE_REVISION" \
-    --run-id "$run_id" >/dev/null
+    --run-id "$run_id" >/dev/null </dev/null
   printf 'live embedding, Milvus indexing, and Retrieval Smoke passed\n'
 else
   printf 'live Retrieval Smoke skipped because embedding configuration is incomplete\n'
@@ -114,7 +114,7 @@ if [[ -n "${EMBEDDING_API_KEY:-}" && -n "${EMBEDDING_BASE_URL:-}" && -n "${EMBED
     --base-url http://backend:8000 \
     --output-dir /evidence \
     --source-revision "$SOURCE_REVISION" \
-    --run-id "$generation_run_id" >/dev/null
+    --run-id "$generation_run_id" >/dev/null </dev/null
   printf 'live approved-provider cited chat, stream, and history Generation Smoke passed\n'
 else
   fail 'live Generation Smoke requires complete approved-provider configuration'
