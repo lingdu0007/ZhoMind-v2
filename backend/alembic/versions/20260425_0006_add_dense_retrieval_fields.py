@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import hashlib
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision = "20260425_0006"
 down_revision = "20260424_0005"

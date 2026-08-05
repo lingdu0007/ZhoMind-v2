@@ -1,8 +1,8 @@
-from app.settings.runtime import get_runtime_settings
 from app.rag.answer_evidence import select_answer_evidence
 from app.rag.dense_contract import dense_mode_active
 from app.rag.runtime.provider_adapters import JudgeAdapter, RerankerAdapter, RetrieverAdapter
-from app.rag.runtime.state import RagStateDict
+from app.rag.runtime.state import ProviderTraceDetail, RagStateDict
+from app.settings.runtime import get_runtime_settings
 
 
 class NormalizeNode:
@@ -74,7 +74,7 @@ class RetrieveNode:
 
         state["candidates_sparse"] = sparse_items
         state["candidates_dense"] = dense_items
-        retrieve_detail = {
+        retrieve_detail: ProviderTraceDetail = {
             "strategy": retrieved.strategy,
             "dense_candidate_count": retrieved.dense_candidate_count,
             "dense_hydrated_count": retrieved.dense_hydrated_count,
@@ -138,11 +138,12 @@ class RerankNode:
         items = state["candidates_fused"]
         reranked, exec_detail = await self.reranker.rerank(state["query_norm"], items)
         state["candidates_reranked"] = reranked
-        state["provider_trace"]["rerank"] = {
+        rerank_detail: ProviderTraceDetail = {
             "provider": exec_detail["provider"],
             "fallback_used": exec_detail["fallback_used"],
             "provider_error": exec_detail["error"],
         }
+        state["provider_trace"]["rerank"] = rerank_detail
         state["trace_steps"].append(
             {
                 "step": "rerank",
@@ -176,11 +177,12 @@ class VerifyNode:
             "passed": passed,
             "reason": "sufficient_evidence" if passed else "reject_insufficient_evidence",
         }
-        state["provider_trace"]["verify"] = {
+        verify_detail: ProviderTraceDetail = {
             "provider": exec_detail["provider"],
             "fallback_used": exec_detail["fallback_used"],
             "provider_error": exec_detail["error"],
         }
+        state["provider_trace"]["verify"] = verify_detail
         state["trace_steps"].append(
             {
                 "step": "verify",

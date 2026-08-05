@@ -121,4 +121,6 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    # pyright cannot model pydantic-settings' env-driven construction; the
+    # class is a BaseSettings with defaults for every field.
+    return Settings()  # type: ignore[call-arg]

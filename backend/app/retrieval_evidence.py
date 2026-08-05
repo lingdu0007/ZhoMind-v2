@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from hashlib import sha256
-import json
 from pathlib import Path
 from secrets import token_urlsafe
 from typing import Any, Protocol
@@ -118,8 +118,8 @@ class UrllibHttpClient:
             f"--{boundary}\r\n"
             f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
             "Content-Type: text/markdown\r\n\r\n"
-        ).encode("utf-8")
-        return b"".join((prefix, content, f"\r\n--{boundary}--\r\n".encode("utf-8")))
+        ).encode()
+        return b"".join((prefix, content, f"\r\n--{boundary}--\r\n".encode()))
 
     @staticmethod
     def _decode_payload(raw: bytes) -> Mapping[str, Any]:
@@ -157,7 +157,7 @@ class RetrievalEvidenceSmoke:
         self._source_revision = source_revision
         self._run_id = run_id or uuid4().hex
         self._include_generation = include_generation
-        self._now = now or (lambda: datetime.now(timezone.utc))
+        self._now = now or (lambda: datetime.now(UTC))
         self._sleep = sleep
 
     async def run(self) -> dict[str, Any]:

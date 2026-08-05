@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from contextlib import suppress
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 
 from sqlalchemy import and_, delete, or_, select, update
@@ -124,7 +124,7 @@ class DocumentBuildService:
 
     async def _claim_generation(self, *, document: Document, job: DocumentJob) -> bool:
         generation = self._require_build_generation(job)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         lease_cutoff = now - _CLAIM_LEASE_TIMEOUT
         claim_result = await self.session.execute(
             update(Document)
@@ -254,7 +254,7 @@ class DocumentBuildService:
                 Document.active_build_generation == generation,
                 Document.active_build_job_id == job.id,
             )
-            .values(active_build_heartbeat_at=datetime.now(timezone.utc))
+            .values(active_build_heartbeat_at=datetime.now(UTC))
         )
         return heartbeat_result.rowcount == 1
 

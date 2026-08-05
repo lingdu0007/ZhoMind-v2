@@ -1,13 +1,13 @@
-from datetime import datetime, timedelta, timezone
 import hashlib
 import secrets
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.exceptions import AppError
-from app.common.security import build_auth_session_key, hash_password
+from app.common.security import hash_password
 from app.model.team_invitation import TeamInvitation
 from app.model.user import User
 from app.repository.team_invitation_repository import TeamInvitationRepository
@@ -17,13 +17,13 @@ DEFAULT_TEAM_INVITATION_LIFETIME = timedelta(days=7)
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _invitation_code_hash(invitation_code: str) -> str:
@@ -61,7 +61,7 @@ class MemberAdmissionService:
         effective_expiry = expires_at or (_now() + DEFAULT_TEAM_INVITATION_LIFETIME)
         if effective_expiry.tzinfo is None:
             raise AppError(status_code=400, code="VALIDATION_ERROR", message="invitation expiry must include a timezone")
-        effective_expiry = effective_expiry.astimezone(timezone.utc)
+        effective_expiry = effective_expiry.astimezone(UTC)
         if effective_expiry <= _now():
             raise AppError(status_code=400, code="VALIDATION_ERROR", message="invitation expiry must be in the future")
 

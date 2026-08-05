@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +20,7 @@ class DocumentsOperatorService:
 
     async def enable_drain(self, *, now: datetime | None = None) -> None:
         current_started_at = await self.redis.get(DRAIN_STARTED_AT_KEY)
-        timestamp = (now or datetime.now(timezone.utc)).isoformat()
+        timestamp = (now or datetime.now(UTC)).isoformat()
         await self.redis.set(DRAIN_MODE_KEY, "1")
         if current_started_at is None:
             await self.redis.set(DRAIN_STARTED_AT_KEY, timestamp)

@@ -3,9 +3,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.model.document import Document, DocumentJob
 from app.model.operational_event import OperationalEvent
-from app.settings.service import SystemSettingsDraftService
-
 from app.operations.limits import first_release_limits
+from app.settings.service import SystemSettingsDraftService
 
 
 class OperationsService:

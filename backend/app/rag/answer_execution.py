@@ -256,7 +256,8 @@ class EvidenceGatedAnswerExecutor:
             for candidate in runtime_result.get("answer_evidence") or []
             if (item := AnswerEvidence.from_candidate(candidate, max_excerpt_chars=self._max_excerpt_chars)) is not None
         )
-        gate = runtime_result.get("gate") if isinstance(runtime_result.get("gate"), Mapping) else {}
+        _gate_value = runtime_result.get("gate")
+        gate = _gate_value if isinstance(_gate_value, Mapping) else {}
         gate_passed = bool(gate.get("passed")) and bool(evidence)
         gate_reason = str(gate.get("reason") or "reject_insufficient_evidence")
 

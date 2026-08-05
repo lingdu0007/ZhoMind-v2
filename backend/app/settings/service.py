@@ -1,5 +1,5 @@
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
 from cryptography.fernet import Fernet
@@ -63,7 +63,7 @@ class SystemSettingsDraftService:
             settings=normalized,
             sealed_secrets=sealed_secrets,
             saved_by=actor,
-            saved_at=datetime.now(timezone.utc),
+            saved_at=datetime.now(UTC),
         )
         self.session.add(draft)
         state.application_state = "saved"
@@ -102,7 +102,7 @@ class SystemSettingsDraftService:
                 detail={"fields": getattr(exc, "fields", {"settings": "cannot be applied by the running system"})},
             ) from exc
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         state.application_state = "applying"
         state.application_version = requested_version
         state.application_actor = actor
@@ -137,7 +137,7 @@ class SystemSettingsDraftService:
             state.active_version = version
             state.application_state = "active"
             state.application_message = "settings version is active"
-        state.application_at = datetime.now(timezone.utc)
+        state.application_at = datetime.now(UTC)
         await self.session.commit()
 
     async def restore_active_application(self) -> None:
@@ -149,7 +149,7 @@ class SystemSettingsDraftService:
             state.active_version = None
             state.application_state = "failed"
             state.application_message = "active settings version is unavailable"
-            state.application_at = datetime.now(timezone.utc)
+            state.application_at = datetime.now(UTC)
             await self.session.commit()
             return
 
@@ -164,7 +164,7 @@ class SystemSettingsDraftService:
             state.active_version = None
             state.application_state = "failed"
             state.application_message = self._safe_application_message(exc)
-            state.application_at = datetime.now(timezone.utc)
+            state.application_at = datetime.now(UTC)
             await self.session.commit()
 
     def _validate_saved_version(self, draft: SystemSettingsDraft, *, provider_api_key: str | None) -> None:

@@ -5,8 +5,8 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.common.security import build_auth_session_key, decode_access_token
 from app.common.config import get_settings
+from app.common.security import build_auth_session_key, decode_access_token
 from app.infra.db import get_db_session
 from app.infra.redis import get_redis_client
 from app.main import app

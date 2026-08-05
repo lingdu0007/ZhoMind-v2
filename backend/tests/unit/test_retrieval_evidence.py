@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
-from pathlib import Path
 import subprocess
+from datetime import UTC, datetime
+from pathlib import Path
 
 from app.common.config import Settings
 from app.rag.dense_contract import build_embedding_contract_fingerprint
@@ -109,7 +109,10 @@ class _GenerationFakeHttpClient(_FakeHttpClient):
                 body=(
                     'event: outcome\ndata: {"outcome": "evidence_gated_answer"}\n\n'
                     'event: content\ndata: {"content": "基于已发布来源的回答"}\n\n'
-                    'event: evidence_summary\ndata: {"evidence_summary": {"coverage": "sufficient", "source_count": 1, "sources": [{"source_id": "chunk-1", "metadata": {"title": "smoke.md", "publication_version": "v1"}, "excerpt": "retrieval evidence excerpt"}]}}\n\n'
+                    'event: evidence_summary\ndata: {"evidence_summary": {"coverage": "sufficient", '
+                    '"source_count": 1, "sources": [{"source_id": "chunk-1", "metadata": '
+                    '{"title": "smoke.md", "publication_version": "v1"}, '
+                    '"excerpt": "retrieval evidence excerpt"}]}}\n\n'
                     "event: done\ndata: [DONE]\n\n"
                 ),
             )
@@ -184,7 +187,7 @@ def test_retrieval_evidence_smoke_writes_non_sensitive_success_manifest(tmp_path
             output_dir=tmp_path,
             source_revision="abc123",
             run_id="run-001",
-            now=lambda: datetime(2026, 7, 30, tzinfo=timezone.utc),
+            now=lambda: datetime(2026, 7, 30, tzinfo=UTC),
             sleep=lambda _: _return_none(),
         )
         return await runner.run()
@@ -235,7 +238,7 @@ def test_generation_smoke_rejects_a_dense_candidate_from_another_published_docum
             source_revision="abc123",
             run_id="generation-run-existing-published-source",
             include_generation=True,
-            now=lambda: datetime(2026, 7, 30, tzinfo=timezone.utc),
+            now=lambda: datetime(2026, 7, 30, tzinfo=UTC),
             sleep=lambda _: _return_none(),
         )
         return await runner.run()
@@ -256,7 +259,7 @@ def test_retrieval_evidence_smoke_fails_safely_for_incomplete_runtime_configurat
             output_dir=tmp_path,
             source_revision="abc123",
             run_id="run-002",
-            now=lambda: datetime(2026, 7, 30, tzinfo=timezone.utc),
+            now=lambda: datetime(2026, 7, 30, tzinfo=UTC),
             sleep=lambda _: _return_none(),
         )
         return await runner.run()
@@ -279,7 +282,7 @@ def test_generation_smoke_proves_cited_normal_and_streaming_chat_without_recordi
             source_revision="abc123",
             run_id="generation-run-001",
             include_generation=True,
-            now=lambda: datetime(2026, 7, 30, tzinfo=timezone.utc),
+            now=lambda: datetime(2026, 7, 30, tzinfo=UTC),
             sleep=lambda _: _return_none(),
         )
         return await runner.run()
@@ -312,7 +315,7 @@ def test_generation_smoke_does_not_use_direct_retrieval_as_a_citation_oracle(tmp
             source_revision="abc123",
             run_id="generation-run-independent-chat-seam",
             include_generation=True,
-            now=lambda: datetime(2026, 7, 30, tzinfo=timezone.utc),
+            now=lambda: datetime(2026, 7, 30, tzinfo=UTC),
             sleep=lambda _: _return_none(),
         )
         return await runner.run()
@@ -335,7 +338,7 @@ def test_generation_smoke_admits_a_knowledge_user_before_calling_chat(tmp_path) 
             source_revision="abc123",
             run_id="generation-run-knowledge-user",
             include_generation=True,
-            now=lambda: datetime(2026, 7, 30, tzinfo=timezone.utc),
+            now=lambda: datetime(2026, 7, 30, tzinfo=UTC),
             sleep=lambda _: _return_none(),
         )
         return await runner.run(), client
@@ -343,7 +346,11 @@ def test_generation_smoke_admits_a_knowledge_user_before_calling_chat(tmp_path) 
     manifest, client = asyncio.run(_run())
 
     assert manifest["outcome"] == "passed"
-    invitation = next(details for method, path, details in client.request_details if (method, path) == ("POST", "/api/v1/members/invitations"))
+    invitation = next(
+        details
+        for method, path, details in client.request_details
+        if (method, path) == ("POST", "/api/v1/members/invitations")
+    )
     assert invitation["headers"] == {"Authorization": "Bearer login-token"}
     registration = next(details for method, path, details in client.request_details if (method, path) == ("POST", "/api/v1/auth/register"))
     assert registration["json_body"]["invitation_code"] == "team-invitation-code"
@@ -455,7 +462,7 @@ def test_generation_smoke_uses_a_natural_language_question_for_the_published_fix
             source_revision="abc123",
             run_id="generation-run-002",
             include_generation=True,
-            now=lambda: datetime(2026, 7, 30, tzinfo=timezone.utc),
+            now=lambda: datetime(2026, 7, 30, tzinfo=UTC),
             sleep=lambda _: _return_none(),
         )
         return await runner.run(), client
@@ -486,7 +493,7 @@ def test_generation_smoke_fails_when_the_stream_omits_the_cited_source(tmp_path)
             source_revision="abc123",
             run_id="generation-run-003",
             include_generation=True,
-            now=lambda: datetime(2026, 7, 30, tzinfo=timezone.utc),
+            now=lambda: datetime(2026, 7, 30, tzinfo=UTC),
             sleep=lambda _: _return_none(),
         )
         return await runner.run()
@@ -513,7 +520,7 @@ def test_retrieval_evidence_production_run_ids_do_not_create_administrators(tmp_
                 output_dir=tmp_path,
                 source_revision="abc123",
                 run_id=run_id,
-                now=lambda: datetime(2026, 7, 30, tzinfo=timezone.utc),
+                now=lambda: datetime(2026, 7, 30, tzinfo=UTC),
                 sleep=lambda _: _return_none(),
             )
             manifest = await runner.run()

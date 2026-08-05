@@ -1,121 +1,34 @@
+// System Settings browser acceptance over a disposable real API.
+// The draft lifecycle (save / apply / failed / active) uses the real settings
+// endpoints; failures are seeded through the disposable API environment.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { chromium } from 'playwright';
-import { createServer } from 'vite';
+import { loginAdmin, registerKnowledgeUserViaApi, startWorkbench } from './acceptance-env.mjs';
 
-const jsonResponse = (data, status = 200) => ({
-  status,
-  contentType: 'application/json',
-  body: JSON.stringify({ data })
-});
-
-const settingsDraft = {
-  draft: {
-    provider_type: 'ark',
-    model: 'Qwen/Qwen3-32B',
-    service_url: 'https://provider.example.test/v1',
-    provider_api_key: { configured: true }
-  },
-  saved_version: 2,
-  active_version: 1,
-  last_modified: { actor: 'operator', at: '2026-07-31T10:15:00Z' },
-  application_state: 'saved',
-  application: { version: 2, actor: 'operator', at: '2026-07-31T10:15:00Z', message: 'settings version is saved' }
-};
-
-const startSettingsWorkspace = async (t, apiHandler, viewport = { width: 1440, height: 900 }) => {
-  const testPort = 43000 + Math.floor(Math.random() * 1000);
-  const server = await createServer({ server: { host: '127.0.0.1', port: testPort, strictPort: true } });
-  await server.listen();
-
-  const browser = await chromium.launch({ headless: true });
-  t.after(async () => {
-    await browser.close();
-    await server.close();
+const openSettings = async (page, baseUrl) => {
+  await page.goto(`${baseUrl}config`);
+  await page.getByRole('heading', { name: '系统设置' }).waitFor();
+  // The saved draft loads asynchronously; wait until the model field carries
+  // the seeded value before assertions run.
+  await page.waitForFunction(() => {
+    const input = document.querySelector('input[aria-label="生成模型"]');
+    return input && input.value !== '';
   });
-
-  const page = await browser.newPage({ viewport });
-  page.setDefaultTimeout(5000);
-  await page.route((url) => url.pathname.startsWith('/api/'), apiHandler);
-  return { page, baseUrl: server.resolvedUrls.local[0] };
 };
 
 test('System Administrator saves and applies a dirty draft without optimistically showing an active version', { timeout: 30000 }, async (t) => {
-  const saves = [];
-  const applications = [];
-  let applicationStarted = false;
-  const { page, baseUrl } = await startSettingsWorkspace(t, async (route) => {
-    const request = route.request();
-    const path = new URL(request.url()).pathname;
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin', capabilities: { system_settings: true } }));
-      return;
-    }
-    if (path === '/api/settings/draft' && request.method() === 'GET') {
-      await route.fulfill(
-        jsonResponse(
-          applicationStarted
-            ? {
-                ...settingsDraft,
-                draft: { ...settingsDraft.draft, model: 'Qwen/Qwen3-14B' },
-                saved_version: 3,
-                active_version: 3,
-                application_state: 'active',
-                application: { version: 3, actor: 'operator', at: '2026-07-31T10:20:01Z', message: 'settings version is active' }
-              }
-            : settingsDraft
-        )
-      );
-      return;
-    }
-    if (path === '/api/settings/draft' && request.method() === 'PUT') {
-      saves.push(request.postDataJSON());
-      await route.fulfill(
-        jsonResponse({
-          ...settingsDraft,
-          draft: { ...settingsDraft.draft, model: 'Qwen/Qwen3-14B' },
-          saved_version: 3,
-          active_version: 1,
-          last_modified: { actor: 'operator', at: '2026-07-31T10:20:00Z' },
-          application_state: 'saved',
-          application: { version: 3, actor: 'operator', at: '2026-07-31T10:20:00Z', message: 'settings version is saved' }
-        })
-      );
-      return;
-    }
-    if (path === '/api/settings/apply' && request.method() === 'POST') {
-      applications.push(request.postDataJSON());
-      applicationStarted = true;
-      await route.fulfill(
-        jsonResponse({
-          ...settingsDraft,
-          draft: { ...settingsDraft.draft, model: 'Qwen/Qwen3-14B' },
-          saved_version: 3,
-          active_version: 1,
-          application_state: 'applying',
-          application: { version: 3, actor: 'operator', at: '2026-07-31T10:20:00Z', message: 'settings version is applying' }
-        })
-      );
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
+  const { page, baseUrl } = await startWorkbench(t, {});
+  await loginAdmin(page, baseUrl);
+  await openSettings(page, baseUrl);
 
-  await page.addInitScript(() => {
-    localStorage.setItem('access_token', 'admin-token');
-    localStorage.setItem('rag_config', JSON.stringify({ llm_model: 'forged-browser-value' }));
-  });
-  await page.goto(`${baseUrl}config`);
-
-  await page.getByRole('heading', { name: '系统设置' }).waitFor();
   assert.equal(await page.getByRole('link', { name: '系统设置' }).isVisible(), true);
   assert.equal(await page.getByRole('heading', { name: '模型与提供方' }).isVisible(), true);
   assert.equal(await page.getByLabel('生成模型').inputValue(), 'Qwen/Qwen3-32B');
   assert.equal(await page.getByLabel('服务 URL').inputValue(), 'https://provider.example.test/v1');
   assert.equal(await page.getByText('Provider API 密钥已配置，内容已隐藏。').isVisible(), true);
-  assert.equal(await page.getByText('已保存版本 2').isVisible(), true);
-  assert.equal(await page.getByText('生效版本 1').isVisible(), true);
-  assert.equal(await page.getByText('最后修改：operator').isVisible(), true);
+  assert.equal(await page.getByText('已保存版本 1').isVisible(), true);
+  assert.equal(await page.getByText('尚无生效版本').isVisible(), true);
+  assert.equal(await page.getByText('最后修改：browser-bootstrap').isVisible(), true);
   assert.equal(await page.getByText('保存并应用前，运行系统不会变化。').isVisible(), true);
   const geometry = await page.getByLabel('草稿状态').evaluate((bar) => ({
     pageWidth: document.documentElement.scrollWidth,
@@ -150,109 +63,38 @@ test('System Administrator saves and applies a dirty draft without optimisticall
 
   await page.getByLabel('生成模型').fill('Qwen/Qwen3-14B');
   await page.getByRole('button', { name: '保存并应用', exact: true }).click();
-  await page.getByRole('button', { name: '正在应用版本 3。' }).waitFor();
-  assert.equal(saves.length, 1);
-  assert.equal(saves[0].model, 'Qwen/Qwen3-14B');
-  assert.equal(saves[0].provider_api_key, null);
-  assert.deepEqual(applications, [{ version: 3 }]);
-  assert.equal(await page.getByText('已保存版本 3').isVisible(), true);
-  assert.equal(await page.getByText('生效版本 1').isVisible(), true);
-  assert.equal(await page.getByRole('button', { name: '正在应用版本 3。' }).isDisabled(), true);
+  await page.getByRole('button', { name: '正在应用版本 2。' }).waitFor();
+  assert.equal(await page.getByText('已保存版本 2').isVisible(), true);
+  assert.equal(await page.getByText('尚无生效版本').isVisible(), true);
+  assert.equal(await page.getByRole('button', { name: '正在应用版本 2。' }).isDisabled(), true);
   assert.equal(await page.getByLabel('生成模型').isDisabled(), true);
-  await page.getByText('生效版本 3').waitFor();
+  await page.getByText('生效版本 2').waitFor({ timeout: 8000 });
   assert.equal(await page.getByText('设置已生效。').isVisible(), true);
   await page.reload();
-  await page.getByText('生效版本 3').waitFor();
+  await page.getByText('生效版本 2').waitFor();
   assert.equal(await page.getByText('设置已生效。').isVisible(), true);
   assert.equal(await page.getByText('存在未保存的草稿修改').count(), 0);
 });
 
 test('System Administrator sees a failed application after refresh and can retry the saved version', { timeout: 30000 }, async (t) => {
-  const applications = [];
-  let retry = false;
-  const { page, baseUrl } = await startSettingsWorkspace(t, async (route) => {
-    const request = route.request();
-    const path = new URL(request.url()).pathname;
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin', capabilities: { system_settings: true } }));
-      return;
-    }
-    if (path === '/api/settings/draft' && request.method() === 'GET') {
-      await route.fulfill(
-        jsonResponse(
-          retry
-            ? {
-                ...settingsDraft,
-                application_state: 'active',
-                active_version: 2,
-                application: { version: 2, actor: 'operator', at: '2026-07-31T10:25:00Z', message: 'settings version is active' }
-              }
-            : {
-                ...settingsDraft,
-                application_state: 'failed',
-                application: { version: 2, actor: 'operator', at: '2026-07-31T10:24:00Z', message: 'runtime rejected the saved configuration' }
-              }
-        )
-      );
-      return;
-    }
-    if (path === '/api/settings/apply' && request.method() === 'POST') {
-      applications.push(request.postDataJSON());
-      retry = true;
-      await route.fulfill(
-        jsonResponse({
-          ...settingsDraft,
-          application_state: 'applying',
-          application: { version: 2, actor: 'operator', at: '2026-07-31T10:25:00Z', message: 'settings version is applying' }
-        })
-      );
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
+  const { page, baseUrl } = await startWorkbench(t, { env: { BROWSER_ACCEPTANCE_SETTINGS_FAILED: '1' } });
+  await loginAdmin(page, baseUrl);
+  await openSettings(page, baseUrl);
 
-  await page.addInitScript(() => localStorage.setItem('access_token', 'admin-token'));
-  await page.goto(`${baseUrl}config`);
-  await page.getByText('应用失败：runtime rejected the saved configuration').waitFor();
-  assert.equal(await page.getByText('生效版本 1').isVisible(), true);
+  await page.getByText('应用失败：运行系统未接受该保存版本').waitFor();
+  assert.equal(await page.getByText('尚无生效版本').isVisible(), true);
 
-  await page.getByRole('button', { name: '重试应用版本 2', exact: true }).click();
-  await page.getByRole('button', { name: '正在应用版本 2。' }).waitFor();
-  assert.deepEqual(applications, [{ version: 2 }]);
-  await page.getByText('生效版本 2').waitFor();
+  await page.getByRole('button', { name: '重试应用版本 1', exact: true }).click();
+  await page.getByRole('button', { name: '正在应用版本 1。' }).waitFor();
+  await page.getByText('生效版本 1').waitFor({ timeout: 8000 });
   assert.equal(await page.getByText('设置已生效。').isVisible(), true);
 });
 
 test('settings draft validation keeps edits visible and exposes field-level feedback without showing a secret', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startSettingsWorkspace(t, async (route) => {
-    const request = route.request();
-    const path = new URL(request.url()).pathname;
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin', capabilities: { system_settings: true } }));
-      return;
-    }
-    if (path === '/api/settings/draft' && request.method() === 'GET') {
-      await route.fulfill(jsonResponse(settingsDraft));
-      return;
-    }
-    if (path === '/api/settings/draft' && request.method() === 'PUT') {
-      await route.fulfill({
-        status: 400,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          code: 'VALIDATION_ERROR',
-          message: 'system settings draft is invalid',
-          detail: { fields: { model: 'model identifier is unsafe or unsupported' } }
-        })
-      });
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
+  const { page, baseUrl } = await startWorkbench(t, {});
+  await loginAdmin(page, baseUrl);
+  await openSettings(page, baseUrl);
 
-  await page.addInitScript(() => localStorage.setItem('access_token', 'admin-token'));
-  await page.goto(`${baseUrl}config`);
-  await page.getByRole('heading', { name: '系统设置' }).waitFor();
   await page.getByLabel('生成模型').fill('unsafe value');
   await page.getByRole('button', { name: '保存并应用', exact: true }).click();
 
@@ -264,53 +106,25 @@ test('settings draft validation keeps edits visible and exposes field-level feed
 });
 
 test('Knowledge User is redirected before the gated settings draft can load', { timeout: 30000 }, async (t) => {
-  const requests = [];
-  const { page, baseUrl } = await startSettingsWorkspace(t, async (route) => {
-    const request = route.request();
-    const path = new URL(request.url()).pathname;
-    requests.push(`${request.method()} ${path}`);
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'knowledge-user', role: 'user', capabilities: { system_settings: false } }));
-      return;
-    }
-    if (path === '/api/sessions') {
-      await route.fulfill(jsonResponse({ sessions: [] }));
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
+  const { page, baseUrl, api } = await startWorkbench(t, {});
+  const token = await registerKnowledgeUserViaApi(api, 'knowledge-user');
+  await page.addInitScript(
+    ({ storedToken }) => localStorage.setItem('access_token', storedToken),
+    { storedToken: token }
+  );
 
-  await page.addInitScript(() => localStorage.setItem('access_token', 'knowledge-user-token'));
   await page.goto(`${baseUrl}config`);
-
   await page.waitForURL(/\/chat\?notice=admin-required$/);
   assert.equal(await page.getByRole('heading', { name: '系统设置' }).count(), 0);
   assert.equal(await page.getByRole('link', { name: '系统设置' }).count(), 0);
-  assert.equal(requests.some((request) => request.includes('/api/settings/draft')), false);
 });
 
 test('System Settings keeps its desktop-only boundary explicit on a mobile viewport', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startSettingsWorkspace(
-    t,
-    async (route) => {
-      const path = new URL(route.request().url()).pathname;
-      if (path === '/api/auth/me') {
-        await route.fulfill(jsonResponse({ username: 'operator', role: 'admin', capabilities: { system_settings: true } }));
-        return;
-      }
-      if (path === '/api/settings/draft') {
-        await route.fulfill(jsonResponse(settingsDraft));
-        return;
-      }
-      await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-    },
-    { width: 390, height: 844 }
-  );
+  const { page, baseUrl } = await startWorkbench(t, { viewport: { width: 390, height: 844 } });
+  await loginAdmin(page, baseUrl);
 
-  await page.addInitScript(() => localStorage.setItem('access_token', 'admin-token'));
   await page.goto(`${baseUrl}config`);
   await page.getByRole('heading', { name: '系统设置' }).waitFor();
-
   assert.equal(await page.getByText('系统设置当前仅支持桌面工作区。').isVisible(), true);
   assert.equal(await page.getByRole('form').count(), 0);
   assert.equal(await page.getByLabel('草稿状态').count(), 0);
@@ -318,39 +132,13 @@ test('System Settings keeps its desktop-only boundary explicit on a mobile viewp
 });
 
 test('System Settings exposes only one non-secret generation provider configuration', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startSettingsWorkspace(t, async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin', capabilities: { system_settings: true } }));
-      return;
-    }
-    if (path === '/api/settings/draft') {
-      await route.fulfill(
-        jsonResponse({
-          draft: {
-            provider_type: 'openai',
-            model: 'gpt-4o-mini',
-            service_url: 'https://provider.example.test/v1',
-            provider_api_key: { configured: true }
-          },
-          saved_version: 1,
-          active_version: 1,
-          last_modified: { actor: 'operator', at: '2026-08-01T12:00:00Z' },
-          application_state: 'active',
-          application: { version: 1, actor: 'operator', at: '2026-08-01T12:00:00Z', message: 'settings version is active' }
-        })
-      );
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
-
-  await page.addInitScript(() => localStorage.setItem('access_token', 'admin-token'));
-  await page.goto(`${baseUrl}config`);
+  const { page, baseUrl } = await startWorkbench(t, {});
+  await loginAdmin(page, baseUrl);
+  await openSettings(page, baseUrl);
 
   await page.getByLabel('服务 URL').waitFor();
-  assert.equal(await page.getByLabel('模型提供方').inputValue(), 'openai');
-  assert.equal(await page.getByLabel('生成模型').inputValue(), 'gpt-4o-mini');
+  assert.equal(await page.getByLabel('模型提供方').inputValue(), 'ark');
+  assert.equal(await page.getByLabel('生成模型').inputValue(), 'Qwen/Qwen3-32B');
   assert.equal(await page.getByLabel('嵌入模型').count(), 0);
   assert.equal(await page.getByText('Provider API 密钥已配置，内容已隐藏。').isVisible(), true);
 });

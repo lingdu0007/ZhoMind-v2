@@ -1,22 +1,17 @@
+import sys
 from logging.config import fileConfig
 from pathlib import Path
-import sys
 
-from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
+
+from alembic import context
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.common.config import get_settings
 from app.model.base import Base
-from app.model.chat import ChatMessage, ChatSession
-from app.model.document import Document, DocumentChunk, DocumentJob
-from app.model.operational_event import OperationalEvent
-from app.model.system_settings import SystemSettingsDraft, SystemSettingsState
-from app.model.team_invitation import TeamInvitation
-from app.model.user import User
 
 config = context.config
 settings = get_settings()

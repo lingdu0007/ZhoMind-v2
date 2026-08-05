@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
 import gc
 import importlib.util
 import os
-from pathlib import Path
 import tempfile
-from types import MethodType
 import warnings
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import MethodType
 
 import pytest
 import sqlalchemy as sa
@@ -229,7 +229,7 @@ class _CandidateWriteOwnershipSessionSpy(_SessionSpy):
             self.document.latest_requested_generation = 3
             self.document.active_build_generation = 3
             self.document.active_build_job_id = "job-other"
-            self.document.active_build_heartbeat_at = datetime.now(timezone.utc)
+            self.document.active_build_heartbeat_at = datetime.now(UTC)
             return _ResultSpy(rowcount=0)
 
         raise AssertionError(f"unexpected SQL during candidate write race test: {sql}")
@@ -1068,7 +1068,7 @@ def test_process_job_retries_latest_generation_when_blocked_by_older_owner() -> 
             latest_requested_generation=2,
             active_build_generation=1,
             active_build_job_id="job-old",
-            active_build_heartbeat_at=datetime.now(timezone.utc),
+            active_build_heartbeat_at=datetime.now(UTC),
         )
         document.id = "doc-overlap"
 
@@ -1100,7 +1100,7 @@ def test_process_job_retries_latest_generation_when_blocked_by_older_owner() -> 
         async def _fake_sleep_before_claim_retry(self: DocumentBuildService) -> None:
             claim_attempts.append(job.build_generation or -1)
             retry_waits.append("slept")
-            document.active_build_heartbeat_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+            document.active_build_heartbeat_at = datetime.now(UTC) - timedelta(minutes=5)
 
         async def _fake_start_claimed_job(
             self: DocumentBuildService,

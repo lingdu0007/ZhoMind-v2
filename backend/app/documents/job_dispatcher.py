@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import Awaitable
 from contextlib import suppress
-import inspect
 
 from app.common.exceptions import AppError
 from app.operations.limits import MAX_DOCUMENT_BUILD_WORKERS

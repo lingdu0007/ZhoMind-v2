@@ -123,5 +123,6 @@ CLAUDE.md
 /task.md
 /task_plan.md
 
-# uv lockfile generated in local backend worktree env
-backend/uv.lock
+# Backend dependency lock is committed and must stay in sync with pyproject.toml.
+# Do not add backend/uv.lock here: the PR Gate runs `uv sync --frozen`, which
+# fails whenever the lock drifts from pyproject.toml.

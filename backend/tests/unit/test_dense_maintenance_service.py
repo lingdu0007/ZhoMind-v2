@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.common.config import Settings
@@ -118,7 +117,7 @@ async def test_collect_status_counts_current_fingerprint_documents(tmp_path) -> 
     settings = _dense_settings()
     current_fingerprint = build_embedding_contract_fingerprint(settings)
     other_fingerprint = build_embedding_contract_fingerprint(_dense_settings(EMBEDDING_MODEL="text-embedding-3-small"))
-    uploaded_at = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    uploaded_at = datetime(2026, 4, 1, tzinfo=UTC)
 
     try:
         session.add_all(
@@ -186,7 +185,7 @@ async def test_backfill_skips_stale_current_fingerprint_docs_and_marks_ready_onl
     settings = _dense_settings()
     current_fingerprint = build_embedding_contract_fingerprint(settings)
     collaborator_fingerprint = "fingerprint-from-collaborator"
-    uploaded_at = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    uploaded_at = datetime(2026, 4, 1, tzinfo=UTC)
 
     async def _assert_document_not_ready(document_id: str) -> None:
         document = await session.get(Document, document_id)
@@ -277,7 +276,7 @@ async def test_reconcile_deletes_document_vectors_and_clears_dense_readiness(tmp
     settings = _dense_settings()
     current_fingerprint = build_embedding_contract_fingerprint(settings)
     other_fingerprint = build_embedding_contract_fingerprint(_dense_settings(EMBEDDING_MODEL="text-embedding-3-small"))
-    uploaded_at = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    uploaded_at = datetime(2026, 4, 1, tzinfo=UTC)
     dense_index_service = _DenseIndexSpy()
     service = DenseMaintenanceService(settings=settings, dense_index_service=dense_index_service)
 

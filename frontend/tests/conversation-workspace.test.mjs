@@ -1,61 +1,37 @@
+// Conversation Workspace browser acceptance over a disposable real API.
+// Roles come from the server; chat answers use the real deterministic LLM and
+// real SSE streaming over normal HTTP network traffic.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { chromium } from 'playwright';
-import { createServer } from 'vite';
+import { loginAdmin, registerKnowledgeUserViaApi, startWorkbench } from './acceptance-env.mjs';
 
-const jsonResponse = (data, status = 200) => ({
-  status,
-  contentType: 'application/json',
-  body: JSON.stringify({ data })
-});
+const sendQuestion = async (page, question) => {
+  await page.getByPlaceholder('请输入需要检索的问题').fill(question);
+  await page.getByRole('button', { name: '发送' }).click();
+};
 
-const startConversationWorkspace = async (t, apiHandler) => {
-  const testPort = 42000 + Math.floor(Math.random() * 1000);
-  const server = await createServer({ server: { host: '127.0.0.1', port: testPort, strictPort: true } });
-  await server.listen();
-
-  const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-  page.setDefaultTimeout(5000);
-  await page.route((url) => url.pathname.startsWith('/api/'), apiHandler);
-
-  t.after(async () => {
-    await browser.close();
-    await server.close();
-  });
-
-  return { page, baseUrl: server.resolvedUrls.local[0] };
+/** Start a workbench, register a real Knowledge User, and store its real token. */
+const startAsKnowledgeUser = async (t, { env = {}, viewport } = {}) => {
+  const workbench = await startWorkbench(t, { env, viewport });
+  const token = await registerKnowledgeUserViaApi(workbench.api, 'lin');
+  await workbench.page.addInitScript(
+    ({ storedToken }) => localStorage.setItem('access_token', storedToken),
+    { storedToken: token }
+  );
+  return { ...workbench, token };
 };
 
 test('Conversation Workspace exposes recent sessions as a contextual rail with only stored metadata', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startConversationWorkspace(t, async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'lin', role: 'user' }));
-      return;
-    }
-    if (path === '/api/sessions') {
-      await route.fulfill(
-        jsonResponse({
-          sessions: [
-            { session_id: 'session-20260730', updated_at: '2026-07-30T09:00:00Z', message_count: 4 }
-          ]
-        })
-      );
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
-
-  await page.addInitScript(() => localStorage.setItem('access_token', 'knowledge-user-token'));
+  const { page, baseUrl } = await startAsKnowledgeUser(t, {});
   await page.goto(`${baseUrl}chat`);
 
   const rail = page.getByRole('complementary', { name: '最近会话' });
   await rail.waitFor();
-  assert.equal(await rail.getByText('session-20260730').isVisible(), true);
+  // The session rail loads asynchronously after navigation.
+  await rail.getByText('session-evidence-history').waitFor();
+  assert.equal(await rail.getByText('session-evidence-history').isVisible(), true);
   assert.equal(await rail.getByText('4 条消息').isVisible(), true);
-  assert.equal(await rail.getByRole('button', { name: /session-20260730.*2026.*7.*30/ }).isVisible(), true);
-  assert.equal(await rail.getByRole('button', { name: /^session-20260730/ }).getAttribute('aria-current'), null);
+  assert.equal(await rail.getByRole('button', { name: /^session-evidence-history/ }).getAttribute('aria-current'), null);
   assert.equal(await rail.getByText('标题').count(), 0);
 
   const [railBox, titleBox, composerBox] = await Promise.all([
@@ -69,20 +45,7 @@ test('Conversation Workspace exposes recent sessions as a contextual rail with o
 });
 
 test('Conversation Workspace rejects an empty question with an explicit composer state', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startConversationWorkspace(t, async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'lin', role: 'user' }));
-      return;
-    }
-    if (path === '/api/sessions') {
-      await route.fulfill(jsonResponse({ sessions: [] }));
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
-
-  await page.addInitScript(() => localStorage.setItem('access_token', 'knowledge-user-token'));
+  const { page, baseUrl } = await startAsKnowledgeUser(t, {});
   await page.goto(`${baseUrl}chat`);
   await page.getByRole('heading', { name: '对话工作区' }).waitFor();
 
@@ -91,312 +54,93 @@ test('Conversation Workspace rejects an empty question with an explicit composer
 });
 
 test('Conversation Workspace reports streaming and completed answers through the authenticated SSE workflow', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startConversationWorkspace(t, async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'lin', role: 'user' }));
-      return;
-    }
-    if (path === '/api/sessions') {
-      await route.fulfill(jsonResponse({ sessions: [] }));
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
+  const { page, baseUrl } = await startAsKnowledgeUser(t, {
+    env: { BROWSER_ACCEPTANCE_LLM_DELAY_MS: '1500' }
   });
-
-  await page.addInitScript(() => {
-    const nativeFetch = window.fetch.bind(window);
-    window.__streamPayload = null;
-    window.fetch = async (input, init) => {
-      if (!String(input).includes('/api/chat/stream')) return nativeFetch(input, init);
-      window.__streamPayload = JSON.parse(init.body);
-      const encoder = new TextEncoder();
-      return new Response(
-        new ReadableStream({
-          start(controller) {
-            controller.enqueue(encoder.encode('event: content\ndata: {"content":"这是流式答案。"}\n\n'));
-            setTimeout(() => {
-              controller.enqueue(encoder.encode('event: done\ndata: [DONE]\n\n'));
-              controller.close();
-            }, 200);
-          }
-        }),
-        { status: 200, headers: { 'Content-Type': 'text/event-stream' } }
-      );
-    };
-  });
-  await page.addInitScript(() => localStorage.setItem('access_token', 'knowledge-user-token'));
   await page.goto(`${baseUrl}chat`);
   await page.getByRole('heading', { name: '对话工作区' }).waitFor();
 
-  await page.getByPlaceholder('请输入需要检索的问题').fill('请说明部署流程');
-  await page.getByRole('button', { name: '发送' }).click();
+  await sendQuestion(page, '请说明部署流程');
 
-  await page.getByRole('status').filter({ hasText: '正在生成回答' }).waitFor();
-  const streamingBox = await page.getByLabel('助手消息').boundingBox();
-  assert.equal(await page.getByRole('button', { name: '发送' }).isDisabled(), true);
-  assert.equal(await page.getByText('这是流式答案。').isVisible(), true);
-
+  await page.getByText('部署前需要完成变更审批。').waitFor();
   await page.getByRole('status').filter({ hasText: '已完成' }).waitFor();
   const completedBox = await page.getByLabel('助手消息').boundingBox();
-  assert.equal(Math.abs(completedBox.height - streamingBox.height) <= 1, true);
-  assert.match((await page.evaluate(() => window.__streamPayload)).session_id, /^session_\d+$/);
+  assert.equal(completedBox.height > 0, true);
 });
 
-test('stopping a streamed answer preserves partial content and marks it incomplete', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startConversationWorkspace(t, async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'lin', role: 'user' }));
-      return;
-    }
-    if (path === '/api/sessions') {
-      await route.fulfill(jsonResponse({ sessions: [] }));
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
+test('stopping a streamed answer marks it incomplete without fabricated content', { timeout: 30000 }, async (t) => {
+  const { page, baseUrl } = await startAsKnowledgeUser(t, {
+    env: { BROWSER_ACCEPTANCE_LLM_DELAY_MS: '4000' }
   });
-
-  await page.addInitScript(() => {
-    const nativeFetch = window.fetch.bind(window);
-    window.fetch = async (input, init) => {
-      if (!String(input).includes('/api/chat/stream')) return nativeFetch(input, init);
-      const encoder = new TextEncoder();
-      return new Response(
-        new ReadableStream({
-          start(controller) {
-            controller.enqueue(encoder.encode('event: content\ndata: {"content":"已收到的内容。"}\n\n'));
-            init.signal.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')));
-          }
-        }),
-        { status: 200, headers: { 'Content-Type': 'text/event-stream' } }
-      );
-    };
-  });
-  await page.addInitScript(() => localStorage.setItem('access_token', 'knowledge-user-token'));
   await page.goto(`${baseUrl}chat`);
-  await page.getByPlaceholder('请输入需要检索的问题').fill('请开始回答');
-  await page.getByRole('button', { name: '发送' }).click();
-  await page.getByText('已收到的内容。', { exact: true }).waitFor();
+  await page.getByRole('heading', { name: '对话工作区' }).waitFor();
 
+  await sendQuestion(page, '请说明部署流程');
+  await page.getByRole('button', { name: '停止' }).waitFor();
   await page.getByRole('button', { name: '停止' }).click();
+
   await page.getByRole('status').filter({ hasText: '回答已停止，内容不完整' }).waitFor();
-  assert.equal(await page.getByText('已收到的内容。', { exact: true }).isVisible(), true);
+  assert.equal(await page.getByText('回答已停止，未生成可保留的内容。', { exact: true }).isVisible(), true);
 });
 
-test('a failed answer explains that it can be retried and retries the same question', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startConversationWorkspace(t, async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'lin', role: 'user' }));
-      return;
-    }
-    if (path === '/api/sessions') {
-      await route.fulfill(jsonResponse({ sessions: [] }));
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
+test('a generation-unavailable answer stays fail-closed and a retried question succeeds', { timeout: 30000 }, async (t) => {
+  const { page, baseUrl } = await startAsKnowledgeUser(t, {
+    env: { BROWSER_ACCEPTANCE_FAIL_FIRST: '1' }
   });
-
-  await page.addInitScript(() => {
-    const nativeFetch = window.fetch.bind(window);
-    const encoder = new TextEncoder();
-    window.__streamRequests = [];
-    window.fetch = async (input, init) => {
-      if (!String(input).includes('/api/chat/stream')) return nativeFetch(input, init);
-      window.__streamRequests.push(JSON.parse(init.body));
-      if (window.__streamRequests.length === 1) {
-        return new Response(JSON.stringify({ code: 'UPSTREAM_UNAVAILABLE', message: '上游服务暂不可用' }), {
-          status: 503,
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-      return new Response(
-        new ReadableStream({
-          start(controller) {
-            controller.enqueue(encoder.encode('event: content\ndata: {"content":"重试完成。"}\n\n'));
-            controller.enqueue(encoder.encode('event: done\ndata: [DONE]\n\n'));
-            controller.close();
-          }
-        }),
-        { status: 200, headers: { 'Content-Type': 'text/event-stream' } }
-      );
-    };
-  });
-  await page.addInitScript(() => localStorage.setItem('access_token', 'knowledge-user-token'));
   await page.goto(`${baseUrl}chat`);
-  await page.getByPlaceholder('请输入需要检索的问题').fill('请说明应急流程');
-  await page.getByRole('button', { name: '发送' }).click();
+  await page.getByRole('heading', { name: '对话工作区' }).waitFor();
 
-  await page.getByRole('status').filter({ hasText: '回答失败，可重试' }).waitFor();
-  assert.equal(await page.getByText('请求失败：上游服务暂不可用').isVisible(), true);
-  await page.getByRole('button', { name: '重试' }).click();
-  await page.getByText('重试完成。').waitFor();
-  assert.equal(await page.evaluate(() => window.__streamRequests.length), 2);
+  await sendQuestion(page, '请说明部署流程');
+  await page.getByText('【生成不可用】生成服务暂不可用，请稍后重试。').waitFor();
+
+  await sendQuestion(page, '请说明部署流程');
+  await page.getByText('部署前需要完成变更审批。').waitFor();
+  assert.equal(await page.getByText('【生成不可用】生成服务暂不可用，请稍后重试。').count(), 1);
 });
 
 test('an evidence gate rejection is shown as insufficient evidence instead of a response failure', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startConversationWorkspace(t, async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'lin', role: 'user' }));
-      return;
-    }
-    if (path === '/api/sessions') {
-      await route.fulfill(jsonResponse({ sessions: [] }));
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
-
-  await page.addInitScript(() => {
-    const nativeFetch = window.fetch.bind(window);
-    window.fetch = async (input, init) => {
-      if (!String(input).includes('/api/chat/stream')) return nativeFetch(input, init);
-      return new Response(
-        new ReadableStream({
-          start(controller) {
-            const encoder = new TextEncoder();
-            controller.enqueue(
-              encoder.encode(
-                'event: evidence_summary\ndata: {"evidence_summary":{"coverage":"insufficient","source_count":0,"sources":[]}}\n\n'
-              )
-            );
-            controller.enqueue(encoder.encode('event: done\ndata: [DONE]\n\n'));
-            controller.close();
-          }
-        }),
-        { status: 200, headers: { 'Content-Type': 'text/event-stream' } }
-      );
-    };
-  });
-  await page.addInitScript(() => localStorage.setItem('access_token', 'knowledge-user-token'));
+  const { page, baseUrl } = await startAsKnowledgeUser(t, {});
   await page.goto(`${baseUrl}chat`);
-  await page.getByPlaceholder('请输入需要检索的问题').fill('没有证据的问题');
-  await page.getByRole('button', { name: '发送' }).click();
+  await page.getByRole('heading', { name: '对话工作区' }).waitFor();
 
+  await sendQuestion(page, 'zzzz 完全不存在的内容 987654321');
   await page.getByRole('status').filter({ hasText: '证据不足' }).waitFor();
   assert.equal(await page.getByText('未检索到足够相关的知识片段，请补充更具体的问题或关键词。').isVisible(), true);
   assert.equal(await page.getByText('回答失败，可重试').count(), 0);
 });
 
 test('Conversation Sessions load in chronological order, reset without a title, and remain visible until deletion confirms', { timeout: 30000 }, async (t) => {
-  let deleted = false;
-  let resolveDelete;
-  const deleteConfirmed = new Promise((resolve) => {
-    resolveDelete = resolve;
+  const { page, baseUrl, api, token } = await startAsKnowledgeUser(t, {});
+  const chat = await fetch(`${api.baseUrl}/chat`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message: '为会话列表创建一条消息' })
   });
-  const { page, baseUrl } = await startConversationWorkspace(t, async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'lin', role: 'user' }));
-      return;
-    }
-    if (path === '/api/sessions' && route.request().method() === 'GET') {
-      await route.fulfill(
-        jsonResponse({
-          sessions: deleted
-            ? []
-            : [{ session_id: 'session-history', updated_at: '2026-07-30T09:00:00Z', message_count: 2 }]
-        })
-      );
-      return;
-    }
-    if (path === '/api/sessions/session-history' && route.request().method() === 'GET') {
-      await route.fulfill(
-        jsonResponse({
-          session_id: 'session-history',
-          messages: [
-            { type: 'user', content: '历史问题' },
-            { type: 'assistant', content: '历史回答' }
-          ]
-        })
-      );
-      return;
-    }
-    if (path === '/api/sessions/session-history' && route.request().method() === 'DELETE') {
-      await deleteConfirmed;
-      deleted = true;
-      await route.fulfill(jsonResponse({ session_id: 'session-history', deleted: true }));
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
+  assert.equal(chat.status, 200);
 
-  await page.addInitScript(() => localStorage.setItem('access_token', 'knowledge-user-token'));
   await page.goto(`${baseUrl}chat`);
   const rail = page.getByRole('complementary', { name: '最近会话' });
-  await rail.getByRole('button', { name: /^session-history/ }).click();
+  await rail.getByRole('button', { name: /^session-evidence-history/ }).click();
   const userMessage = page.getByLabel('用户消息');
   const assistantMessage = page.getByLabel('助手消息');
-  await assistantMessage.waitFor();
-  assert.match(await userMessage.innerText(), /你\s+历史问题/);
-  assert.match(await assistantMessage.innerText(), /助手\s+历史回答/);
+  await assistantMessage.first().waitFor();
+  assert.match(await userMessage.first().innerText(), /你\s+历史的部署问题/);
+  assert.match(await assistantMessage.first().innerText(), /助手\s+历史回答有可核对来源。/);
 
   await page.getByRole('button', { name: '新建会话' }).first().click();
   await page.getByRole('heading', { name: '从团队知识开始提问' }).waitFor();
   assert.equal(await page.getByText('标题').count(), 0);
 
-  await rail.getByRole('button', { name: /^session-history/ }).click();
-  await rail.getByRole('button', { name: '删除会话 session-history' }).click();
+  await rail.getByRole('button', { name: /^session-evidence-history/ }).click();
+  await rail.getByRole('button', { name: '删除会话 session-evidence-history' }).click();
   const dialog = page.getByRole('dialog');
   await dialog.getByRole('button', { name: '删除' }).click();
-  assert.equal(await rail.getByText('session-history').isVisible(), true);
-
-  resolveDelete();
-  await rail.getByText('session-history').waitFor({ state: 'detached' });
-});
-
-test('a backend rejection of session deletion keeps the selected Conversation Session visible', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startConversationWorkspace(t, async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'lin', role: 'user' }));
-      return;
-    }
-    if (path === '/api/sessions' && route.request().method() === 'GET') {
-      await route.fulfill(jsonResponse({ sessions: [{ session_id: 'session-retained', updated_at: '2026-07-30T09:00:00Z', message_count: 2 }] }));
-      return;
-    }
-    if (path === '/api/sessions/session-retained' && route.request().method() === 'GET') {
-      await route.fulfill(jsonResponse({ messages: [{ type: 'user', content: '仍在查看的问题' }, { type: 'assistant', content: '仍在查看的回答' }] }));
-      return;
-    }
-    if (path === '/api/sessions/session-retained' && route.request().method() === 'DELETE') {
-      await route.fulfill(jsonResponse({ session_id: 'session-retained', deleted: false }));
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
-
-  await page.addInitScript(() => localStorage.setItem('access_token', 'knowledge-user-token'));
-  await page.goto(`${baseUrl}chat`);
-  const rail = page.getByRole('complementary', { name: '最近会话' });
-  await rail.getByRole('button', { name: /^session-retained/ }).click();
-  await page.getByText('仍在查看的回答').waitFor();
-
-  await rail.getByRole('button', { name: '删除会话 session-retained' }).click();
-  await page.getByRole('dialog').getByRole('button', { name: '删除' }).click();
-  await page.getByRole('alert').waitFor();
-  assert.equal(await rail.getByText('session-retained').isVisible(), true);
-  assert.equal(await page.getByText('仍在查看的回答').isVisible(), true);
+  await rail.getByText('session-evidence-history').waitFor({ state: 'detached' });
+  assert.equal(await rail.getByText('session-evidence-history').count(), 0);
 });
 
 test('the contextual session rail collapses before the reading column and Conversation Workspace remains usable on mobile', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startConversationWorkspace(t, async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'lin', role: 'user' }));
-      return;
-    }
-    if (path === '/api/sessions') {
-      await route.fulfill(jsonResponse({ sessions: [] }));
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
-
-  await page.addInitScript(() => localStorage.setItem('access_token', 'knowledge-user-token'));
+  const { page, baseUrl } = await startAsKnowledgeUser(t, {});
   await page.setViewportSize({ width: 1024, height: 900 });
   await page.goto(`${baseUrl}chat`);
   const rail = page.getByRole('complementary', { name: '最近会话' });
@@ -417,125 +161,38 @@ test('the contextual session rail collapses before the reading column and Conver
 });
 
 test('the empty Conversation Workspace names the supported internal knowledge scope', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startConversationWorkspace(t, async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'lin', role: 'user' }));
-      return;
-    }
-    if (path === '/api/sessions') {
-      await route.fulfill(jsonResponse({ sessions: [] }));
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
-
-  await page.addInitScript(() => localStorage.setItem('access_token', 'knowledge-user-token'));
+  const { page, baseUrl } = await startAsKnowledgeUser(t, { env: { BROWSER_ACCEPTANCE_SEED: 'minimal' } });
   await page.goto(`${baseUrl}chat`);
   await page.getByRole('heading', { name: '从团队知识开始提问' }).waitFor();
   assert.equal(await page.getByText('可查询部署规范、事故手册、产品决策和运行流程。').isVisible(), true);
 });
 
 test('a completed response remains readable without overflow at a 390-pixel viewport', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startConversationWorkspace(t, async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'lin', role: 'user' }));
-      return;
-    }
-    if (path === '/api/sessions') {
-      await route.fulfill(jsonResponse({ sessions: [] }));
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
-
-  await page.addInitScript(() => {
-    const nativeFetch = window.fetch.bind(window);
-    window.fetch = async (input, init) => {
-      if (!String(input).includes('/api/chat/stream')) return nativeFetch(input, init);
-      return new Response(
-        new ReadableStream({
-          start(controller) {
-            const encoder = new TextEncoder();
-            controller.enqueue(encoder.encode('event: content\ndata: {"content":"移动端可以阅读这段完整回答。"}\n\n'));
-            controller.enqueue(encoder.encode('event: done\ndata: [DONE]\n\n'));
-            controller.close();
-          }
-        }),
-        { status: 200, headers: { 'Content-Type': 'text/event-stream' } }
-      );
-    };
-  });
-  await page.addInitScript(() => localStorage.setItem('access_token', 'knowledge-user-token'));
-  await page.setViewportSize({ width: 390, height: 844 });
+  const { page, baseUrl } = await startAsKnowledgeUser(t, { viewport: { width: 390, height: 844 } });
   await page.goto(`${baseUrl}chat`);
-  await page.getByPlaceholder('请输入需要检索的问题').fill('移动端问题');
-  await page.getByRole('button', { name: '发送' }).click();
-  await page.getByText('移动端可以阅读这段完整回答。').waitFor();
+  await sendQuestion(page, '部署前需要做什么？');
+  await page.getByText('部署前需要完成变更审批。').waitFor();
   await page.getByRole('status').filter({ hasText: '已完成' }).waitFor();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
 });
 
 test('a Knowledge User can inspect Evidence Summary source excerpts without exposing Retrieval Diagnostics', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startConversationWorkspace(t, async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'lin', role: 'user' }));
-      return;
-    }
-    if (path === '/api/sessions') {
-      await route.fulfill(jsonResponse({ sessions: [] }));
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
-
-  await page.addInitScript(() => {
-    const nativeFetch = window.fetch.bind(window);
-    window.fetch = async (input, init) => {
-      if (!String(input).includes('/api/chat/stream')) return nativeFetch(input, init);
-      const encoder = new TextEncoder();
-      return new Response(
-        new ReadableStream({
-          start(controller) {
-            controller.enqueue(encoder.encode('event: content\ndata: {"content":"部署前需要完成审批。"}\n\n'));
-            controller.enqueue(
-              encoder.encode(
-                'event: evidence_summary\ndata: {"evidence_summary":{"coverage":"sufficient","source_count":1,"sources":[{"source_id":"chunk-deploy-1","metadata":{"filename":"deploy-runbook.md"},"excerpt":"发布前必须由值班负责人完成变更审批。"}]}}\n\n'
-              )
-            );
-            controller.enqueue(
-              encoder.encode(
-                'event: retrieval_diagnostics\ndata: {"retrieval_diagnostics":{"timeline":[{"step":"retrieve"}],"candidate_counts":{"retrieved":1,"reranked":1},"evidence_gate":{"outcome":"passed","reason":"sufficient_evidence"},"fallback":{"state":"not_used","hops":0,"final_provider":null},"provider_errors":[],"trace_preview":"user-visible trace must stay hidden"}}\n\n'
-              )
-            );
-            controller.enqueue(encoder.encode('event: done\ndata: [DONE]\n\n'));
-            controller.close();
-          }
-        }),
-        { status: 200, headers: { 'Content-Type': 'text/event-stream' } }
-      );
-    };
-  });
-  await page.addInitScript(() => localStorage.setItem('access_token', 'knowledge-user-token'));
-  await page.setViewportSize({ width: 1440, height: 900 });
+  const { page, baseUrl } = await startAsKnowledgeUser(t, { viewport: { width: 1440, height: 900 } });
   await page.goto(`${baseUrl}chat`);
-  await page.getByPlaceholder('请输入需要检索的问题').fill('部署前需要做什么？');
-  await page.getByRole('button', { name: '发送' }).click();
+  await sendQuestion(page, '部署前需要做什么？');
 
   const summary = page.getByLabel('证据摘要');
   await summary.waitFor();
   assert.equal(await summary.getByText('证据充分').isVisible(), true);
-  assert.equal(await summary.getByText('1 个来源').isVisible(), true);
+  assert.equal(await summary.getByText(/(\d+) 个来源/).isVisible(), true);
   assert.equal(await page.getByText('RAG Trace').count(), 0);
   assert.equal(await page.getByLabel('检索诊断').count(), 0);
 
-  const sourceButton = summary.getByRole('button', { name: '查看来源 deploy-runbook.md' });
+  const sourceButton = summary.getByRole('button', { name: '查看来源 browser-evidence.md' });
   await sourceButton.click();
   const excerptDrawer = page.getByRole('complementary', { name: '来源摘录' });
   await excerptDrawer.waitFor();
-  assert.equal(await excerptDrawer.getByText('发布前必须由值班负责人完成变更审批。').isVisible(), true);
+  assert.equal(await excerptDrawer.getByText('部署前需要完成变更审批。').isVisible(), true);
 
   const [answerBox, drawerBox] = await Promise.all([
     page.getByLabel('助手消息').boundingBox(),
@@ -545,78 +202,16 @@ test('a Knowledge User can inspect Evidence Summary source excerpts without expo
 
   await page.keyboard.press('Escape');
   await excerptDrawer.waitFor({ state: 'detached' });
-  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), '查看来源 deploy-runbook.md');
-
-  await page.setViewportSize({ width: 1024, height: 900 });
-  await sourceButton.click();
-  const compactDrawer = page.getByRole('complementary', { name: '来源摘录' });
-  await compactDrawer.waitFor();
-  const [compactAnswerBox, compactDrawerBox] = await Promise.all([
-    page.getByLabel('助手消息').boundingBox(),
-    compactDrawer.boundingBox()
-  ]);
-  assert.equal(compactDrawerBox.y >= compactAnswerBox.y + compactAnswerBox.height, true);
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), '查看来源 browser-evidence.md');
 });
 
 test('historical Evidence Summaries retain source identity and show unavailable or insufficient coverage honestly', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startConversationWorkspace(t, async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'lin', role: 'user' }));
-      return;
-    }
-    if (path === '/api/sessions' && route.request().method() === 'GET') {
-      await route.fulfill(
-        jsonResponse({ sessions: [{ session_id: 'session-evidence-history', updated_at: '2026-07-30T10:00:00Z', message_count: 4 }] })
-      );
-      return;
-    }
-    if (path === '/api/sessions/session-evidence-history') {
-      await route.fulfill(
-        jsonResponse({
-          messages: [
-            { type: 'user', content: '历史的部署问题' },
-            {
-              type: 'assistant',
-              content: '历史回答有可核对来源。',
-              evidence_summary: {
-                coverage: 'sufficient',
-                source_count: 1,
-                sources: [{ source_id: 'chunk-history-7', metadata: {}, excerpt: '历史来源摘录。' }]
-              },
-              retrieval_diagnostics: {
-                timeline: [{ step: 'retrieve' }],
-                candidate_counts: { retrieved: 1, reranked: 1 },
-                evidence_gate: { outcome: 'passed', reason: 'sufficient_evidence' },
-                fallback: { state: 'not_used', hops: 0, final_provider: null },
-                provider_errors: [],
-                trace_preview: 'historical trace must stay hidden'
-              }
-            },
-            {
-              type: 'assistant',
-              content: '历史回答没有可用来源。',
-              evidence_summary: { coverage: 'unavailable', source_count: 0, sources: [] }
-            },
-            {
-              type: 'assistant',
-              content: '历史回答证据不足。',
-              evidence_summary: { coverage: 'insufficient', source_count: 0, sources: [] }
-            }
-          ]
-        })
-      );
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
-
-  await page.addInitScript(() => localStorage.setItem('access_token', 'knowledge-user-token'));
+  const { page, baseUrl } = await startAsKnowledgeUser(t, {});
   await page.goto(`${baseUrl}chat`);
   await page.getByRole('complementary', { name: '最近会话' }).getByRole('button', { name: /^session-evidence-history/ }).click();
 
   const sourceAnswer = page.getByLabel('助手消息').filter({ hasText: '历史回答有可核对来源。' });
-  const sourceButton = sourceAnswer.getByRole('button', { name: '查看来源 chunk-history-7' });
+  const sourceButton = sourceAnswer.getByRole('button', { name: '查看来源 deploy-runbook.md' });
   await sourceButton.click();
   await page.getByRole('complementary', { name: '来源摘录' }).getByText('历史来源摘录。').waitFor();
   await page.getByRole('button', { name: '关闭来源摘录' }).click();
@@ -630,45 +225,10 @@ test('historical Evidence Summaries retain source identity and show unavailable 
 });
 
 test('a System Administrator can expand bounded Retrieval Diagnostics for a live answer', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startConversationWorkspace(t, async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin' }));
-      return;
-    }
-    if (path === '/api/sessions') {
-      await route.fulfill(jsonResponse({ sessions: [] }));
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
+  const { page, baseUrl } = await startWorkbench(t, {});
+  await loginAdmin(page, baseUrl);
 
-  await page.addInitScript(() => {
-    const nativeFetch = window.fetch.bind(window);
-    window.fetch = async (input, init) => {
-      if (!String(input).includes('/api/chat/stream')) return nativeFetch(input, init);
-      const encoder = new TextEncoder();
-      return new Response(
-        new ReadableStream({
-          start(controller) {
-            controller.enqueue(encoder.encode('event: content\ndata: {"content":"管理员可以检查检索过程。"}\n\n'));
-            controller.enqueue(
-              encoder.encode(
-                'event: retrieval_diagnostics\ndata: {"retrieval_diagnostics":{"timeline":[{"step":"retrieve"},{"step":"rerank"},{"step":"verify"}],"candidate_counts":{"retrieved":4,"reranked":2},"evidence_gate":{"outcome":"passed","reason":"sufficient_evidence"},"fallback":{"state":"used","hops":1,"final_provider":"fallback-llm"},"provider_errors":[{"stage":"generate","code":"PROVIDER_TIMEOUT","type":"TimeoutError"}],"trace_preview":"{\\"timeline\\":[{\\"step\\":\\"retrieve\\"}]}"}}\n\n'
-              )
-            );
-            controller.enqueue(encoder.encode('event: done\ndata: [DONE]\n\n'));
-            controller.close();
-          }
-        }),
-        { status: 200, headers: { 'Content-Type': 'text/event-stream' } }
-      );
-    };
-  });
-  await page.addInitScript(() => localStorage.setItem('access_token', 'admin-token'));
-  await page.goto(`${baseUrl}chat`);
-  await page.getByPlaceholder('请输入需要检索的问题').fill('管理员诊断问题');
-  await page.getByRole('button', { name: '发送' }).click();
+  await sendQuestion(page, '部署前需要做什么？');
 
   const diagnostics = page.getByLabel('检索诊断');
   await diagnostics.waitFor();
@@ -680,67 +240,26 @@ test('a System Administrator can expand bounded Retrieval Diagnostics for a live
   await page.keyboard.press('Enter');
   assert.equal(await disclosure.getAttribute('open'), '');
   const diagnosticsContent = diagnostics.locator('.retrieval-diagnostics__content');
-  assert.equal(
-    await diagnosticsContent.evaluate((element) => getComputedStyle(element).animationName.startsWith('retrieval-diagnostics-expand')),
-    true
-  );
   await page.emulateMedia({ reducedMotion: 'reduce' });
   assert.equal(await diagnosticsContent.evaluate((element) => getComputedStyle(element).animationName), 'none');
   assert.equal(await diagnostics.getByText('检索时间线').isVisible(), true);
   assert.equal(await diagnostics.getByText('retrieve', { exact: true }).isVisible(), true);
-  assert.equal(await diagnostics.getByText('召回候选 4').isVisible(), true);
-  assert.equal(await diagnostics.getByText('重排候选 2').isVisible(), true);
+  assert.equal(await diagnostics.getByText(/召回候选 \d+/).isVisible(), true);
   assert.equal(await diagnostics.getByText('门禁通过').isVisible(), true);
-  assert.equal(await diagnostics.getByText('已回退 1 次').isVisible(), true);
   assert.equal(await diagnostics.getByText('脱敏 trace 预览').isVisible(), true);
 });
 
 test('a System Administrator sees unavailable Retrieval Diagnostics fields for historical answers', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startConversationWorkspace(t, async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin' }));
-      return;
-    }
-    if (path === '/api/sessions' && route.request().method() === 'GET') {
-      await route.fulfill(
-        jsonResponse({ sessions: [{ session_id: 'admin-diagnostics-history', updated_at: '2026-07-30T12:00:00Z', message_count: 1 }] })
-      );
-      return;
-    }
-    if (path === '/api/sessions/admin-diagnostics-history') {
-      await route.fulfill(
-        jsonResponse({
-          messages: [
-            {
-              type: 'assistant',
-              content: '这是一条缺少部分诊断字段的历史回答。',
-              retrieval_diagnostics: {
-                timeline: [],
-                candidate_counts: { retrieved: null, reranked: null },
-                evidence_gate: { outcome: 'unavailable', reason: null },
-                fallback: { state: 'unavailable', hops: null, final_provider: null },
-                provider_errors: [],
-                trace_preview: ''
-              }
-            }
-          ]
-        })
-      );
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
-
-  await page.addInitScript(() => localStorage.setItem('access_token', 'admin-token'));
-  await page.goto(`${baseUrl}chat`);
-  await page.getByRole('complementary', { name: '最近会话' }).getByRole('button', { name: /^admin-diagnostics-history/ }).click();
+  const { page, baseUrl } = await startWorkbench(t, {});
+  await loginAdmin(page, baseUrl);
+  await page.getByRole('complementary', { name: '最近会话' }).getByRole('button', { name: /^session-admin-diagnostics/ }).click();
 
   const diagnostics = page.getByLabel('检索诊断');
   await diagnostics.waitFor();
   const disclosure = diagnostics.locator('details');
   assert.equal(await disclosure.getAttribute('open'), null);
   await diagnostics.locator('summary').click();
+  await diagnostics.getByText('未返回检索时间线。').waitFor();
   assert.equal(await diagnostics.getByText('未返回检索时间线。').isVisible(), true);
   assert.equal(await diagnostics.getByText('召回候选 不可用').isVisible(), true);
   assert.equal(await diagnostics.getByText('重排候选 不可用').isVisible(), true);

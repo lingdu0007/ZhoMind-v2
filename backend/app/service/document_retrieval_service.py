@@ -10,14 +10,18 @@ from app.common.config import Settings
 from app.extensions.registry import get_extension_registry
 from app.infra.milvus_document_index import MilvusDocumentIndex
 from app.model.document import Document, DocumentChunk
-from app.rag.dense_contract import DenseEmbeddingContract, build_embedding_contract_fingerprint, build_milvus_collection_name
-from app.rag.interfaces import EmbeddingProvider, RetrieveResult
+from app.rag.dense_contract import (
+    DenseEmbeddingContract,
+    build_embedding_contract_fingerprint,
+    build_milvus_collection_name,
+)
+from app.rag.interfaces import EmbeddingProvider, ProviderExecError, RetrieveResult
 from app.settings.runtime import get_runtime_settings
 
 _DEFAULT_EMBEDDING_PROVIDER = "embedding-default"
 
 
-def _normalize_provider_error(exc: Exception) -> dict[str, str]:
+def _normalize_provider_error(exc: Exception) -> ProviderExecError:
     return {
         "code": "PROVIDER_EXEC_FAILED",
         "message": str(exc),
@@ -67,7 +71,7 @@ class MixedModeDocumentRetrieverService:
         dense_candidates: list[dict[str, Any]] = []
         dense_items: list[dict[str, Any]] = []
         dense_query_failed = False
-        dense_provider_error: dict[str, str] | None = None
+        dense_provider_error: ProviderExecError | None = None
 
         try:
             dense_candidates, dense_items = await self._dense_search(
@@ -347,14 +351,19 @@ class MixedModeDocumentRetrieverService:
         generation = payload.get("generation")
         chunk_index = payload.get("chunk_index")
         content_sha256 = payload.get("content_sha256")
-        if not all(item is not None for item in (document_id, generation, chunk_index, content_sha256)):
+        if (
+            not isinstance(document_id, (str, int))
+            or not isinstance(generation, (str, int))
+            or not isinstance(chunk_index, (str, int))
+            or not isinstance(content_sha256, str)
+        ):
             return None
 
         return {
             "document_id": str(document_id),
             "generation": int(generation),
             "chunk_index": int(chunk_index),
-            "content_sha256": str(content_sha256),
+            "content_sha256": content_sha256,
             "score": self._extract_dense_score(row),
         }
 

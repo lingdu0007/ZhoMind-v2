@@ -1,11 +1,11 @@
 import asyncio
-from collections.abc import Generator
-from datetime import datetime, timezone
 import hashlib
 import os
 import tempfile
 import threading
 import time
+from collections.abc import Generator
+from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -117,7 +117,7 @@ async def _tombstone_document_record(session_factory, *, document_id: str) -> No
     async with session_factory() as session:
         document = await session.get(Document, document_id)
         assert document is not None
-        document.deleted_at = datetime.now(timezone.utc)
+        document.deleted_at = datetime.now(UTC)
         document.status = "pending"
         document.latest_requested_generation = document.published_generation
         await session.commit()
@@ -373,7 +373,7 @@ async def _seed_mixed_mode_retrieval_documents(
                     dense_ready_fingerprint=None,
                     next_generation=2,
                     latest_requested_generation=1,
-                    deleted_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                    deleted_at=datetime(2026, 1, 1, tzinfo=UTC),
                 ),
                 dense_chunk,
                 lexical_chunk,
@@ -658,7 +658,7 @@ def test_documents_and_jobs_flow(monkeypatch) -> None:
 
     monkeypatch.setattr(documents_api, "_build_document_runner", _build_document_runner_with_gate)
 
-    settings = get_settings()
+    _ = get_settings()
 
     try:
         with TestClient(app) as client:
@@ -944,7 +944,7 @@ def test_documents_and_jobs_flow_tombstone_visibility_after_delete() -> None:
 
     from app.common.config import get_settings
 
-    settings = get_settings()
+    _ = get_settings()
 
     try:
         with TestClient(app) as client:
@@ -1015,7 +1015,7 @@ def test_documents_migration_drain_status_and_resume(monkeypatch) -> None:
     from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
 
-    settings = get_settings()
+    _ = get_settings()
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 1)
 
     try:
@@ -1086,7 +1086,7 @@ def test_documents_migration_drain_blocks_cancel_job(monkeypatch) -> None:
     from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
 
-    settings = get_settings()
+    _ = get_settings()
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
 
     async def _seed_cancel_target() -> None:
@@ -1169,14 +1169,14 @@ def test_documents_migration_reconcile_only_cancels_queued_jobs(monkeypatch) -> 
 
     from app.common.config import get_settings
 
-    settings = get_settings()
+    _ = get_settings()
     from app.api.v1 import documents as documents_api
 
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
-    claimed_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    first_updated_at = datetime(2026, 1, 2, 0, 0, tzinfo=timezone.utc)
-    second_updated_at = datetime(2026, 1, 2, 0, 1, tzinfo=timezone.utc)
-    running_updated_at = datetime(2026, 1, 2, 0, 2, tzinfo=timezone.utc)
+    claimed_at = datetime(2026, 1, 1, tzinfo=UTC)
+    first_updated_at = datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
+    second_updated_at = datetime(2026, 1, 2, 0, 1, tzinfo=UTC)
+    running_updated_at = datetime(2026, 1, 2, 0, 2, tzinfo=UTC)
 
     async def _seed_reconcile_state() -> None:
         async with session_factory() as session:
@@ -1208,7 +1208,7 @@ def test_documents_migration_reconcile_only_cancels_queued_jobs(monkeypatch) -> 
                         published_generation=1,
                         next_generation=3,
                         latest_requested_generation=2,
-                        deleted_at=datetime.now(timezone.utc),
+                        deleted_at=datetime.now(UTC),
                     ),
                 ]
             )
@@ -1364,7 +1364,7 @@ def test_documents_migration_reconcile_requires_active_drain() -> None:
 
     from app.common.config import get_settings
 
-    settings = get_settings()
+    _ = get_settings()
 
     try:
         with TestClient(app) as client:
@@ -1449,7 +1449,7 @@ def test_documents_dense_status_merges_operator_and_dense_counts(monkeypatch) ->
                         published_generation=4,
                         dense_ready_generation=4,
                         dense_ready_fingerprint=current_fingerprint,
-                        deleted_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
+                        deleted_at=datetime(2026, 4, 2, tzinfo=UTC),
                     ),
                     Document(
                         id="doc-ready-other",
@@ -1504,7 +1504,7 @@ def test_documents_dense_status_merges_operator_and_dense_counts(monkeypatch) ->
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
     app.state.test_auth_redis = fake_redis
 
-    settings = get_settings()
+    _ = get_settings()
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 2)
     monkeypatch.setattr(
         documents_api,
@@ -1565,7 +1565,7 @@ def test_documents_dense_backfill_and_dense_reconcile_require_active_drain(monke
     from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
 
-    settings = get_settings()
+    _ = get_settings()
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
 
     try:
@@ -1623,7 +1623,7 @@ def test_documents_dense_backfill_returns_dense_mode_inactive_when_drain_ready(m
     get_extension_registry.cache_clear()
     get_milvus_provider.cache_clear()
 
-    settings = get_settings()
+    _ = get_settings()
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
 
     try:
@@ -1685,7 +1685,7 @@ def test_documents_dense_backfill_indexes_eligible_published_docs(monkeypatch) -
                         dense_ready_fingerprint=None,
                         next_generation=3,
                         latest_requested_generation=2,
-                        uploaded_at=datetime(2026, 4, 1, 0, 0, tzinfo=timezone.utc),
+                        uploaded_at=datetime(2026, 4, 1, 0, 0, tzinfo=UTC),
                     ),
                     Document(
                         id="doc-backfill-b",
@@ -1700,7 +1700,7 @@ def test_documents_dense_backfill_indexes_eligible_published_docs(monkeypatch) -
                         dense_ready_fingerprint=None,
                         next_generation=2,
                         latest_requested_generation=1,
-                        uploaded_at=datetime(2026, 4, 1, 0, 1, tzinfo=timezone.utc),
+                        uploaded_at=datetime(2026, 4, 1, 0, 1, tzinfo=UTC),
                     ),
                     Document(
                         id="doc-backfill-stale",
@@ -1715,7 +1715,7 @@ def test_documents_dense_backfill_indexes_eligible_published_docs(monkeypatch) -
                         dense_ready_fingerprint=current_fingerprint,
                         next_generation=4,
                         latest_requested_generation=3,
-                        uploaded_at=datetime(2026, 4, 1, 0, 2, tzinfo=timezone.utc),
+                        uploaded_at=datetime(2026, 4, 1, 0, 2, tzinfo=UTC),
                     ),
                     Document(
                         id="doc-backfill-active",
@@ -1731,7 +1731,7 @@ def test_documents_dense_backfill_indexes_eligible_published_docs(monkeypatch) -
                         next_generation=5,
                         latest_requested_generation=4,
                         active_build_generation=5,
-                        uploaded_at=datetime(2026, 4, 1, 0, 3, tzinfo=timezone.utc),
+                        uploaded_at=datetime(2026, 4, 1, 0, 3, tzinfo=UTC),
                     ),
                 ]
             )
@@ -1794,7 +1794,7 @@ def test_documents_dense_backfill_indexes_eligible_published_docs(monkeypatch) -
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
     app.state.test_auth_redis = fake_redis
 
-    settings = get_settings()
+    _ = get_settings()
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
     monkeypatch.setattr(
         documents_api,
@@ -1887,7 +1887,7 @@ def test_documents_dense_reconcile_clears_tombstoned_and_stale_current_fingerpri
                         dense_ready_fingerprint=current_fingerprint,
                         next_generation=4,
                         latest_requested_generation=3,
-                        uploaded_at=datetime(2026, 4, 1, 0, 0, tzinfo=timezone.utc),
+                        uploaded_at=datetime(2026, 4, 1, 0, 0, tzinfo=UTC),
                     ),
                     Document(
                         id="doc-reconcile-tombstoned",
@@ -1902,8 +1902,8 @@ def test_documents_dense_reconcile_clears_tombstoned_and_stale_current_fingerpri
                         dense_ready_fingerprint=current_fingerprint,
                         next_generation=3,
                         latest_requested_generation=2,
-                        deleted_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
-                        uploaded_at=datetime(2026, 4, 1, 0, 1, tzinfo=timezone.utc),
+                        deleted_at=datetime(2026, 4, 2, tzinfo=UTC),
+                        uploaded_at=datetime(2026, 4, 1, 0, 1, tzinfo=UTC),
                     ),
                     Document(
                         id="doc-reconcile-keep",
@@ -1918,7 +1918,7 @@ def test_documents_dense_reconcile_clears_tombstoned_and_stale_current_fingerpri
                         dense_ready_fingerprint=current_fingerprint,
                         next_generation=2,
                         latest_requested_generation=1,
-                        uploaded_at=datetime(2026, 4, 1, 0, 2, tzinfo=timezone.utc),
+                        uploaded_at=datetime(2026, 4, 1, 0, 2, tzinfo=UTC),
                     ),
                 ]
             )
@@ -1937,7 +1937,7 @@ def test_documents_dense_reconcile_clears_tombstoned_and_stale_current_fingerpri
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
     app.state.test_auth_redis = fake_redis
 
-    settings = get_settings()
+    _ = get_settings()
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
     monkeypatch.setattr(
         documents_api,
@@ -2045,7 +2045,7 @@ def test_documents_dense_status_reports_queued_only_drain_as_not_ready_for_dense
     from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
 
-    settings = get_settings()
+    _ = get_settings()
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
 
     try:
@@ -2132,7 +2132,7 @@ def test_chat_lexical_retrieval_reads_only_published_generation_on_live_document
                         published_generation=1,
                         next_generation=2,
                         latest_requested_generation=1,
-                        deleted_at=datetime.now(timezone.utc),
+                        deleted_at=datetime.now(UTC),
                     ),
                 ]
             )
@@ -2232,7 +2232,7 @@ def test_documents_enqueue_failure_compensation(monkeypatch) -> None:
 
     monkeypatch.setattr(documents_api, "_enqueue_document_task", _maybe_fail_enqueue_task)
 
-    settings = get_settings()
+    _ = get_settings()
 
     try:
         with TestClient(app) as client:
@@ -2379,7 +2379,7 @@ def test_documents_batch_enqueue_failure_compensates_all_items(monkeypatch) -> N
 
     original_enqueue_task = documents_api._enqueue_document_task
     original_enqueue_runner = documents_api._enqueue_document_runner
-    settings = get_settings()
+    _ = get_settings()
 
     try:
         with TestClient(app) as client:
@@ -2542,7 +2542,7 @@ def test_documents_dense_and_lexical_retrieval_respects_published_generation_vis
         "document_id": "doc-dense-published",
         "generation": 1,
         "chunk_index": 0,
-        "content_sha256": hashlib.sha256("alpha dense published evidence".encode("utf-8")).hexdigest(),
+        "content_sha256": hashlib.sha256(b"alpha dense published evidence").hexdigest(),
         "distance": 0.98,
     }
     stale_dense_row = {
@@ -2550,7 +2550,7 @@ def test_documents_dense_and_lexical_retrieval_respects_published_generation_vis
         "generation": 2,
         "chunk_index": 0,
         "content_sha256": hashlib.sha256(
-            "alpha superseded dense candidate should stay hidden".encode("utf-8")
+            b"alpha superseded dense candidate should stay hidden"
         ).hexdigest(),
         "distance": 0.97,
     }
@@ -2881,7 +2881,7 @@ def test_documents_dense_success_keeps_lexical_fallback_scoped_to_not_dense_read
         "document_id": "doc-dense-hit",
         "generation": 1,
         "chunk_index": 0,
-        "content_sha256": hashlib.sha256("anchor dense hit".encode("utf-8")).hexdigest(),
+        "content_sha256": hashlib.sha256(b"anchor dense hit").hexdigest(),
         "distance": 0.99,
     }
 

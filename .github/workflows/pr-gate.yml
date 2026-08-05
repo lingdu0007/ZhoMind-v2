@@ -1,0 +1,126 @@
+name: PR Gate
+
+# Deterministic public pull-request gate for the ZhoMind-v2 Portfolio Release.
+#
+# A fresh checkout of this repository must reproduce every check here from the
+# committed locks alone: backend/uv.lock and frontend/package-lock.json. No PR
+# check calls a paid provider, a live model, a persistent production service,
+# or a private host. The live-Milvus dense E2E test stays explicitly opt-in
+# (RUN_MILVUS_E2E=1) and is reported as a skip, never as live evidence.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: 0.11.15
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  backend:
+    name: Backend (Ruff, Pyright, deterministic pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv ${{ env.UV_VERSION }}
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Sync backend from committed lock
+        working-directory: backend
+        run: uv sync --frozen
+
+      - name: Ruff across backend source and tests
+        working-directory: backend
+        run: uv run ruff check .
+
+      - name: Pyright basic across backend application code
+        working-directory: backend
+        run: uv run pyright
+
+      - name: Complete deterministic backend suite
+        working-directory: backend
+        run: uv run pytest -q -ra
+        env:
+          # The live-Milvus dense E2E test remains opt-in; the suite reports it
+          # as an explicit skip and never as live evidence.
+          RUN_MILVUS_E2E: ""
+
+  frontend:
+    name: Frontend (unit, production build, disposable-API browser)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv ${{ env.UV_VERSION }}
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # The disposable-API browser journeys spawn the real FastAPI acceptance
+      # app via `uv run --no-sync` (see frontend/tests/acceptance-env.mjs), so
+      # the backend environment must be installed from the committed lock first.
+      - name: Sync backend from committed lock
+        working-directory: backend
+        run: uv sync --frozen
+
+      - name: Install Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend from committed lock
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Frontend unit tests
+        working-directory: frontend
+        run: npm run test:unit
+
+      - name: Frontend production build
+        working-directory: frontend
+        run: npm run build
+
+      - name: Disposable-API browser acceptance
+        working-directory: frontend
+        run: npm run test:browser
+
+  docs-and-secrets:
+    name: Bilingual parity and secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: English/Chinese canonical-document parity
+        run: python3 scripts/check-docs-parity.py
+
+      - name: Secret scan over tracked files
+        run: python3 scripts/scan-secrets.py

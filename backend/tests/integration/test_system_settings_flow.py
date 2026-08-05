@@ -3,20 +3,19 @@ import secrets
 from collections.abc import Generator
 
 import pytest
-from alembic import command
 from alembic.config import Config
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from alembic import command
 from app.common.config import get_settings
 from app.infra.db import SessionLocal, get_db_session
 from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
 from app.settings.runtime import RuntimeApplicationError, get_system_settings_runtime
-from app.settings.service import SystemSettingsDraftService
 from tests.support.auth import create_authenticated_test_token
 
 
@@ -266,7 +265,9 @@ def test_system_settings_draft_gate_stays_closed_when_disabled(client: TestClien
     assert response.json()["code"] == "SETTINGS_DRAFT_DISABLED"
 
 
-def test_system_settings_application_requires_current_admin_saved_version_and_preserves_active_version(client: TestClient, monkeypatch) -> None:
+def test_system_settings_application_requires_current_admin_saved_version_and_preserves_active_version(
+    client: TestClient, monkeypatch
+) -> None:
     user_token = _register(client, username="knowledge-user")
     admin_token = _register(client, username="settings-admin", role="admin")
 

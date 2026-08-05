@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Iterable
-from typing import Any
+from typing import Any, cast
 
 from pymilvus import MilvusClient
 
@@ -123,7 +123,9 @@ class MilvusDocumentIndex:
                 page = await asyncio.to_thread(iterator.next)
                 if not page:
                     return
-                yield list(page)
+                # SearchPage iterates the flattened hits; `list(page)` keeps the
+                # existing runtime contract while satisfying the declared type.
+                yield cast("list[dict[str, Any]]", list(page))
         finally:
             await asyncio.to_thread(iterator.close)
 

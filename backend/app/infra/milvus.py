@@ -13,10 +13,7 @@ class MilvusProvider:
 
     def get_client(self) -> MilvusClient:
         if self._client is None:
-            kwargs = {"uri": self.uri}
-            if self.token:
-                kwargs["token"] = self.token
-            self._client = MilvusClient(**kwargs)
+            self._client = MilvusClient(uri=self.uri, token=self.token or "")
         return self._client
 
 

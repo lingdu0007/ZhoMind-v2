@@ -1,6 +1,6 @@
 import asyncio
-from collections.abc import Generator
 import hashlib
+from collections.abc import Generator
 
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -608,7 +608,7 @@ def test_chat_dense_trace_uses_default_mixed_mode_retriever(monkeypatch) -> None
         "document_id": "doc-chat-dense",
         "generation": 1,
         "chunk_index": 0,
-        "content_sha256": hashlib.sha256("alpha evidence from dense corpus".encode("utf-8")).hexdigest(),
+        "content_sha256": hashlib.sha256(b"alpha evidence from dense corpus").hexdigest(),
         "distance": 0.97,
     }
 
