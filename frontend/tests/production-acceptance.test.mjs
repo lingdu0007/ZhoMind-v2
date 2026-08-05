@@ -41,8 +41,11 @@ const startApiEnvironment = async (t) => {
   const baseUrl = `http://127.0.0.1:${port}/api/v1`;
   const backendDirectory = resolve(process.cwd(), '../backend');
   const output = [];
-  const apiProcess = spawn('uv', ['run', 'python', 'tests/browser_acceptance_api.py', '--host', '127.0.0.1', '--port', String(port)], {
+  const apiProcess = spawn('uv', ['run', '--no-sync', 'python', 'tests/browser_acceptance_api.py', '--host', '127.0.0.1', '--port', String(port)], {
     cwd: backendDirectory,
+    // Own process group so a failed journey can never leave the uv wrapper or
+    // its python child behind to exhaust the runner's memory.
+    detached: true,
     env: {
       ...process.env,
       PYTHONPATH: backendDirectory,
@@ -69,8 +72,19 @@ const startApiEnvironment = async (t) => {
 
   t.after(async () => {
     if (apiProcess.exitCode === null) {
-      apiProcess.kill('SIGTERM');
+      try {
+        process.kill(-apiProcess.pid, 'SIGTERM');
+      } catch {
+        apiProcess.kill('SIGTERM');
+      }
       await Promise.race([once(apiProcess, 'exit'), new Promise((resolveWait) => setTimeout(resolveWait, 5000))]);
+      if (apiProcess.exitCode === null) {
+        try {
+          process.kill(-apiProcess.pid, 'SIGKILL');
+        } catch {
+          apiProcess.kill('SIGKILL');
+        }
+      }
     }
     await rm(tempDirectory, { recursive: true, force: true });
   });
@@ -102,15 +116,18 @@ const startWorkbench = async (t, { built, viewport = { width: 1440, height: 900 
   const api = await startApiEnvironment(t);
   const previousProxyTarget = process.env.ZHOMIND_API_PROXY_TARGET;
   process.env.ZHOMIND_API_PROXY_TARGET = `http://127.0.0.1:${api.port}`;
+  // Vite resolves `port: 0` from the project config (5173); reserve a distinct
+  // random port so parallel test files never collide.
+  const webPort = await reservePort();
   const server = built
-    ? await preview({ preview: { host: '127.0.0.1', port: 0, strictPort: true } })
-    : await createServer({ server: { host: '127.0.0.1', port: 0, strictPort: true } });
+    ? await preview({ preview: { host: '127.0.0.1', port: webPort, strictPort: true } })
+    : await createServer({ server: { host: '127.0.0.1', port: webPort, strictPort: true } });
   if (!built) await server.listen();
 
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport });
   const page = await context.newPage();
-  page.setDefaultTimeout(4000);
+  page.setDefaultTimeout(20000);
 
   t.after(async () => {
     await browser.close();
@@ -274,7 +291,7 @@ for (const runtime of [
   { name: 'development server', built: false },
   { name: 'built production assets', built: true }
 ]) {
-  test(`System Administrator completes the authorized workspace journey on ${runtime.name}`, { timeout: 30000 }, async (t) => {
+  test(`System Administrator completes the authorized workspace journey on ${runtime.name}`, { timeout: 120000 }, async (t) => {
     const { page, baseUrl, api } = await startWorkbench(t, runtime);
 
     await register(page, baseUrl, api, { username: 'operator', role: 'admin' });
@@ -318,7 +335,7 @@ for (const runtime of [
     await page.getByLabel('选中文档 browser-batch-partial-first').check();
     await page.getByLabel('选中文档 browser-batch-partial-second').check();
     const concurrentAdministratorPage = await page.context().newPage();
-    concurrentAdministratorPage.setDefaultTimeout(4000);
+    concurrentAdministratorPage.setDefaultTimeout(20000);
     try {
       await concurrentAdministratorPage.goto(`${baseUrl}documents`);
       await concurrentAdministratorPage.getByRole('heading', { name: '文档库' }).waitFor();

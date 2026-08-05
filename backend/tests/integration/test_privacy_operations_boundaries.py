@@ -1,12 +1,13 @@
 import asyncio
 from collections.abc import Generator
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.common.security import hash_password
 from app.infra.db import SessionLocal, get_db_session
 from app.infra.redis import get_redis_client
 from app.main import app
@@ -15,7 +16,6 @@ from app.model.chat import ChatMessage, ChatSession
 from app.model.document import Document, DocumentJob
 from app.model.operational_event import OperationalEvent
 from app.model.user import User
-from app.common.security import hash_password
 from app.operations.chat_capacity import get_chat_admission_gate
 from tests.support.auth import create_authenticated_test_token
 
@@ -150,7 +150,7 @@ def test_administrator_operations_surface_is_admin_only_and_never_projects_priva
 
 def test_listing_sessions_removes_private_conversation_records_after_thirty_days(client: TestClient) -> None:
     member_token = _register(client, username="retention-member")
-    expired_at = datetime.now(timezone.utc) - timedelta(days=31)
+    expired_at = datetime.now(UTC) - timedelta(days=31)
 
     async def _seed() -> None:
         async with client.app.state.test_auth_session_factory() as session:
@@ -227,7 +227,7 @@ def test_chat_records_a_content_free_operational_event(client: TestClient) -> No
 
 
 def test_any_request_purges_operational_events_after_thirty_days(client: TestClient) -> None:
-    expired_at = datetime.now(timezone.utc) - timedelta(days=31)
+    expired_at = datetime.now(UTC) - timedelta(days=31)
 
     async def _seed() -> None:
         async with client.app.state.test_auth_session_factory() as session:

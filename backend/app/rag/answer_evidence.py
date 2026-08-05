@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
-from typing import Any, Mapping
-
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any
 
 _CITATION_METADATA_KEYS = (
     "title",
@@ -182,7 +182,8 @@ def evidence_summary_from_trace(rag_trace: object) -> dict[str, Any]:
         sources.append({"source_id": source_id, "metadata": source_metadata, "excerpt": excerpt})
 
     outcome = trace.get("outcome")
-    gate = trace.get("gate") if isinstance(trace.get("gate"), Mapping) else {}
+    _gate_value = trace.get("gate")
+    gate = _gate_value if isinstance(_gate_value, Mapping) else {}
     if outcome == "insufficient_evidence_reply" or gate.get("passed") is False:
         coverage = "insufficient"
     elif sources:

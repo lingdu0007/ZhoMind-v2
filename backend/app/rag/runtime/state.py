@@ -1,10 +1,23 @@
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
+
+from app.rag.interfaces import ProviderExecError
 
 
 class ProviderTraceDetail(TypedDict):
     provider: str
     fallback_used: bool
-    provider_error: dict[str, Any] | None
+    provider_error: ProviderExecError | None
+    # Additional detail fields are retrieval-stage specific; keep them optional
+    # so every stage can share the same TypedDict without a runtime schema.
+    strategy: NotRequired[str]
+    dense_candidate_count: NotRequired[int]
+    dense_hydrated_count: NotRequired[int]
+    lexical_candidate_count: NotRequired[int]
+    merged_count: NotRequired[int]
+    dense_query_failed: NotRequired[bool]
+    lexical_scope: NotRequired[str]
+    sparse_count: NotRequired[int]
+    dense_count: NotRequired[int]
 
 
 class RagStateDict(TypedDict):

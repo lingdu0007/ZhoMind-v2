@@ -1,9 +1,9 @@
 import asyncio
-from collections.abc import Generator
 import json
 import os
 import subprocess
 import time
+from collections.abc import Generator
 
 import pytest
 from fastapi.testclient import TestClient
@@ -273,7 +273,7 @@ def test_milvus_dense_upload_and_retrieval_e2e(tmp_path) -> None:
                 files={
                     "file": (
                         "milvus-e2e.txt",
-                        f"{_TEST_QUERY}\nretrieval hydration proof".encode("utf-8"),
+                        f"{_TEST_QUERY}\nretrieval hydration proof".encode(),
                         "text/plain",
                     )
                 },

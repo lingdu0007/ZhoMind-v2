@@ -1,5 +1,35 @@
 # ZhoMind-v2
 
+## Deterministic PR Gate
+
+Every pull request runs the public gate in `.github/workflows/pr-gate.yml`. A fresh checkout reproduces it from the committed locks (`backend/uv.lock` and `frontend/package-lock.json`) without any provider credentials; the live-Milvus dense E2E test remains opt-in and is reported as an explicit skip, never as live evidence.
+
+Run the same checks locally (backend checks require the committed lock):
+
+```bash
+# Backend: locked install, lint, types, complete deterministic suite
+cd backend
+uv sync --frozen
+uv run ruff check .
+uv run pyright
+uv run pytest -q -ra
+
+# Frontend: unit tests, production build, disposable-API browser acceptance
+cd ../frontend
+npm ci
+npm run test:unit
+npm run build
+npx playwright install chromium
+npm run test:browser
+
+# Repository-wide: bilingual parity and secret scan (pure Python 3, stdlib only)
+cd ..
+python3 scripts/check-docs-parity.py
+python3 scripts/scan-secrets.py
+```
+
+The browser journeys spawn the real disposable FastAPI acceptance app through `uv run --no-sync`, so keep `backend` synced before running them.
+
 ## Minimal Local Run
 
 Run these commands from the repository root:

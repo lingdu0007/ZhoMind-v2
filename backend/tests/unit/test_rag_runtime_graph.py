@@ -1,3 +1,9 @@
+import asyncio
+
+import pytest
+
+from app.rag.interfaces import RetrieveResult
+from app.rag.runtime.graph_runner import RagGraphRunner
 from app.rag.runtime.state import RagState
 
 
@@ -12,14 +18,6 @@ def test_rag_state_has_required_keys() -> None:
     assert state["query_norm"] == "你好"
     assert state["trace_steps"] == []
     assert state["tool_calls"] == []
-
-
-import asyncio
-
-import pytest
-
-from app.rag.interfaces import RetrieveResult
-from app.rag.runtime.graph_runner import RagGraphRunner
 
 
 class _RetrieverBoom:

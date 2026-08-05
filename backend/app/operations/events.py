@@ -1,5 +1,5 @@
-from datetime import datetime, timedelta, timezone
 import re
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,7 +42,7 @@ class OperationalEventService:
         await self.session.commit()
 
     async def purge_expired(self, *, now: datetime | None = None) -> None:
-        cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=30)
+        cutoff = (now or datetime.now(UTC)) - timedelta(days=30)
         await ChatRepository(self.session).purge_expired_sessions(now=now)
         await self.session.execute(delete(OperationalEvent).where(OperationalEvent.created_at <= cutoff))
 

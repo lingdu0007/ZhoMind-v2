@@ -1,7 +1,7 @@
-from datetime import datetime, timezone
 import json
 import re
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -166,8 +166,9 @@ class ChatService:
             step = self._diagnostic_code(item.get("step"))
             if step is None:
                 continue
-            preview_item = {"step": step}
-            detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+            preview_item: dict[str, object] = {"step": step}
+            _detail_value = item.get("detail")
+            detail = _detail_value if isinstance(_detail_value, dict) else {}
             allowed_fields = _DIAGNOSTIC_PREVIEW_STEP_FIELDS.get(step, ())
             preview_detail = {
                 key: self._diagnostic_preview_value(key, detail.get(key))
@@ -180,9 +181,16 @@ class ChatService:
         return preview
 
     def _diagnostic_trace_preview(self, rag_trace: dict) -> str:
-        runtime = rag_trace.get("runtime") if isinstance(rag_trace.get("runtime"), dict) else {}
-        gate = rag_trace.get("gate") if isinstance(rag_trace.get("gate"), dict) else {}
-        attempts = runtime.get("provider_attempts") if isinstance(runtime.get("provider_attempts"), list) else []
+        _runtime_value = rag_trace.get("runtime")
+        runtime = _runtime_value if isinstance(_runtime_value, dict) else {}
+        _gate_value = rag_trace.get("gate")
+        gate = _gate_value if isinstance(_gate_value, dict) else {}
+        _steps_value = rag_trace.get("steps")
+        steps = _steps_value if isinstance(_steps_value, list) else []
+        if not runtime and not gate and not steps:
+            return ""
+        _attempts_value = runtime.get("provider_attempts")
+        attempts = _attempts_value if isinstance(_attempts_value, list) else []
         preview_attempts: list[dict] = []
         for attempt in attempts[:DIAGNOSTIC_MAX_PROVIDER_ERRORS]:
             if not isinstance(attempt, dict):
@@ -217,8 +225,10 @@ class ChatService:
         return f"{serialized[: DIAGNOSTIC_MAX_TRACE_PREVIEW_CHARS - 3]}..."
 
     def _diagnostic_timeline(self, rag_trace: dict) -> list[dict]:
-        runtime = rag_trace.get("runtime") if isinstance(rag_trace.get("runtime"), dict) else {}
-        runtime_steps = runtime.get("steps") if isinstance(runtime.get("steps"), list) else []
+        _runtime_value = rag_trace.get("runtime")
+        runtime = _runtime_value if isinstance(_runtime_value, dict) else {}
+        _runtime_steps_value = runtime.get("steps")
+        runtime_steps = _runtime_steps_value if isinstance(_runtime_steps_value, list) else []
         timeline: list[dict] = []
         for item in runtime_steps[:DIAGNOSTIC_MAX_TIMELINE_STEPS]:
             if not isinstance(item, dict):
@@ -231,7 +241,8 @@ class ChatService:
     def _diagnostic_candidate_counts(self, rag_trace: dict) -> dict:
         retrieved = None
         reranked = None
-        steps = rag_trace.get("steps") if isinstance(rag_trace.get("steps"), list) else []
+        _steps_value = rag_trace.get("steps")
+        steps = _steps_value if isinstance(_steps_value, list) else []
         for item in steps:
             if not isinstance(item, dict) or not isinstance(item.get("detail"), dict):
                 continue
@@ -241,8 +252,10 @@ class ChatService:
             elif item.get("step") == "rerank":
                 reranked = self._diagnostic_count(detail.get("reranked_count"))
 
-        runtime = rag_trace.get("runtime") if isinstance(rag_trace.get("runtime"), dict) else {}
-        runtime_steps = runtime.get("steps") if isinstance(runtime.get("steps"), list) else []
+        _runtime_value = rag_trace.get("runtime")
+        runtime = _runtime_value if isinstance(_runtime_value, dict) else {}
+        _runtime_steps_value = runtime.get("steps")
+        runtime_steps = _runtime_steps_value if isinstance(_runtime_steps_value, list) else []
         for item in runtime_steps:
             if not isinstance(item, dict) or not isinstance(item.get("detail"), dict):
                 continue
@@ -255,8 +268,10 @@ class ChatService:
         return {"retrieved": retrieved, "reranked": reranked}
 
     def _diagnostic_provider_errors(self, rag_trace: dict) -> list[dict]:
-        runtime = rag_trace.get("runtime") if isinstance(rag_trace.get("runtime"), dict) else {}
-        provider_trace = runtime.get("provider_trace") if isinstance(runtime.get("provider_trace"), dict) else {}
+        _runtime_value = rag_trace.get("runtime")
+        runtime = _runtime_value if isinstance(_runtime_value, dict) else {}
+        _provider_trace_value = runtime.get("provider_trace")
+        provider_trace = _provider_trace_value if isinstance(_provider_trace_value, dict) else {}
         errors: list[dict] = []
         for stage, detail in provider_trace.items():
             if len(errors) >= DIAGNOSTIC_MAX_PROVIDER_ERRORS:
@@ -274,7 +289,8 @@ class ChatService:
                 }
             )
 
-        attempts = runtime.get("provider_attempts") if isinstance(runtime.get("provider_attempts"), list) else []
+        _attempts_value = runtime.get("provider_attempts")
+        attempts = _attempts_value if isinstance(_attempts_value, list) else []
         for attempt in attempts:
             if len(errors) >= DIAGNOSTIC_MAX_PROVIDER_ERRORS:
                 break
@@ -291,11 +307,13 @@ class ChatService:
 
     def _retrieval_diagnostics(self, rag_trace: dict | None) -> dict:
         trace = rag_trace if isinstance(rag_trace, dict) else {}
-        gate = trace.get("gate") if isinstance(trace.get("gate"), dict) else {}
+        _gate_value = trace.get("gate")
+        gate = _gate_value if isinstance(_gate_value, dict) else {}
         gate_passed = gate.get("passed")
         gate_outcome = "passed" if gate_passed is True else "rejected" if gate_passed is False else "unavailable"
 
-        runtime = trace.get("runtime") if isinstance(trace.get("runtime"), dict) else {}
+        _runtime_value = trace.get("runtime")
+        runtime = _runtime_value if isinstance(_runtime_value, dict) else {}
         fallback_hops = self._diagnostic_count(runtime.get("fallback_hops"))
         fallback_state = "unavailable"
         if fallback_hops is not None:
@@ -446,7 +464,7 @@ class ChatService:
             rag_trace=rag_trace,
         )
 
-        session.updated_at = datetime.now(timezone.utc)
+        session.updated_at = datetime.now(UTC)
         await self.session.commit()
 
         return {

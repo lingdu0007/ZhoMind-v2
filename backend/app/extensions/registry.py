@@ -1,10 +1,10 @@
 from dataclasses import dataclass, field
 from functools import lru_cache
 
-from app.settings.runtime import get_runtime_settings
 from app.extensions.generation_factory import build_generation_provider
 from app.extensions.langchain_embedding_providers import OpenAIEmbeddingProvider
 from app.rag.interfaces import EmbeddingProvider, LlmProvider, RelevanceJudge, Reranker, Retriever
+from app.settings.runtime import get_runtime_settings
 from app.tasks.interfaces import InMemoryTaskBackend, TaskBackend, create_inmemory_task_backend
 
 

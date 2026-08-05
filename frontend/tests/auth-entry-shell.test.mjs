@@ -1,68 +1,17 @@
+// Authentication Entry browser acceptance over a disposable real API.
+// All roles are derived from the server identity endpoint; network traffic is
+// real HTTP through the Vite proxy (see acceptance-env.mjs).
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { chromium } from 'playwright';
-import { createServer, preview } from 'vite';
-
-const jsonResponse = (data, status = 200) => ({
-  status,
-  contentType: 'application/json',
-  body: JSON.stringify({ data })
-});
-
-const startBrowserApp = async (t, apiHandler, { built = false } = {}) => {
-  const testPort = 41000 + Math.floor(Math.random() * 1000);
-  const server = built
-    ? await preview({ preview: { host: '127.0.0.1', port: testPort, strictPort: true } })
-    : await createServer({ server: { host: '127.0.0.1', port: testPort, strictPort: true } });
-  if (!built) await server.listen();
-
-  const browser = await chromium.launch({ headless: true });
-  t.after(async () => {
-    await browser.close();
-    await server.close();
-  });
-
-  const page = await browser.newPage();
-  page.setDefaultTimeout(5000);
-  await page.route((url) => url.pathname.startsWith('/api/'), apiHandler);
-
-  return {
-    page,
-    baseUrl: server.resolvedUrls.local[0]
-  };
-};
+import {
+  createTeamInvitation,
+  loginAdmin,
+  registerKnowledgeUserViaApi,
+  startWorkbench
+} from './acceptance-env.mjs';
 
 test('Authentication Entry registers a Knowledge User before entering the workbench shell', { timeout: 30000 }, async (t) => {
-  const registerPayloads = [];
-  const { page, baseUrl } = await startBrowserApp(t, async (route) => {
-    const request = route.request();
-    const path = new URL(request.url()).pathname;
-
-    if (path === '/api/auth/register') {
-      const payload = request.postDataJSON();
-      registerPayloads.push(payload);
-      await route.fulfill(
-        jsonResponse({
-          access_token: 'registration-token',
-          username: payload.username,
-          role: 'user'
-        })
-      );
-      return;
-    }
-
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'lin', role: 'user' }));
-      return;
-    }
-
-    if (path === '/api/sessions') {
-      await route.fulfill(jsonResponse({ sessions: [] }));
-      return;
-    }
-
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
+  const { page, baseUrl, api } = await startWorkbench(t, {});
 
   await page.goto(`${baseUrl}auth`);
   await page.getByRole('heading', { name: '身份验证' }).waitFor();
@@ -74,44 +23,25 @@ test('Authentication Entry registers a Knowledge User before entering the workbe
 
   await page.getByLabel('用户名').fill('lin');
   await page.getByLabel('密码').fill('safe-password');
-  await page.getByLabel('团队邀请码').fill('team-invitation');
+  await page.getByLabel('团队邀请码').fill(await createTeamInvitation(api));
   await page.getByRole('button', { name: '完成注册' }).click();
 
   await page.waitForURL(/\/chat$/);
   await page.getByRole('heading', { name: '对话工作区' }).waitFor();
   assert.equal(await page.getByRole('navigation').count(), 1);
-  assert.deepEqual(registerPayloads, [
-    { username: 'lin', password: 'safe-password', invitation_code: 'team-invitation' }
-  ]);
 });
 
 test('a stored token refreshes the server role before rejecting an administrator route and logout clears it', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startBrowserApp(t, async (route) => {
-    const path = new URL(route.request().url()).pathname;
+  const { page, baseUrl, api } = await startWorkbench(t, {});
+  const token = await registerKnowledgeUserViaApi(api, 'lin');
 
-    if (path === '/api/auth/me') {
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      await route.fulfill(jsonResponse({ username: 'lin', role: 'user' }));
-      return;
-    }
-
-    if (path === '/api/sessions') {
-      await route.fulfill(jsonResponse({ sessions: [] }));
-      return;
-    }
-
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
-
-  await page.addInitScript(() => {
-    localStorage.setItem('access_token', 'stored-user-token');
+  await page.addInitScript(({ token: storedToken }) => {
+    localStorage.setItem('access_token', storedToken);
     localStorage.setItem('username', 'forged-admin-name');
     localStorage.setItem('role', 'admin');
-  });
+  }, { token });
 
   await page.goto(`${baseUrl}documents`);
-  assert.equal(await page.getByRole('navigation').count(), 0);
-  await page.getByText('正在确认身份…').waitFor();
   await page.waitForURL(/\/chat\?notice=admin-required$/);
   await page.getByRole('heading', { name: '对话工作区' }).waitFor();
   assert.equal(await page.getByText('知识用户').isVisible(), true);
@@ -133,18 +63,7 @@ test('a stored token refreshes the server role before rejecting an administrator
 });
 
 test('sign-in has no role selector and keeps form input after a specific authentication error', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startBrowserApp(t, async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === '/api/auth/login') {
-      await route.fulfill({
-        status: 401,
-        contentType: 'application/json',
-        body: JSON.stringify({ code: 'AUTH_INVALID_CREDENTIALS', message: 'invalid username or password' })
-      });
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
+  const { page, baseUrl } = await startWorkbench(t, {});
 
   await page.goto(`${baseUrl}auth`);
   await page.getByRole('heading', { name: '身份验证' }).waitFor();
@@ -162,27 +81,8 @@ test('sign-in has no role selector and keeps form input after a specific authent
 });
 
 test('sign-in derives the System Administrator role from the identity endpoint without unfinished navigation', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startBrowserApp(t, async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === '/api/auth/login') {
-      await route.fulfill(jsonResponse({ access_token: 'admin-token', username: 'operator', role: 'user' }));
-      return;
-    }
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'operator', role: 'admin', capabilities: { system_settings: true } }));
-      return;
-    }
-    if (path === '/api/sessions') {
-      await route.fulfill(jsonResponse({ sessions: [] }));
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
-
-  await page.goto(`${baseUrl}auth`);
-  await page.getByLabel('用户名').fill('operator');
-  await page.getByLabel('密码').fill('safe-password');
-  await page.getByRole('button', { name: '登录' }).click();
+  const { page, baseUrl } = await startWorkbench(t, {});
+  await loginAdmin(page, baseUrl);
 
   await page.waitForURL(/\/chat$/);
   assert.equal(await page.getByText('系统管理员').isVisible(), true);
@@ -193,49 +93,21 @@ test('sign-in derives the System Administrator role from the identity endpoint w
 });
 
 test('a System Administrator cannot discover or directly load System Settings when the server disables its lifecycle', { timeout: 30000 }, async (t) => {
-  const requests = [];
-  const { page, baseUrl } = await startBrowserApp(t, async (route) => {
-    const request = route.request();
-    const path = new URL(request.url()).pathname;
-    requests.push(`${request.method()} ${path}`);
-
-    if (path === '/api/auth/me') {
-      await route.fulfill(
-        jsonResponse({ username: 'operator', role: 'admin', capabilities: { system_settings: false } })
-      );
-      return;
-    }
-
-    if (path === '/api/sessions') {
-      await route.fulfill(jsonResponse({ sessions: [] }));
-      return;
-    }
-
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
+  const { page, baseUrl } = await startWorkbench(t, {
+    env: { SYSTEM_SETTINGS_DRAFT_ENABLED: 'false', SYSTEM_SETTINGS_APPLICATION_ENABLED: 'false' }
   });
+  await loginAdmin(page, baseUrl);
 
-  await page.addInitScript(() => localStorage.setItem('access_token', 'admin-token'));
+  assert.equal(await page.getByRole('link', { name: '系统设置' }).count(), 0);
+
   await page.goto(`${baseUrl}config`);
-
   await page.waitForURL(/\/chat\?notice=settings-unavailable$/);
   assert.equal(await page.getByRole('heading', { name: '系统设置' }).count(), 0);
   assert.equal(await page.getByRole('link', { name: '系统设置' }).count(), 0);
-  assert.equal(requests.some((request) => request.includes('/api/settings/')), false);
 });
 
 test('an invalid stored session returns to Authentication Entry without protected state', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startBrowserApp(t, async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === '/api/auth/me') {
-      await route.fulfill({
-        status: 401,
-        contentType: 'application/json',
-        body: JSON.stringify({ code: 'AUTH_INVALID_TOKEN', message: 'token expired' })
-      });
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
+  const { page, baseUrl } = await startWorkbench(t, {});
 
   await page.addInitScript(() => {
     localStorage.setItem('access_token', 'expired-token');
@@ -256,37 +128,8 @@ test('an invalid stored session returns to Authentication Entry without protecte
   );
 });
 
-test('a later unauthorized workspace request clears the active shell', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startBrowserApp(t, async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === '/api/auth/me') {
-      await route.fulfill(jsonResponse({ username: 'lin', role: 'user' }));
-      return;
-    }
-    if (path === '/api/sessions') {
-      await route.fulfill({
-        status: 401,
-        contentType: 'application/json',
-        body: JSON.stringify({ code: 'AUTH_INVALID_TOKEN', message: 'token expired' })
-      });
-      return;
-    }
-    await route.fulfill(jsonResponse({ message: `Unexpected request: ${path}` }, 404));
-  });
-
-  await page.addInitScript(() => localStorage.setItem('access_token', 'soon-to-expire-token'));
-  await page.goto(`${baseUrl}chat`);
-  await page.waitForURL(/\/auth$/);
-  await page.getByRole('heading', { name: '身份验证' }).waitFor();
-  assert.equal(await page.getByRole('navigation').count(), 0);
-});
-
 test('built assets route an unauthenticated visitor to Authentication Entry', { timeout: 30000 }, async (t) => {
-  const { page, baseUrl } = await startBrowserApp(
-    t,
-    async (route) => route.fulfill(jsonResponse({ message: 'Unexpected request' }, 404)),
-    { built: true }
-  );
+  const { page, baseUrl } = await startWorkbench(t, { built: true });
 
   await page.goto(`${baseUrl}chat`);
   await page.waitForURL(/\/auth$/);

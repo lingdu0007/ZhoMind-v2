@@ -1,6 +1,6 @@
 import asyncio
-from collections.abc import Generator
 import json
+from collections.abc import Generator
 
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine

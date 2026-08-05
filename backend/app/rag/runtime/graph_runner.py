@@ -1,6 +1,5 @@
 from typing import Any
 
-from app.settings.runtime import get_runtime_settings
 from app.rag.interfaces import RelevanceJudge, Reranker, Retriever
 from app.rag.memory.inmemory_store import InMemorySessionStore, InMemoryUserStore
 from app.rag.memory.policies import ConservativeMemoryWritePolicy
@@ -21,6 +20,7 @@ from app.rag.runtime.default_nodes import (
 from app.rag.runtime.provider_adapters import JudgeAdapter, RerankerAdapter, RetrieverAdapter
 from app.rag.runtime.state import RagState, RagStateDict
 from app.rag.tools.runtime import ToolExecutionRuntime
+from app.settings.runtime import get_runtime_settings
 
 try:
     from langgraph.graph import END, START, StateGraph

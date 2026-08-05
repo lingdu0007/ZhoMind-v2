@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -77,7 +77,7 @@ class ChatRepository:
         return True
 
     async def purge_expired_sessions(self, *, now: datetime | None = None) -> int:
-        cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=30)
+        cutoff = (now or datetime.now(UTC)) - timedelta(days=30)
         expired_session_ids = select(ChatSession.id).where(ChatSession.created_at <= cutoff)
         await self.session.execute(delete(ChatMessage).where(ChatMessage.session_id.in_(expired_session_ids)))
         result = await self.session.execute(delete(ChatSession).where(ChatSession.created_at <= cutoff))

@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from app.common.exceptions import AppError
 from app.common.config import Settings, get_settings
+from app.common.exceptions import AppError
 from app.documents.dense_index_service import DenseIndexResult, DenseIndexService
 from app.extensions.langchain_embedding_providers import OpenAIEmbeddingProvider
 from app.extensions.registry import get_extension_registry

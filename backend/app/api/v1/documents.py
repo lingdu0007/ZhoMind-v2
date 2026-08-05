@@ -1,13 +1,13 @@
 import asyncio
-from collections.abc import Awaitable
-from concurrent.futures import Future
-from copy import deepcopy
-from contextlib import suppress
-from dataclasses import asdict
-from datetime import datetime, timezone
-from pathlib import Path
 import threading
-from typing import TypeVar
+from collections.abc import Awaitable, Coroutine
+from concurrent.futures import Future
+from contextlib import suppress
+from copy import deepcopy
+from dataclasses import asdict
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, TypeVar
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from redis.asyncio import Redis
@@ -15,7 +15,6 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import undefer
 
-from app.common.config import get_settings
 from app.common.deps import require_admin
 from app.common.exceptions import AppError
 from app.common.request_id import get_request_id
@@ -63,7 +62,7 @@ class _DispatcherLoop:
             raise RuntimeError("document job loop unavailable")
         return self._loop
 
-    def submit(self, coro: Awaitable[_T]) -> _T:
+    def submit(self, coro: Coroutine[Any, Any, _T]) -> _T:
         loop = self._ensure_running()
         future: Future[_T] = asyncio.run_coroutine_threadsafe(coro, loop)
         return future.result()
@@ -417,7 +416,7 @@ async def _compensate_batch_enqueue_failure(
 
 
 async def _tombstone_document(session: AsyncSession, *, document: Document) -> None:
-    document.deleted_at = datetime.now(timezone.utc)
+    document.deleted_at = datetime.now(UTC)
     document.status = "pending"
     document.latest_requested_generation = document.published_generation
     document.active_build_generation = None
