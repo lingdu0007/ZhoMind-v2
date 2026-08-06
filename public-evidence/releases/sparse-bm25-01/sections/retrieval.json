@@ -1,0 +1,98 @@
+{
+  "section": "retrieval",
+  "schema_version": "1.0.0",
+  "run_ids": [
+    "0434b82787cf4173ba567a2c884906ba"
+  ],
+  "corpus_id": "project-derived-corpus",
+  "query_set_id": "evaluation-query-set",
+  "modes": [
+    "sparse_bm25"
+  ],
+  "metrics": [
+    {
+      "name": "evidence_recall@3",
+      "mode": "sparse_bm25",
+      "value": 1.0,
+      "unit": "ratio"
+    },
+    {
+      "name": "evidence_recall@5",
+      "mode": "sparse_bm25",
+      "value": 1.0,
+      "unit": "ratio"
+    },
+    {
+      "name": "evidence_recall@10",
+      "mode": "sparse_bm25",
+      "value": 1.0,
+      "unit": "ratio"
+    },
+    {
+      "name": "context_precision@3",
+      "mode": "sparse_bm25",
+      "value": 0.333333,
+      "unit": "ratio"
+    },
+    {
+      "name": "context_precision@5",
+      "mode": "sparse_bm25",
+      "value": 0.2,
+      "unit": "ratio"
+    },
+    {
+      "name": "context_precision@10",
+      "mode": "sparse_bm25",
+      "value": 0.1,
+      "unit": "ratio"
+    },
+    {
+      "name": "first_gold_rank",
+      "mode": "sparse_bm25",
+      "value": 1.166667,
+      "unit": "rank"
+    },
+    {
+      "name": "retrieval_duration_ms",
+      "mode": "sparse_bm25",
+      "value": 0.345844,
+      "unit": "ms"
+    }
+  ],
+  "boundary_query_diagnostics": [
+    {
+      "query_id": "boundary-lexical-is-bm25",
+      "reason_kind": "conflicting",
+      "explanation": "语料明确区分 Lexical Heuristic 与 Sparse BM25：Lexical Heuristic 是自定义的 word、substring、bigram 重叠评分器，'绝不标记为 BM25'；Sparse BM25 是引入的真词法基线并使用 Literal-Preserving Tokenization。查询的隐含假设（Lexical Heuristic 就是 BM25）与语料中两处明确陈述相冲突，检索到的候选会反驳该假设而非支持回答。"
+    },
+    {
+      "query_id": "boundary-chunking-300",
+      "reason_kind": "insufficient",
+      "explanation": "语料固定 QA Chunking 为 500 字符、50 字符重叠，并明确任何分块消融实验都必须是后续独立标注的实验；语料中不存在 300 字符分块下的任何检索质量证据，无法支撑对假设性分块改动的质量结论。"
+    },
+    {
+      "query_id": "boundary-hybrid-winner",
+      "reason_kind": "insufficient",
+      "explanation": "语料只记录了 hybrid_rrf 的融合合约（各取前 20 候选、k=60、chunk_id 去重、无 reranker）与评估约束（不得预设某一模式获胜），没有任何质量对比结果；质量评估运行属于后续 Evaluation Retriever 工作范围，当前语料证据不足以判断任何模式更优。"
+    },
+    {
+      "query_id": "boundary-production-ports",
+      "reason_kind": "stale",
+      "explanation": "语料记录的端口约定来自隔离的 Retrieval Smoke 运行环境：每次运行启动独立的 Compose project 并使用独立的映射端口，这些端口随运行而变化，不代表生产环境的持久对外开放端口；生产部署的暴露端口随时间变化，语料中不存在可回答该问题的当前事实，按语料中的隔离环境端口作答会产生过时答案。"
+    }
+  ],
+  "conditions": {
+    "chunking": {
+      "policy": "qa",
+      "chunk_chars": 500,
+      "overlap_chars": 50
+    },
+    "output_depths": [
+      3,
+      5,
+      10
+    ],
+    "corpus_version": "1.0.0",
+    "query_set_version": "1.0.0"
+  }
+}

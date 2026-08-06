@@ -2658,6 +2658,80 @@ def test_documents_dense_query_failure_falls_back_to_full_published_lexical_corp
     os.remove(db_path)
 
 
+def test_documents_migration_retrieval_fallback_records_normalized_failure_and_fallback_trace() -> None:
+    """Acceptance of the Migration Retrieval fallback contract for the Stable Experimental Baseline.
+
+    The production Lexical Heuristic is verified as an availability fallback over the full
+    published corpus; it is never relabeled as Sparse BM25 or Hybrid Retrieval.
+    """
+    from app.rag.dense_contract import build_embedding_contract_fingerprint
+    from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
+
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-migration-fallback-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    settings = Settings(
+        EMBEDDING_API_KEY="emb-key",
+        EMBEDDING_BASE_URL="https://emb.example.com/v1",
+        EMBEDDING_MODEL="emb-model",
+        DENSE_EMBEDDING_DIM=2,
+        MILVUS_URI="http://milvus.example.com:19530",
+    )
+    fingerprint = build_embedding_contract_fingerprint(settings)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_init_db())
+    asyncio.run(_seed_mixed_mode_retrieval_documents(session_factory, fingerprint=fingerprint))
+
+    async def _run() -> dict:
+        async with session_factory() as session:
+            service = MixedModeDocumentRetrieverService(
+                session,
+                settings=settings,
+                embedding_provider=_StubEmbeddingProvider(),
+                document_index=_FakeDenseDocumentIndex(error=RuntimeError("milvus unavailable")),
+            )
+            result = await service.retrieve("beta lexical", top_k=5)
+            return {
+                "items": result.items,
+                "strategy": result.strategy,
+                "dense_candidate_count": result.dense_candidate_count,
+                "dense_hydrated_count": result.dense_hydrated_count,
+                "lexical_candidate_count": result.lexical_candidate_count,
+                "merged_count": result.merged_count,
+                "dense_query_failed": result.dense_query_failed,
+                "lexical_scope": result.lexical_scope,
+                "fallback_used": result.fallback_used,
+                "provider_error": result.provider_error,
+            }
+
+    result = asyncio.run(_run())
+
+    assert result["strategy"] == "dense_plus_lexical_migration"
+    assert result["dense_query_failed"] is True
+    assert result["fallback_used"] is True
+    assert result["lexical_scope"] == "full_published_live"
+    assert result["provider_error"] == {
+        "code": "PROVIDER_EXEC_FAILED",
+        "message": "milvus unavailable",
+        "type": "RuntimeError",
+    }
+    assert result["dense_candidate_count"] == 0
+    assert result["dense_hydrated_count"] == 0
+    assert result["lexical_candidate_count"] == 2
+    assert result["merged_count"] == 2
+    assert {item["document_id"] for item in result["items"]} == {"doc-lexical-published", "doc-dense-published"}
+    assert {item["retrieval_source"] for item in result["items"]} == {"lexical"}
+
+    asyncio.run(db_engine.dispose())
+    os.remove(db_path)
+
+
 def test_documents_dense_query_failure_searches_full_published_live_corpus_beyond_candidate_limit() -> None:
     from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
 

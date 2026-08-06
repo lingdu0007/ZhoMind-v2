@@ -125,5 +125,8 @@ jobs:
       - name: Public Evidence Bundle validation
         run: python3 scripts/validate-evidence-bundle.py --all
 
+      - name: Frozen evaluation inputs consistency
+        run: python3 scripts/hash-evaluation-assets.py --check
+
       - name: Secret scan over tracked files
         run: python3 scripts/scan-secrets.py
