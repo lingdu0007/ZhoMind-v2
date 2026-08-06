@@ -1,0 +1,45 @@
+{
+  "corpus": {
+    "corpus_id": "project-derived-corpus",
+    "documents": [
+      {
+        "path": "01-product-overview.md",
+        "sha256": "4a1c1ee8fd5026c2404e5fbeb3b97cb7aecc922101de8ea87a93bd94525760e4"
+      },
+      {
+        "path": "02-retrieval-and-chunking.md",
+        "sha256": "34708f11057854e7bfb56e496b00a892d4ea457dd833f485fc01f3541366d177"
+      },
+      {
+        "path": "03-embedding-and-dense-index.md",
+        "sha256": "6f591251c883a2173a3e925c5902d06c776e369802f26d2d6bc3466f7307e855"
+      },
+      {
+        "path": "04-publication-lifecycle.md",
+        "sha256": "bea9df2e262b1f000b4f23b6dd8c54aa674f1424425a10c026d0aa34c31dbf98"
+      },
+      {
+        "path": "05-auth-and-membership.md",
+        "sha256": "c345b23c9143f94e47dfa3e13226852b50e7357be6872d9269c8fd03ea3fc911"
+      },
+      {
+        "path": "06-configuration-and-deployment.md",
+        "sha256": "f14be1c55c0b1f1f4d6706c0bb30bc1e8f9d4b7a40337c0ae83eb29e873acfb9"
+      }
+    ],
+    "sha256": "894d10004f25a2a6462870c1a869586ca83dfc28f0407f75f8cc33d9757ac39d",
+    "version": "1.0.0"
+  },
+  "qa_chunking": {
+    "chunk_chars": 500,
+    "overlap_chars": 50,
+    "policy": "qa"
+  },
+  "query_set": {
+    "query_count": 16,
+    "query_set_id": "evaluation-query-set",
+    "sha256": "a468a1af9fc0c7b979ec1c5dfa8874a5ad27e25bcc79de1e0142564db992df20",
+    "version": "1.0.0"
+  },
+  "schema_version": 1
+}

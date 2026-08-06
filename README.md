@@ -74,7 +74,28 @@ Run it from the repository root:
 ./retrieval-evidence smoke
 ```
 
-The command requires a clean local experiment branch, then starts a unique Compose project with separate ports and runtime volumes for that run. It stops that Compose project on exit, so repeated runs start with independent databases and indexes. The command writes a non-sensitive manifest to `../../evidence/runs/<run-id>/manifest.json`, reporting the document build, live Qwen embedding, the hashed embedding contract identity, Milvus indexing, and proof that the retrieved dense candidate belongs to the just-ingested document. It exits nonzero for any failed acceptance check.
+The command requires a clean local experiment branch, then starts a unique Compose project with separate ports and runtime volumes for that run. It stops that Compose project on exit, so repeated runs start with independent databases and indexes. The command writes a non-sensitive manifest to `../../evidence/runs/<run-id>/manifest.json`, reporting the document build, live Qwen embedding, the hashed embedding contract identity, the frozen Project-Derived Corpus and Evaluation Query Set hashes (`evaluation_inputs`), Milvus indexing, and proof that the retrieved dense candidate belongs to the just-ingested document. It exits nonzero for any failed acceptance check.
+
+## Migration Retrieval Fallback
+
+The fallback run verifies the availability portion of the Stable Experimental Baseline: `retrieval-evidence fallback` reuses the same isolated ingestion and publication flow, then forces a controlled dense-dependency failure and proves that Migration Retrieval returns Lexical Heuristic candidates from the full published corpus with a normalized failure and fallback trace:
+
+```bash
+./retrieval-evidence fallback
+```
+
+The production Lexical Heuristic is verified as the availability fallback only and is never relabeled as Sparse BM25 or Hybrid Retrieval. Its manifest records `fallback_used`, `lexical_scope=full_published_live`, bounded candidate counts, and the normalized `provider_error` code and type — never provider messages, credentials, prompts, answers, or excerpts.
+
+## Evaluation Inputs
+
+`evaluation/` freezes the Retrieval Evidence Baseline inputs: the Project-Derived Corpus (`evaluation/corpus/`), the 16-query Evaluation Query Set (`evaluation/queries/query-set.json`), and the deterministic corpus/query-set hashes (`evaluation/corpus-manifest.json`). Regenerate or verify the manifest with:
+
+```bash
+python3 scripts/hash-evaluation-assets.py          # rewrite evaluation/corpus-manifest.json
+python3 scripts/hash-evaluation-assets.py --check  # verify the committed manifest (PR Gate)
+```
+
+See `evaluation/README.md` for the hashing rules, QA Chunking policy, and annotation conventions.
 
 ## Cited Generation Smoke
 

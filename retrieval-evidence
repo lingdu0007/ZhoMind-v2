@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 1 || ( "$1" != "smoke" && "$1" != "generation-smoke" ) ]]; then
-  printf 'usage: retrieval-evidence {smoke|generation-smoke}\n' >&2
+if [[ $# -ne 1 || ( "$1" != "smoke" && "$1" != "fallback" && "$1" != "generation-smoke" ) ]]; then
+  printf 'usage: retrieval-evidence {smoke|fallback|generation-smoke}\n' >&2
   exit 2
 fi
 
@@ -36,7 +36,9 @@ fi
 run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
 project_prefix=${RETRIEVAL_EVIDENCE_COMPOSE_PROJECT:-zhomind-retrieval-evidence}
 runtime_root=${RETRIEVAL_EVIDENCE_RUNTIME_DIR:-"$repository_root/.runtime/retrieval-evidence"}
-export COMPOSE_PROJECT_NAME="${project_prefix}-${run_id}"
+# Compose project names must be lowercase alphanumeric/hyphen/underscore; the run id keeps its
+# canonical uppercase timestamp form in manifests, but the project name is lowercased here.
+export COMPOSE_PROJECT_NAME="$(printf '%s' "${project_prefix}-${run_id}" | tr '[:upper:]' '[:lower:]')"
 export DOCKER_VOLUME_DIRECTORY="$runtime_root/$run_id"
 export POSTGRES_HOST_PORT=${RETRIEVAL_EVIDENCE_POSTGRES_PORT:-15432}
 export REDIS_HOST_PORT=${RETRIEVAL_EVIDENCE_REDIS_PORT:-16379}
@@ -63,11 +65,13 @@ for _ in $(seq 1 60); do
     source_revision=$(git -C "$repository_root" rev-parse HEAD)
     "${compose[@]}" run --rm --no-deps \
       --volume "$evidence_output:/evidence" \
+      --volume "$repository_root/evaluation:/evaluation:ro" \
       backend python -m app.retrieval_evidence "$profile" \
       --base-url http://backend:8000 \
       --output-dir /evidence \
       --source-revision "$source_revision" \
-      --run-id "$run_id"
+      --run-id "$run_id" \
+      --evaluation-dir /evaluation
     exit $?
   fi
   sleep 2
