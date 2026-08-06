@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://zhomind.invalid/public-evidence/sections/answer.schema.json",
+  "title": "Public Evidence Bundle section: deterministic answer outcomes",
+  "description": "Deterministic answer acceptance over the authenticated product path. Records only closed Answer Execution Outcomes and bounded counters; complete model answers are never part of the bundle.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["section", "schema_version", "run_ids", "cases"],
+  "properties": {
+    "section": {
+      "const": "answer"
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "run_ids": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["case_id", "outcome", "citations_count", "contract"],
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "outcome": {
+            "enum": ["evidence_gated_answer", "insufficient_evidence_reply", "non_knowledge_base_reply", "generation_unavailable"],
+            "description": "One of the four closed Answer Execution Outcomes; never reconstructed from flags or strings."
+          },
+          "citations_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of cited sources; identity of the Answer Evidence Set lives in the internal run, not in the public bundle."
+          },
+          "contract": {
+            "enum": ["passed", "failed"],
+            "description": "Whether normal, SSE, and history projections of the outcome matched."
+          }
+        }
+      }
+    }
+  }
+}

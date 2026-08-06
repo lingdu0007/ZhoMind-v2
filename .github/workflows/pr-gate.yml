@@ -122,5 +122,8 @@ jobs:
       - name: English/Chinese canonical-document parity
         run: python3 scripts/check-docs-parity.py
 
+      - name: Public Evidence Bundle validation
+        run: python3 scripts/validate-evidence-bundle.py --all
+
       - name: Secret scan over tracked files
         run: python3 scripts/scan-secrets.py

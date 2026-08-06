@@ -1,0 +1,260 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://zhomind.invalid/public-evidence/evidence-bundle.schema.json",
+  "title": "ZhoMind-v2 Public Evidence Bundle manifest",
+  "description": "The single versioned contract for a non-sensitive Public Evidence Bundle published with the ZhoMind-v2 Portfolio Release. Every field is on an explicit allowlist; unknown fields, sensitive shapes, and out-of-bundle references are rejected by the deterministic validator (scripts/validate-evidence-bundle.py).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bundle_id",
+    "kind",
+    "canonical_language",
+    "mirror_language",
+    "source_revision",
+    "release_candidate",
+    "provenance",
+    "artifacts",
+    "limits"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "description": "Version of this contract. Producers must write exactly this value; a different value means the bundle targets another contract."
+    },
+    "bundle_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,127}$",
+      "description": "Stable lowercase identifier of the bundle, unique within the repository."
+    },
+    "kind": {
+      "const": "public-evidence-bundle",
+      "description": "Fixed kind discriminator so a validator can never mistake another JSON file for a bundle manifest."
+    },
+    "canonical_language": {
+      "const": "en",
+      "description": "The English report is the canonical human-facing version."
+    },
+    "mirror_language": {
+      "const": "zh-CN",
+      "description": "The complete Chinese mirror ships in the same change and preserves identifiers and metric names as literals."
+    },
+    "source_revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "The exact source revision this bundle describes, as a full 40-character hex commit id."
+    },
+    "release_candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "revision", "status", "created_at"],
+      "properties": {
+        "identity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Name of the release candidate this bundle supports, e.g. portfolio-release-candidate-01."
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$",
+          "description": "Must equal source_revision; verified as a cross-reference."
+        },
+        "status": {
+          "enum": ["candidate", "accepted", "released"],
+          "description": "Lifecycle state of the candidate at the time the bundle was assembled."
+        },
+        "created_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$",
+          "description": "UTC timestamp in ISO 8601 form."
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runs", "corpora", "query_sets", "revisions"],
+      "properties": {
+        "runs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["run_id", "kind", "source_revision", "started_at", "finished_at", "outcome"],
+            "properties": {
+              "run_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                "description": "Non-sensitive identity of the internal run this public artifact was exported from."
+              },
+              "kind": {
+                "enum": [
+                  "retrieval-smoke",
+                  "generation-smoke",
+                  "retrieval-evaluation",
+                  "answer-acceptance",
+                  "prompt-injection-run",
+                  "performance-run",
+                  "production-acceptance"
+                ]
+              },
+              "source_revision": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$",
+                "description": "Must appear in provenance.revisions or equal source_revision; verified as a cross-reference."
+              },
+              "started_at": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+              },
+              "finished_at": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+              },
+              "outcome": {
+                "enum": ["passed", "failed", "completed-with-exceptions"]
+              }
+            }
+          }
+        },
+        "corpora": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["corpus_id", "version", "sha256"],
+            "properties": {
+              "corpus_id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,127}$"
+              },
+              "version": {
+                "type": "string",
+                "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+                "description": "Deterministic hash of the frozen corpus content."
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 2000
+              }
+            }
+          }
+        },
+        "query_sets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["query_set_id", "version", "sha256"],
+            "properties": {
+              "query_set_id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,127}$"
+              },
+              "version": {
+                "type": "string",
+                "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "query_count": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 2000
+              }
+            }
+          }
+        },
+        "revisions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$",
+            "description": "Every revision referenced anywhere in the bundle must appear here."
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "kind", "sha256", "role"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_./-]+$",
+            "description": "Bundle-relative file path. Must not contain '..', spaces, or backslashes; each entry is verified to exist with a matching sha256."
+          },
+          "kind": {
+            "enum": [
+              "retrieval",
+              "answer",
+              "prompt-injection",
+              "performance",
+              "production-acceptance",
+              "report",
+              "corpus",
+              "query-set",
+              "annotation",
+              "trace",
+              "manifest"
+            ],
+            "description": "Typed artifact kind. Section artifacts must match the \"section\" discriminator of their JSON content."
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "role": {
+            "enum": ["section", "report-en", "report-zh", "data", "inventory", "diagnostic", "manifest"],
+            "description": "How the artifact participates in the bundle. report-en and report-zh are the canonical/mirror report pair; manifest is the manifest itself."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 2000
+          }
+        }
+      }
+    },
+    "limits": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "kind", "statement"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,127}$"
+          },
+          "kind": {
+            "enum": ["boundary", "qualification", "exclusion", "target"],
+            "description": "boundary = operating envelope; qualification = what the evidence does not claim; exclusion = what is deliberately absent; target = an explicit goal that may not be met."
+          },
+          "statement": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000,
+            "description": "Declared limitation or scope note. Must never carry credentials, environment values, excerpts, or answers."
+          }
+        }
+      }
+    }
+  }
+}
