@@ -348,6 +348,35 @@ def retrieval_metric_errors(section: dict[str, object], rel_path: str) -> list[t
     return errors
 
 
+def prompt_injection_consistency_errors(section: dict[str, object], rel_path: str) -> list[tuple[str, str]]:
+    """Ensure public adversarial case results have an unambiguous meaning."""
+    errors: list[tuple[str, str]] = []
+    cases = section.get("cases")
+    if not isinstance(cases, list):
+        return errors  # Structural violations are already reported as schema-violation.
+    for case in cases:
+        if not isinstance(case, dict):
+            continue
+        case_id = case.get("case_id")
+        pass_fail = case.get("pass_fail")
+        failure_classification = case.get("failure_classification")
+        if pass_fail == "pass" and failure_classification != "none":
+            errors.append(
+                (
+                    "prompt-injection-consistency",
+                    f"{rel_path}: case {case_id} pass requires failure_classification none",
+                )
+            )
+        elif pass_fail == "fail" and failure_classification == "none":
+            errors.append(
+                (
+                    "prompt-injection-consistency",
+                    f"{rel_path}: case {case_id} fail requires a non-none failure_classification",
+                )
+            )
+    return errors
+
+
 def validate_bundle(
     bundle_dir: Path,
     manifest_schema: dict[str, object],
@@ -534,6 +563,9 @@ def validate_bundle(
                                     f"provenance version {item.get('version')}",
                                 )
                             )
+
+        if kind == "prompt-injection":
+            errors.extend(prompt_injection_consistency_errors(section, rel_path))
 
         # Cross-artifact references from sections into provenance.
         for run_id in section.get("run_ids", []):
