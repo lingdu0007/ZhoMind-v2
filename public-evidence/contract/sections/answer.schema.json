@@ -11,7 +11,7 @@
       "const": "answer"
     },
     "schema_version": {
-      "enum": ["1.0.0", "1.1.0"]
+      "const": "1.0.0"
     },
     "run_ids": {
       "type": "array",
