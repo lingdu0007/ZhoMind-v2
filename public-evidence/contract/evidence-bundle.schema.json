@@ -19,8 +19,8 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "1.0.0",
-      "description": "Version of this contract. Producers must write exactly this value; a different value means the bundle targets another contract."
+      "enum": ["1.0.0", "1.1.0"],
+      "description": "Version of this contract. Existing 1.0.0 bundles are accepted through the explicit legacy path; new controlled three-mode retrieval comparisons must write 1.1.0."
     },
     "bundle_id": {
       "type": "string",

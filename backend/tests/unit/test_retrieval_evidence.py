@@ -57,6 +57,38 @@ class _DenseResult:
     items = [{"document_id": "doc-ingested", "chunk_id": "chunk-1", "retrieval_source": "dense"}]
 
 
+class _FallbackResult:
+    dense_candidate_count = 0
+    dense_hydrated_count = 0
+    dense_query_failed = True
+    fallback_used = True
+    lexical_scope = "full_published_live"
+    lexical_candidate_count = 2
+    merged_count = 2
+    items = [
+        {"document_id": "doc-ingested", "chunk_id": "chunk-1", "retrieval_source": "lexical"},
+        {"document_id": "doc-other", "chunk_id": "chunk-2", "retrieval_source": "lexical"},
+    ]
+    provider_error = {
+        "code": "PROVIDER_EXEC_FAILED",
+        "message": "milvus unavailable: forced dense failure for retrieval-evidence fallback",
+        "type": "RuntimeError",
+    }
+
+
+class _FallbackMissingPublishedResult(_FallbackResult):
+    items = [
+        {"document_id": "doc-other", "chunk_id": "chunk-2", "retrieval_source": "lexical"},
+        {"document_id": "doc-another", "chunk_id": "chunk-3", "retrieval_source": "lexical"},
+    ]
+
+
+class _DenseNotFailedResult(_DenseResult):
+    dense_query_failed = False
+    fallback_used = False
+    lexical_scope = "not_dense_ready_published"
+
+
 class _ExistingPublishedDenseResult:
     dense_candidate_count = 1
     dense_hydrated_count = 1
@@ -179,6 +211,17 @@ def _settings(**overrides: object) -> Settings:
 
 
 def test_retrieval_evidence_smoke_writes_non_sensitive_success_manifest(tmp_path) -> None:
+    evaluation_inputs = {
+        "corpus_id": "project-derived-corpus",
+        "corpus_version": "1.0.0",
+        "corpus_sha256": "a" * 64,
+        "query_set_id": "evaluation-query-set",
+        "query_set_version": "1.0.0",
+        "query_set_sha256": "b" * 64,
+        "query_count": 16,
+        "qa_chunking": {"policy": "qa", "chunk_chars": 500, "overlap_chars": 50},
+    }
+
     async def _run() -> dict:
         runner = RetrievalEvidenceSmoke(
             settings=_settings(),
@@ -187,6 +230,7 @@ def test_retrieval_evidence_smoke_writes_non_sensitive_success_manifest(tmp_path
             output_dir=tmp_path,
             source_revision="abc123",
             run_id="run-001",
+            evaluation_inputs=evaluation_inputs,
             now=lambda: datetime(2026, 7, 30, tzinfo=UTC),
             sleep=lambda _: _return_none(),
         )
@@ -195,6 +239,9 @@ def test_retrieval_evidence_smoke_writes_non_sensitive_success_manifest(tmp_path
     manifest = asyncio.run(_run())
 
     assert manifest["outcome"] == "passed"
+    assert manifest["command"] == "retrieval-evidence smoke"
+    assert manifest["evaluation_inputs"] == evaluation_inputs
+    assert "migration_retrieval_fallback" not in manifest["checks"]
     assert manifest["checks"]["document_build"] == {
         "document_id": "doc-ingested",
         "job_id": "job-1",
@@ -552,5 +599,116 @@ async def _return_different_diagnostic_chunk(query: str) -> _DifferentDiagnostic
     return _DifferentDiagnosticChunkResult()
 
 
+async def _return_fallback_result(query: str) -> _FallbackResult:
+    assert "蓝松石版本" in query
+    assert "retrieval-evidence-" not in query
+    return _FallbackResult()
+
+
+async def _return_fallback_missing_published_result(query: str) -> _FallbackMissingPublishedResult:
+    assert "蓝松石版本" in query
+    return _FallbackMissingPublishedResult()
+
+
+async def _return_dense_not_failed_result(query: str) -> _DenseNotFailedResult:
+    assert "蓝松石版本" in query
+    return _DenseNotFailedResult()
+
+
 async def _return_none() -> None:
     return None
+
+
+def test_retrieval_evidence_fallback_records_normalized_failure_and_full_published_lexical_trace(tmp_path) -> None:
+    evaluation_inputs = {
+        "corpus_id": "project-derived-corpus",
+        "corpus_version": "1.0.0",
+        "corpus_sha256": "a" * 64,
+        "query_set_id": "evaluation-query-set",
+        "query_set_version": "1.0.0",
+        "query_set_sha256": "b" * 64,
+        "query_count": 16,
+        "qa_chunking": {"policy": "qa", "chunk_chars": 500, "overlap_chars": 50},
+    }
+
+    async def _run() -> dict:
+        runner = RetrievalEvidenceSmoke(
+            settings=_settings(),
+            http_client=_FakeHttpClient(),
+            retrieve=_return_fallback_result,
+            output_dir=tmp_path,
+            source_revision="abc123",
+            run_id="fallback-run-001",
+            fallback_mode=True,
+            evaluation_inputs=evaluation_inputs,
+            now=lambda: datetime(2026, 7, 30, tzinfo=UTC),
+            sleep=lambda _: _return_none(),
+        )
+        return await runner.run()
+
+    manifest = asyncio.run(_run())
+
+    assert manifest["outcome"] == "passed"
+    assert manifest["command"] == "retrieval-evidence fallback"
+    assert manifest["evaluation_inputs"] == evaluation_inputs
+    assert "retrieval" not in manifest["checks"]
+    assert manifest["checks"]["migration_retrieval_fallback"] == {
+        "induced_dense_failure": True,
+        "fallback_used": True,
+        "lexical_scope": "full_published_live",
+        "lexical_candidate_count": 2,
+        "dense_candidate_count": 0,
+        "dense_hydrated_count": 0,
+        "candidate_document_id": "doc-ingested",
+        "candidate_belongs_to_published_document": True,
+        "provider_error": {"code": "PROVIDER_EXEC_FAILED", "type": "RuntimeError"},
+    }
+    persisted = json.loads((tmp_path / "fallback-run-001" / "manifest.json").read_text(encoding="utf-8"))
+    assert persisted == manifest
+    serialized = json.dumps(manifest)
+    assert "test-qwen-api-key" not in serialized
+    assert "milvus unavailable" not in serialized
+
+
+def test_retrieval_evidence_fallback_fails_when_dense_failure_is_not_induced(tmp_path) -> None:
+    async def _run() -> dict:
+        runner = RetrievalEvidenceSmoke(
+            settings=_settings(),
+            http_client=_FakeHttpClient(),
+            retrieve=_return_dense_not_failed_result,
+            output_dir=tmp_path,
+            source_revision="abc123",
+            run_id="fallback-run-002",
+            fallback_mode=True,
+            now=lambda: datetime(2026, 7, 30, tzinfo=UTC),
+            sleep=lambda _: _return_none(),
+        )
+        return await runner.run()
+
+    manifest = asyncio.run(_run())
+
+    assert manifest["outcome"] == "failed"
+    assert manifest["failed_check"] == "migration_retrieval_fallback"
+    assert manifest["failure_code"] == "DENSE_FAILURE_NOT_INDUCED"
+
+
+def test_retrieval_evidence_fallback_fails_when_published_document_is_not_retrieved_lexically(tmp_path) -> None:
+    async def _run() -> dict:
+        runner = RetrievalEvidenceSmoke(
+            settings=_settings(),
+            http_client=_FakeHttpClient(),
+            retrieve=_return_fallback_missing_published_result,
+            output_dir=tmp_path,
+            source_revision="abc123",
+            run_id="fallback-run-003",
+            fallback_mode=True,
+            now=lambda: datetime(2026, 7, 30, tzinfo=UTC),
+            sleep=lambda _: _return_none(),
+        )
+        return await runner.run()
+
+    manifest = asyncio.run(_run())
+
+    assert manifest["outcome"] == "failed"
+    assert manifest["failed_check"] == "migration_retrieval_fallback"
+    assert manifest["failure_code"] == "PUBLISHED_DOCUMENT_NOT_RETRIEVED_LEXICALLY"

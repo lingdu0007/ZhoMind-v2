@@ -1,0 +1,245 @@
+{
+  "schema_version": 1,
+  "query_set_id": "evaluation-query-set",
+  "version": "1.0.0",
+  "description": "固定 16 条查询：4 条精确约束、4 条语义改写、4 条组合条件、4 条边界查询。Answerable 查询记录 required claims 与 Gold Evidence（引用 Project-Derived Corpus 文档中的原文 passage）；Boundary Query 记录 insufficient / conflicting / stale 诊断。",
+  "queries": [
+    {
+      "query_id": "exact-qa-chunking-size",
+      "category": "exact_constraint",
+      "query": "QA Chunking 的 chunk_size 和 chunk_overlap 分别是多少？",
+      "required_claims": [
+        "QA Chunking 的 chunk_size 为 500",
+        "QA Chunking 的 chunk_overlap 为 50",
+        "qa 是 chunker 预置策略之一"
+      ],
+      "gold_evidence": [
+        {
+          "document": "02-retrieval-and-chunking.md",
+          "passage": "- `qa`：chunk_size 500，chunk_overlap 50，即 QA Chunking 的固定策略。"
+        }
+      ]
+    },
+    {
+      "query_id": "exact-dense-dim-default",
+      "category": "exact_constraint",
+      "query": "DENSE_EMBEDDING_DIM 的默认值是多少？",
+      "required_claims": [
+        "DENSE_EMBEDDING_DIM 的默认值为 1024"
+      ],
+      "gold_evidence": [
+        {
+          "document": "03-embedding-and-dense-index.md",
+          "passage": "`DENSE_EMBEDDING_DIM` 的默认值为 1024。"
+        }
+      ]
+    },
+    {
+      "query_id": "exact-milvus-collection-prefix",
+      "category": "exact_constraint",
+      "query": "Milvus collection 名称的前缀是什么？",
+      "required_claims": [
+        "collection 名称前缀为 document_chunks_",
+        "前缀后跟嵌入合约指纹的十六进制字符"
+      ],
+      "gold_evidence": [
+        {
+          "document": "03-embedding-and-dense-index.md",
+          "passage": "Milvus collection 名称由指纹派生：前缀 `document_chunks_` 加上指纹的十六进制字符。"
+        }
+      ]
+    },
+    {
+      "query_id": "exact-rrf-fusion-k",
+      "category": "exact_constraint",
+      "query": "hybrid_rrf 的 RRF Fusion 合约中 k 的取值是多少？",
+      "required_claims": [
+        "RRF Fusion 的 k 为 60",
+        "Sparse BM25 与 Dense 各取前 20 个候选",
+        "按 chunk_id 去重且第一轮不加入 reranker"
+      ],
+      "gold_evidence": [
+        {
+          "document": "02-retrieval-and-chunking.md",
+          "passage": "Hybrid Retrieval 使用固定的 RRF Fusion 合约：Sparse BM25 与 Dense 各取前 20 个候选，按 reciprocal rank 融合，`k = 60`，按 `chunk_id` 去重，第一轮不加入 reranker。"
+        }
+      ]
+    },
+    {
+      "query_id": "semantic-fallback-availability",
+      "category": "semantic_paraphrase",
+      "query": "当向量检索服务不可用或失败时，系统如何保证检索可用性？",
+      "required_claims": [
+        "稠密查询失败时回退到全量已发布实时语料",
+        "回退时 lexical_scope 为 full_published_live",
+        "回退分支不施加 200 候选上限与 dense-ready 过滤"
+      ],
+      "gold_evidence": [
+        {
+          "document": "02-retrieval-and-chunking.md",
+          "passage": "当稠密查询失败时，Migration Retrieval 回退到全量已发布实时语料：`lexical_scope` 为 `full_published_live`，不施加 `not_dense_ready_published` 分支中的 200 候选上限与 dense-ready 过滤。"
+        }
+      ]
+    },
+    {
+      "query_id": "semantic-insufficient-evidence",
+      "category": "semantic_paraphrase",
+      "query": "如果知识库检索不到能支撑回答的证据，系统会如何回应知识用户？",
+      "required_claims": [
+        "返回 Insufficient Evidence Reply",
+        "不调用任何生成 provider 且不带引用",
+        "调用方不能把它升级为知识回答"
+      ],
+      "gold_evidence": [
+        {
+          "document": "01-product-overview.md",
+          "passage": "当检索形成的 Answer Evidence Set 为空时，系统返回 Insufficient Evidence Reply：不调用任何生成 provider、不带任何引用，调用方不能把它升级为知识回答。"
+        }
+      ]
+    },
+    {
+      "query_id": "semantic-withdrawal-effect",
+      "category": "semantic_paraphrase",
+      "query": "管理员撤下一份已发布的文档之后，它对后续检索和已有回答有什么影响？",
+      "required_claims": [
+        "该 Published Knowledge Version 成为 Withdrawn Source",
+        "立即从未来的检索中排除",
+        "历史回答只保留撤下通知且不再暴露摘录"
+      ],
+      "gold_evidence": [
+        {
+          "document": "04-publication-lifecycle.md",
+          "passage": "管理员撤下某个已发布文档后，该 Published Knowledge Version 成为 Withdrawn Source：立即从未来的检索中排除，历史回答只保留撤下通知，不再暴露其摘录。"
+        }
+      ]
+    },
+    {
+      "query_id": "semantic-publication-required",
+      "category": "semantic_paraphrase",
+      "query": "一篇上传的文档要经过哪些环节，知识用户才能检索到它？",
+      "required_claims": [
+        "上传后经构建产生候选 generation（Candidate Build）",
+        "显式 publish 后 Candidate Build 才成为 Published Knowledge Version",
+        "构建成功本身不构成发布"
+      ],
+      "gold_evidence": [
+        {
+          "document": "04-publication-lifecycle.md",
+          "passage": "`POST /api/v1/documents/{document_id}/publish` 把候选 generation 提升为已发布 generation：Candidate Build 成为 Published Knowledge Version，此时 Knowledge User 才可以检索到它。构建成功本身不构成发布。"
+        }
+      ]
+    },
+    {
+      "query_id": "combined-contract-active",
+      "category": "combined_condition",
+      "query": "在什么配置条件下 DenseEmbeddingContract 处于 active，其嵌入合约指纹由哪些维度构成？",
+      "required_claims": [
+        "active 需要 EMBEDDING_API_KEY 已配置、EMBEDDING_BASE_URL 与 EMBEDDING_MODEL 非空、DENSE_EMBEDDING_DIM 大于 0 且 MILVUS_URI 非空",
+        "嵌入合约指纹由 embedding_base_url、embedding_model、dense_embedding_dim 三个维度构成"
+      ],
+      "gold_evidence": [
+        {
+          "document": "03-embedding-and-dense-index.md",
+          "passage": "当 `EMBEDDING_API_KEY` 已配置、`EMBEDDING_BASE_URL` 与 `EMBEDDING_MODEL` 非空、`DENSE_EMBEDDING_DIM` 大于 0 且 `MILVUS_URI` 非空时，合约处于 active 状态。"
+        },
+        {
+          "document": "03-embedding-and-dense-index.md",
+          "passage": "嵌入合约指纹 `build_embedding_contract_fingerprint` 计算 `embedding_base_url`、`embedding_model`、`dense_embedding_dim` 三个维度的 JSON 规范化串的 sha256 摘要，用于标识一个确定的嵌入契约。"
+        }
+      ]
+    },
+    {
+      "query_id": "combined-fallback-trace",
+      "category": "combined_condition",
+      "query": "当稠密检索失败并回退到词法检索时，检索结果会记录哪些回退痕迹与计数？",
+      "required_claims": [
+        "记录 fallback_used 与 lexical_scope",
+        "记录归一化的 provider_error，含 code、message、type",
+        "记录 dense_candidate_count、dense_hydrated_count、lexical_candidate_count、merged_count 等有界计数"
+      ],
+      "gold_evidence": [
+        {
+          "document": "02-retrieval-and-chunking.md",
+          "passage": "检索结果携带归一化的失败与回退痕迹：`fallback_used`、`lexical_scope`、`provider_error`（含 `code`、`message`、`type`），以及 `dense_candidate_count`、`dense_hydrated_count`、`lexical_candidate_count`、`merged_count` 等有界计数。"
+        }
+      ]
+    },
+    {
+      "query_id": "combined-knowledge-user-admission",
+      "category": "combined_condition",
+      "query": "Knowledge User 如何获得准入？邀请凭据默认多久过期，管理员权限如何获得？",
+      "required_claims": [
+        "Knowledge User 通过管理员签发的团队邀请注册准入",
+        "邀请默认过期时间为七天",
+        "管理员权限通过 Administrator Promotion 由已有 System Administrator 授予，是 Bootstrap Administrator 之外唯一途径"
+      ],
+      "gold_evidence": [
+        {
+          "document": "05-auth-and-membership.md",
+          "passage": "团队邀请（Team Invitation）是可复用的、由管理员签发的注册凭据，只在其配置的过期时间之前允许准入一位 Knowledge User，默认过期时间为七天。"
+        },
+        {
+          "document": "05-auth-and-membership.md",
+          "passage": "Administrator Promotion 是已有 System Administrator 将已准入的 Knowledge User 提升为 System Administrator 的动作，是 Bootstrap Administrator 之外获得管理员权限的唯一途径；不存在自助注册管理员或基于邀请的管理员创建。"
+        }
+      ]
+    },
+    {
+      "query_id": "combined-answer-evidence-set",
+      "category": "combined_condition",
+      "query": "Evidence-Gated Answer 的 Answer Evidence Set 是如何形成的？集合之外的检索结果如何处理？",
+      "required_claims": [
+        "按最终检索顺序最多取前三个有效 passage 组成",
+        "数量上限是配置项而非领域常量",
+        "集合在一次请求内不可变",
+        "集合之外的检索结果只作为管理员诊断候选"
+      ],
+      "gold_evidence": [
+        {
+          "document": "01-product-overview.md",
+          "passage": "Evidence-Gated Answer 的引用来源集合是 Answer Evidence Set：在首次发布策略下，它按最终检索顺序最多取前三个有效 passage 组成；数量上限是配置项而非领域常量；该集合在一次请求内不可变。"
+        },
+        {
+          "document": "01-product-overview.md",
+          "passage": "证据门控、回答生成、持久化引用与用户可见引用都引用这同一个集合，集合之外的检索结果只作为管理员诊断候选，不得进入回答。"
+        }
+      ]
+    },
+    {
+      "query_id": "boundary-lexical-is-bm25",
+      "category": "boundary",
+      "query": "现有 Lexical Heuristic 是否就是 BM25 稀疏基线？",
+      "boundary_diagnostic": {
+        "reason_kind": "conflicting",
+        "explanation": "语料明确区分 Lexical Heuristic 与 Sparse BM25：Lexical Heuristic 是自定义的 word、substring、bigram 重叠评分器，'绝不标记为 BM25'；Sparse BM25 是引入的真词法基线并使用 Literal-Preserving Tokenization。查询的隐含假设（Lexical Heuristic 就是 BM25）与语料中两处明确陈述相冲突，检索到的候选会反驳该假设而非支持回答。"
+      }
+    },
+    {
+      "query_id": "boundary-chunking-300",
+      "category": "boundary",
+      "query": "把 QA Chunking 的 chunk_size 改为 300 是否会显著提升检索质量？",
+      "boundary_diagnostic": {
+        "reason_kind": "insufficient",
+        "explanation": "语料固定 QA Chunking 为 500 字符、50 字符重叠，并明确任何分块消融实验都必须是后续独立标注的实验；语料中不存在 300 字符分块下的任何检索质量证据，无法支撑对假设性分块改动的质量结论。"
+      }
+    },
+    {
+      "query_id": "boundary-hybrid-winner",
+      "category": "boundary",
+      "query": "在 Project-Derived Corpus 上，hybrid_rrf 模式是否一定优于 dense 或 sparse_bm25 模式？",
+      "boundary_diagnostic": {
+        "reason_kind": "insufficient",
+        "explanation": "语料只记录了 hybrid_rrf 的融合合约（各取前 20 候选、k=60、chunk_id 去重、无 reranker）与评估约束（不得预设某一模式获胜），没有任何质量对比结果；质量评估运行属于后续 Evaluation Retriever 工作范围，当前语料证据不足以判断任何模式更优。"
+      }
+    },
+    {
+      "query_id": "boundary-production-ports",
+      "category": "boundary",
+      "query": "当前生产环境对外暴露了哪些服务端口？",
+      "boundary_diagnostic": {
+        "reason_kind": "stale",
+        "explanation": "语料记录的端口约定来自隔离的 Retrieval Smoke 运行环境：每次运行启动独立的 Compose project 并使用独立的映射端口，这些端口随运行而变化，不代表生产环境的持久对外开放端口；生产部署的暴露端口随时间变化，语料中不存在可回答该问题的当前事实，按语料中的隔离环境端口作答会产生过时答案。"
+      }
+    }
+  ]
+}
