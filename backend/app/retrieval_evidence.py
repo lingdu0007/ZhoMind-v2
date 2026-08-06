@@ -17,10 +17,11 @@ from uuid import uuid4
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.common.config import Settings, get_settings
-from app.evaluation.evaluate import run_sparse_bm25_evaluation
+from app.evaluation.evaluate import run_retrieval_evaluation, run_sparse_bm25_evaluation
 from app.evaluation_inputs import load_evaluation_inputs
+from app.extensions.langchain_embedding_providers import OpenAIEmbeddingProvider
 from app.infra.milvus_document_index import MilvusDocumentIndex
-from app.rag.dense_contract import build_embedding_contract_fingerprint
+from app.rag.dense_contract import DenseEmbeddingContract, build_embedding_contract_fingerprint
 from app.rag.interfaces import RetrieveResult
 from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
 
@@ -737,19 +738,60 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     evaluate_command.add_argument("--run-id")
     evaluate_command.add_argument("--evaluation-dir", required=True, type=Path)
     evaluate_command.add_argument("--bundle-dir", type=Path)
+    evaluate_command.add_argument(
+        "--mode",
+        choices=("sparse_bm25", "dense", "hybrid_rrf", "all"),
+        default="sparse_bm25",
+        help="Evaluation Retriever mode; all writes the controlled three-mode comparison bundle.",
+    )
     return parser.parse_args(argv)
 
 
 def _run_evaluate_profile(args: argparse.Namespace) -> int:
-    """Deterministic Sparse BM25 evaluation: no backend service is required."""
-    manifest = run_sparse_bm25_evaluation(
-        evaluation_dir=args.evaluation_dir,
-        output_dir=args.output_dir,
-        source_revision=args.source_revision,
-        run_id=args.run_id or uuid4().hex,
-        bundle_dir=args.bundle_dir,
+    """Run one Evaluation Retriever mode or the controlled three-mode comparison."""
+    run_id = args.run_id or uuid4().hex
+    if args.mode == "sparse_bm25":
+        manifest = run_sparse_bm25_evaluation(
+            evaluation_dir=args.evaluation_dir,
+            output_dir=args.output_dir,
+            source_revision=args.source_revision,
+            run_id=run_id,
+            bundle_dir=args.bundle_dir,
+        )
+        print(json.dumps({"outcome": manifest["outcome"], "run_id": manifest["run_id"]}, sort_keys=True))
+        return 0 if manifest["outcome"] == "passed" else 1
+
+    settings = get_settings()
+    contract = DenseEmbeddingContract.from_settings(settings)
+    if not contract.active:
+        raise ValueError("Dense and Hybrid RRF evaluation require an active embedding configuration")
+    embedding_provider = OpenAIEmbeddingProvider(
+        api_key=settings.embedding_api_key,
+        base_url=settings.embedding_base_url_normalized,
+        model=settings.embedding_model_normalized,
     )
-    print(json.dumps({"outcome": manifest["outcome"], "run_id": manifest["run_id"]}, sort_keys=True))
+    modes = ("sparse_bm25", "dense", "hybrid_rrf") if args.mode == "all" else (args.mode,)
+    manifest = asyncio.run(
+        run_retrieval_evaluation(
+            evaluation_dir=args.evaluation_dir,
+            output_dir=args.output_dir,
+            source_revision=args.source_revision,
+            modes=modes,
+            embedding_provider=embedding_provider,
+            embedding_identity=(
+                f"{settings.embedding_model_normalized}:"
+                f"{build_embedding_contract_fingerprint(settings)}"
+            ),
+            run_id=run_id,
+            bundle_dir=args.bundle_dir,
+        )
+    )
+    print(
+        json.dumps(
+            {"outcome": manifest["outcome"], "run_id": manifest["run_id"], "modes": manifest["modes"]},
+            sort_keys=True,
+        )
+    )
     return 0 if manifest["outcome"] == "passed" else 1
 
 
