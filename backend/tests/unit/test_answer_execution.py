@@ -134,6 +134,11 @@ def test_evidence_gated_answer_uses_one_bounded_snapshot_everywhere() -> None:
 
     trace = outcome.to_rag_trace()
     assert trace["outcome"] == "evidence_gated_answer"
+    assert set(trace["runtime"]["timing_ms"]) == {
+        "retrieval_ms",
+        "generation_provider_ms",
+        "embedding_provider_ms",
+    }
     assert [item["content_preview"] for item in trace["evidence"]] == snapshots
     assert [source["excerpt"] for source in outcome.evidence_summary()["sources"]] == snapshots
     with pytest.raises(TypeError):

@@ -146,6 +146,7 @@ class EvidenceGatedAnswerExecutor:
             "final_provider": runtime_result.get("final_provider"),
             "provider_attempts": list(runtime_result.get("provider_attempts") or []),
             "fallback_hops": int(runtime_result.get("fallback_hops") or 0),
+            "timing_ms": runtime_result.get("timing_ms") or {},
         }
         return trace
 
