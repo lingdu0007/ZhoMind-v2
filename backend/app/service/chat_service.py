@@ -2,6 +2,7 @@ import json
 import re
 import uuid
 from datetime import UTC, datetime
+from time import perf_counter
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -333,6 +334,13 @@ class ChatService:
             },
             "provider_errors": self._diagnostic_provider_errors(trace),
         }
+        timing = runtime.get("timing_ms")
+        if isinstance(timing, dict):
+            diagnostics["timing_ms"] = {
+                key: self._diagnostic_count(timing.get(key))
+                for key in ("retrieval_ms", "generation_provider_ms", "persistence_ms")
+                if self._diagnostic_count(timing.get(key)) is not None
+            }
         diagnostics["trace_preview"] = self._diagnostic_trace_preview(trace)
         return diagnostics
 
@@ -456,6 +464,7 @@ class ChatService:
         )
         rag_trace = outcome.to_rag_trace()
 
+        persistence_started = perf_counter()
         assistant_message = await self.repo.add_message(
             session_id=session.id,
             user_id=user_id,
@@ -466,6 +475,13 @@ class ChatService:
 
         session.updated_at = datetime.now(UTC)
         await self.session.commit()
+        runtime = rag_trace.get("runtime")
+        if isinstance(runtime, dict):
+            timing = runtime.get("timing_ms")
+            if not isinstance(timing, dict):
+                timing = {}
+                runtime["timing_ms"] = timing
+            timing["persistence_ms"] = round((perf_counter() - persistence_started) * 1000)
 
         return {
             "session_id": session.id,

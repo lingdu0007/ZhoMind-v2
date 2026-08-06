@@ -81,6 +81,10 @@
         "persistence_ms": {
           "type": "number",
           "minimum": 0
+        },
+        "application_controlled_ms": {
+          "type": "number",
+          "minimum": 0
         }
       }
     },
@@ -102,6 +106,24 @@
           "maxLength": 2000,
           "description": "Run-condition qualification or limitation."
         }
+      }
+    },
+    "error_counts": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 1}
+    },
+    "regression_envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metric", "observed_sample_count", "center_ms", "spread_ms", "tolerance_ms", "threshold_ms", "derivation"],
+      "properties": {
+        "metric": {"const": "application_controlled_ms"},
+        "observed_sample_count": {"type": "integer", "minimum": 1},
+        "center_ms": {"type": "number", "minimum": 0},
+        "spread_ms": {"type": "number", "minimum": 0},
+        "tolerance_ms": {"type": "number", "minimum": 0},
+        "threshold_ms": {"type": "number", "minimum": 0},
+        "derivation": {"type": "string", "minLength": 1, "maxLength": 512}
       }
     }
   }
