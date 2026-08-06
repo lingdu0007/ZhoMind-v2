@@ -1,4 +1,5 @@
 import json
+import math
 import re
 import uuid
 from datetime import UTC, datetime
@@ -149,6 +150,15 @@ class ChatService:
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             return None
         return value
+
+    @staticmethod
+    def _diagnostic_duration(value: object) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        duration = float(value)
+        if not math.isfinite(duration) or duration < 0:
+            return None
+        return duration
 
     def _diagnostic_preview_value(self, key: str, value: object) -> bool | int | str | None:
         if key in _DIAGNOSTIC_PREVIEW_FLAGS:
@@ -337,9 +347,9 @@ class ChatService:
         timing = runtime.get("timing_ms")
         if isinstance(timing, dict):
             diagnostics["timing_ms"] = {
-                key: self._diagnostic_count(timing.get(key))
+                key: self._diagnostic_duration(timing.get(key))
                 for key in ("retrieval_ms", "generation_provider_ms", "embedding_provider_ms", "persistence_ms")
-                if self._diagnostic_count(timing.get(key)) is not None
+                if self._diagnostic_duration(timing.get(key)) is not None
             }
         diagnostics["trace_preview"] = self._diagnostic_trace_preview(trace)
         return diagnostics
