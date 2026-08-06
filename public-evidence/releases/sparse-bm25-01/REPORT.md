@@ -51,7 +51,7 @@ outside these aggregates.
 | context_precision@5 | 0.2000 |
 | context_precision@10 | 0.1000 |
 | first_gold_rank | 1.1667 |
-| retrieval_duration_ms | 0.3554 |
+| retrieval_duration_ms | 0.3458 |
 
 ### First Gold Evidence Rank
 
@@ -59,7 +59,7 @@ outside these aggregates.
 
 ### Retrieval Duration
 
-- retrieval_duration_ms: 0.36 (mean per-query
+- retrieval_duration_ms: 0.35 (mean per-query
   in-process Sparse BM25 search time)
 
 ## Boundary Query Diagnostics
@@ -71,8 +71,8 @@ in `sections/retrieval.json`.
 
 ## Run Conditions
 
-- source revision: `95dad2987a182f5a250f244ac96e58bb11f50bf8`
-- run id: `20260806T110748Z-105402-20694`
+- source revision: `ece8f00f8d3aba65332aeb780a665820063a8710`
+- run id: `0434b82787cf4173ba567a2c884906ba`
 - mode: sparse_bm25
 - output depths: 3, 5, 10
 - tokenizer: literal_preserving_jieba

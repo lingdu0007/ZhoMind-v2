@@ -2,7 +2,7 @@
   "section": "retrieval",
   "schema_version": "1.0.0",
   "run_ids": [
-    "20260806T110748Z-105402-20694"
+    "0434b82787cf4173ba567a2c884906ba"
   ],
   "corpus_id": "project-derived-corpus",
   "query_set_id": "evaluation-query-set",
@@ -55,7 +55,7 @@
     {
       "name": "retrieval_duration_ms",
       "mode": "sparse_bm25",
-      "value": 0.355393,
+      "value": 0.345844,
       "unit": "ms"
     }
   ],
