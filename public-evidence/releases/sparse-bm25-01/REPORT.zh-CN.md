@@ -49,7 +49,7 @@ Boundary Query Diagnostics 不计入这些聚合。
 | context_precision@5 | 0.2000 |
 | context_precision@10 | 0.1000 |
 | first_gold_rank | 1.1667 |
-| retrieval_duration_ms | 0.3554 |
+| retrieval_duration_ms | 0.3458 |
 
 ### First Gold Evidence Rank（首个 Gold 证据排名）
 
@@ -58,7 +58,7 @@ Boundary Query Diagnostics 不计入这些聚合。
 
 ### Retrieval Duration（检索耗时）
 
-- retrieval_duration_ms: 0.36（12 条 answerable
+- retrieval_duration_ms: 0.35（12 条 answerable
   查询的每条查询进程内 Sparse BM25 检索平均耗时）
 
 ## Boundary Query Diagnostics（边界查询诊断）
@@ -69,8 +69,8 @@ Boundary Query Diagnostics 不计入这些聚合。
 
 ## Run Conditions（运行条件）
 
-- source revision: `95dad2987a182f5a250f244ac96e58bb11f50bf8`
-- run id: `20260806T110748Z-105402-20694`
+- source revision: `ece8f00f8d3aba65332aeb780a665820063a8710`
+- run id: `0434b82787cf4173ba567a2c884906ba`
 - mode: sparse_bm25
 - output depths: 3、5、10
 - tokenizer: literal_preserving_jieba
