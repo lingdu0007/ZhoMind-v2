@@ -3,7 +3,7 @@
 # so the image never silently resolves dependencies outside the committed lock.
 # The dev extras (pytest, ruff, pyright) are intentionally excluded; the project
 # itself is installed from the lock, matching the previous `pip install .`.
-FROM ghcr.io/astral-sh/uv:0.11.15-python3.11-slim
+FROM ghcr.io/astral-sh/uv:0.5.9-python3.11-bookworm-slim
 
 WORKDIR /app
 ENV UV_LINK_MODE=copy \
