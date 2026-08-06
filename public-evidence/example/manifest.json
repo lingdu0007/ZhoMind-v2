@@ -1,0 +1,112 @@
+{
+  "artifacts": [
+    {
+      "kind": "manifest",
+      "path": "manifest.json",
+      "role": "manifest",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "kind": "retrieval",
+      "path": "sections/retrieval.json",
+      "role": "section",
+      "sha256": "361edb54151f1f28210e8e3c70c4da70d28589e0e823b4b20b0bf8ddbe17cc9d"
+    },
+    {
+      "kind": "answer",
+      "path": "sections/answer.json",
+      "role": "section",
+      "sha256": "56bfa45a63e516f3b413ebea1f7d493c969320f3763687868afb95f4240afb92"
+    },
+    {
+      "kind": "prompt-injection",
+      "path": "sections/prompt-injection.json",
+      "role": "section",
+      "sha256": "dd1a1e254f59bca4fb5c4e9bdf6ea7094437446c7e8d707612e0be6b9da7e502"
+    },
+    {
+      "kind": "performance",
+      "path": "sections/performance.json",
+      "role": "section",
+      "sha256": "c473ca4ef44e66fba07b6c60ac30cee243a2149d608cf162104fb8d694cd8bee"
+    },
+    {
+      "kind": "production-acceptance",
+      "path": "sections/production-acceptance.json",
+      "role": "section",
+      "sha256": "eacb1f5bd16adb9afcc6af05e6f7082f0bdec44a1bb4b77f2ebc962457bbd34f"
+    },
+    {
+      "kind": "report",
+      "path": "REPORT.md",
+      "role": "report-en",
+      "sha256": "bab554de45ccd343ad238981bb679c50fa06e139b1d9a02a675ef5d5b5eef9a7"
+    },
+    {
+      "kind": "report",
+      "path": "REPORT.zh-CN.md",
+      "role": "report-zh",
+      "sha256": "b9eb60cde718f05483a2da3f671d14b8538b912ac97719c880637422484c6a0e"
+    }
+  ],
+  "bundle_id": "example-bundle-001",
+  "canonical_language": "en",
+  "kind": "public-evidence-bundle",
+  "limits": [
+    {
+      "kind": "qualification",
+      "name": "no_generalization",
+      "statement": "Metrics describe only the recorded run conditions and do not generalize beyond them."
+    },
+    {
+      "kind": "exclusion",
+      "name": "placeholder_not_evidence",
+      "statement": "Every value in this example bundle is a non-sensitive placeholder; it is not production evidence."
+    },
+    {
+      "kind": "target",
+      "name": "twelve_second_p95_target",
+      "statement": "The twelve-second P95 remains a product target until a recorded run satisfies it."
+    }
+  ],
+  "mirror_language": "zh-CN",
+  "provenance": {
+    "corpora": [
+      {
+        "corpus_id": "project-derived-corpus",
+        "description": "Example corpus placeholder for the contract demonstration; not a real evaluation corpus.",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "version": "1.0.0"
+      }
+    ],
+    "query_sets": [
+      {
+        "query_count": 16,
+        "query_set_id": "evaluation-query-set",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "version": "1.0.0"
+      }
+    ],
+    "revisions": [
+      "f2b6c4a8e0d1f3a5b7c9d1e3f5a7b9c1d3e5f7a9"
+    ],
+    "runs": [
+      {
+        "finished_at": "2026-08-05T00:30:00Z",
+        "kind": "retrieval-evaluation",
+        "outcome": "passed",
+        "run_id": "example-run-20260805",
+        "source_revision": "f2b6c4a8e0d1f3a5b7c9d1e3f5a7b9c1d3e5f7a9",
+        "started_at": "2026-08-05T00:00:00Z"
+      }
+    ]
+  },
+  "release_candidate": {
+    "created_at": "2026-08-05T00:00:00Z",
+    "identity": "portfolio-release-candidate-01",
+    "revision": "f2b6c4a8e0d1f3a5b7c9d1e3f5a7b9c1d3e5f7a9",
+    "status": "candidate"
+  },
+  "schema_version": "1.0.0",
+  "source_revision": "f2b6c4a8e0d1f3a5b7c9d1e3f5a7b9c1d3e5f7a9"
+}

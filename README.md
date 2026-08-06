@@ -22,13 +22,18 @@ npm run build
 npx playwright install chromium
 npm run test:browser
 
-# Repository-wide: bilingual parity and secret scan (pure Python 3, stdlib only)
+# Repository-wide: bilingual parity, bundle validation, and secret scan (pure Python 3, stdlib only)
 cd ..
 python3 scripts/check-docs-parity.py
+python3 scripts/validate-evidence-bundle.py --all
 python3 scripts/scan-secrets.py
 ```
 
 The browser journeys spawn the real disposable FastAPI acceptance app through `uv run --no-sync`, so keep `backend` synced before running them.
+
+## Public Evidence Bundle
+
+The Portfolio Release publishes one versioned, non-sensitive Public Evidence Bundle. The contract lives in `public-evidence/contract/` (manifest and typed section schemas, bilingual contract document); `public-evidence/example/` is the minimal complete example. The deterministic validator `scripts/validate-evidence-bundle.py` enforces the field allowlists, provenance cross-references, artifact hashes, bilingual report parity, and sensitive-shape exclusion in the PR Gate. See `public-evidence/contract/README.md` for the full contract.
 
 ## Minimal Local Run
 

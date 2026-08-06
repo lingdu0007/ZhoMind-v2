@@ -1,0 +1,108 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://zhomind.invalid/public-evidence/sections/performance.schema.json",
+  "title": "Public Evidence Bundle section: performance decomposition",
+  "description": "Measured latency decomposition at one and five concurrent authenticated requests. TTFT and total percentiles, error rate, and separate retrieval, generation-provider, and persistence durations. The twelve-second P95 remains a product target until a recorded run satisfies it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["section", "schema_version", "run_ids", "load", "metrics", "target"],
+  "properties": {
+    "section": {
+      "const": "performance"
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "run_ids": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "load": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["concurrency", "requests"],
+      "properties": {
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of concurrent authenticated requests, e.g. 1 or 5."
+        },
+        "requests": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ttft_ms", "total_ms", "error_rate", "retrieval_ms", "provider_ms", "persistence_ms"],
+      "properties": {
+        "ttft_ms": {
+          "$comment": "Percentile object; inline to keep the validator's JSON Schema subset simple.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["p50", "p95", "p99"],
+          "properties": {
+            "p50": { "type": "number", "minimum": 0 },
+            "p95": { "type": "number", "minimum": 0 },
+            "p99": { "type": "number", "minimum": 0 }
+          }
+        },
+        "total_ms": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["p50", "p95", "p99"],
+          "properties": {
+            "p50": { "type": "number", "minimum": 0 },
+            "p95": { "type": "number", "minimum": 0 },
+            "p99": { "type": "number", "minimum": 0 }
+          }
+        },
+        "error_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "retrieval_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "provider_ms": {
+          "type": "number",
+          "minimum": 0,
+          "description": "External generation-provider time, reported separately from application-controlled stages."
+        },
+        "persistence_ms": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["p95_seconds_target", "met", "note"],
+      "properties": {
+        "p95_seconds_target": {
+          "const": 12,
+          "description": "The existing product target; a value of 12 is not a claim that it was met."
+        },
+        "met": {
+          "type": "boolean",
+          "description": "Whether the recorded run actually satisfied the target."
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 2000,
+          "description": "Run-condition qualification or limitation."
+        }
+      }
+    }
+  }
+}
