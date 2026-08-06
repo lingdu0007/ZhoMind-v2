@@ -9,6 +9,7 @@ from typing import Any
 from app.extensions.provider_router import ProviderRouter
 from app.rag.answer_evidence import AnswerEvidence, evidence_summary_from_trace
 from app.rag.interfaces import RelevanceJudge, Reranker, Retriever
+from app.rag.prompt_regions import build_generation_prompt
 from app.rag.runtime.graph_runner import RagGraphRunner
 
 
@@ -127,13 +128,6 @@ class EvidenceGatedAnswerExecutor:
     def _is_smalltalk(self, question: str) -> bool:
         compact = self._compact(question.strip())
         return bool(compact) and compact in self._SMALLTALK_PATTERNS
-
-    @staticmethod
-    def _prompt(question: str, evidence: tuple[AnswerEvidence, ...]) -> str:
-        lines = ["请基于以下证据回答用户问题。", f"问题：{question}"]
-        lines.extend(f"证据{index}：{item.excerpt}" for index, item in enumerate(evidence, start=1))
-        lines.append("请给出简洁中文回答。")
-        return "\n".join(lines)
 
     @staticmethod
     def _runtime_trace(runtime_result: dict[str, Any]) -> dict[str, Any]:
@@ -273,10 +267,12 @@ class EvidenceGatedAnswerExecutor:
             evidence = ()
             gate_reason = "reject_insufficient_evidence"
         else:
+            generation_prompt = build_generation_prompt(normalized_question, evidence)
             provider_result = await self._provider_router.complete(
                 primary=self._primary_provider,
                 fallbacks=[],
-                prompt=self._prompt(normalized_question, evidence),
+                prompt=generation_prompt.user_prompt,
+                system_prompt=generation_prompt.system_prompt,
             )
             completion = str(provider_result.get("text") or "").strip()
             if completion:
