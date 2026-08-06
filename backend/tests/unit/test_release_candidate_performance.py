@@ -189,3 +189,27 @@ def test_stream_sample_measures_first_sse_body_byte_and_uses_only_diagnostics(mo
     assert sample.embedding_provider_ms == 5
     assert sample.persistence_ms == 3
     assert sample.total_ms >= sample.ttft_ms >= 0
+
+
+def test_stream_sample_classifies_closed_non_answer_outcomes(monkeypatch) -> None:
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def read(self, amount: int = -1) -> bytes:
+            payload = b'event: outcome\ndata: {"outcome":"generation_unavailable"}\n\n'
+            if amount == 1:
+                return payload[:1]
+            return payload[1:]
+
+    monkeypatch.setattr(performance_live, "urlopen", lambda *_args, **_kwargs: _Response())
+
+    sample = performance_live._stream_sample("https://example.invalid", "token", "private question", 5)
+
+    assert sample.outcome == "generation_unavailable"
+    assert sample.error_code == "OUTCOME_GENERATION_UNAVAILABLE"

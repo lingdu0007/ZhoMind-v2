@@ -50,7 +50,14 @@ def _stream_sample(base_url: str, token: str, question: str, timeout: float) -> 
     outcome, diagnostics = _stream_diagnostics(raw)
     timing = diagnostics.get("timing_ms") if isinstance(diagnostics, dict) and isinstance(diagnostics.get("timing_ms"), dict) else {}
     fallback = diagnostics.get("fallback") if isinstance(diagnostics, dict) and isinstance(diagnostics.get("fallback"), dict) else {}
-    error = None if status == 200 and outcome == "evidence_gated_answer" and timing else "UNEXPECTED_OUTCOME_OR_TIMING"
+    if status != 200:
+        error = f"HTTP_{status or 0}"
+    elif outcome != "evidence_gated_answer":
+        error = f"OUTCOME_{outcome.upper()}"
+    elif not timing:
+        error = "TIMING_MISSING"
+    else:
+        error = None
     return PerformanceSample(
         ttft_ms=ttft,
         total_ms=total,
