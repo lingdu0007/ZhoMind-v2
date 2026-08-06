@@ -11,6 +11,7 @@ profile=$1
 repository_root=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)
 workspace_root=$(cd "$repository_root/../.." && pwd)
 runtime_config="$repository_root/backend/.env"
+temporary_runtime_config=""
 
 current_branch=$(git -C "$repository_root" branch --show-current)
 if [[ -z "$current_branch" || "$current_branch" == "main" ]]; then
@@ -23,43 +24,57 @@ if [[ -n "$(git -C "$repository_root" status --porcelain --untracked-files=all)"
   exit 2
 fi
 
-# The evaluate profile is a deterministic in-process run over the frozen
-# evaluation inputs: it needs no Compose stack, no runtime configuration, and
-# no provider. It writes the internal run manifest and the public Evidence
-# Bundle through the locked backend environment (uv run --frozen).
-if [[ "$1" == "evaluate" ]]; then
-  run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
-  evidence_output=${RETRIEVAL_EVIDENCE_OUTPUT_DIR:-"$workspace_root/evidence/runs"}
-  bundle_dir=${RETRIEVAL_EVIDENCE_BUNDLE_DIR:-"$repository_root/public-evidence/releases/sparse-bm25-01"}
-  source_revision=$(git -C "$repository_root" rev-parse HEAD)
-  mkdir -p "$evidence_output"
-  if command -v uv >/dev/null 2>&1; then
-    uv_bin=(uv)
-  elif [[ -x "$HOME/.local/bin/uv" ]]; then
-    uv_bin=("$HOME/.local/bin/uv")
-  else
-    printf 'uv is required to run retrieval-evidence evaluate\n' >&2
-    exit 2
-  fi
-  (
-    cd "$repository_root/backend"
-    "${uv_bin[@]}" run --frozen python -m app.retrieval_evidence evaluate \
-      --output-dir "$evidence_output" \
-      --source-revision "$source_revision" \
-      --run-id "$run_id" \
-      --evaluation-dir "$repository_root/evaluation" \
-      --bundle-dir "$bundle_dir"
-  )
-  exit $?
-fi
-
-if [[ ! -f "$runtime_config" ]]; then
-  printf 'missing ignored runtime configuration: backend/.env\n' >&2
+if ! command -v docker >/dev/null 2>&1; then
+  printf 'docker is required to run retrieval-evidence\n' >&2
   exit 2
 fi
 
-if ! command -v docker >/dev/null 2>&1; then
-  printf 'docker is required to run retrieval-evidence smoke\n' >&2
+source_runtime_config=${RETRIEVAL_EVIDENCE_SOURCE_CONFIG:-}
+if [[ -n "$source_runtime_config" ]]; then
+  if [[ ! -r "$source_runtime_config" ]]; then
+    printf 'missing ignored runtime configuration: backend/.env or RETRIEVAL_EVIDENCE_SOURCE_CONFIG\n' >&2
+    exit 2
+  fi
+
+  # The isolated stack only needs the active embedding configuration. Extract
+  # exact KEY=value lines without shell-evaluating the protected source file,
+  # then keep every stateful service on the per-run Compose network.
+  temporary_runtime_config=$(mktemp "$repository_root/backend/.retrieval-evidence.env.XXXXXX")
+  if ! awk '
+    BEGIN {
+      needed["EMBEDDING_API_KEY"] = 1
+      needed["EMBEDDING_BASE_URL"] = 1
+      needed["EMBEDDING_MODEL"] = 1
+      needed["DENSE_EMBEDDING_DIM"] = 1
+    }
+    {
+      separator = index($0, "=")
+      if (separator == 0) next
+      key = substr($0, 1, separator - 1)
+      if (key in needed && !seen[key]++) print $0
+    }
+    END {
+      for (key in needed) if (!seen[key]) exit 2
+    }
+  ' "$source_runtime_config" > "$temporary_runtime_config"; then
+    rm -f "$temporary_runtime_config"
+    printf 'source runtime configuration is missing an active embedding setting\n' >&2
+    exit 2
+  fi
+  {
+    printf '%s\n' 'DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/zhomind_app'
+    printf '%s\n' 'REDIS_URL=redis://redis:6379/0'
+    printf '%s\n' 'MILVUS_URI=http://milvus:19530'
+    printf '%s\n' 'MINIO_ENDPOINT=minio:9000'
+    printf '%s\n' 'MINIO_ACCESS_KEY=minioadmin'
+    printf '%s\n' 'MINIO_SECRET_KEY=minioadmin'
+    printf '%s\n' 'MINIO_SECURE=false'
+    printf '%s\n' 'JWT_SECRET=retrieval-evidence-isolated-jwt-secret'
+  } >> "$temporary_runtime_config"
+  mv "$temporary_runtime_config" "$runtime_config"
+  temporary_runtime_config="$runtime_config"
+elif [[ ! -f "$runtime_config" ]]; then
+  printf 'missing ignored runtime configuration: backend/.env or RETRIEVAL_EVIDENCE_SOURCE_CONFIG\n' >&2
   exit 2
 fi
 
@@ -81,10 +96,17 @@ export ATTU_HOST_PORT=${RETRIEVAL_EVIDENCE_ATTU_PORT:-18080}
 
 evidence_output=${RETRIEVAL_EVIDENCE_OUTPUT_DIR:-"$workspace_root/evidence/runs"}
 mkdir -p "$DOCKER_VOLUME_DIRECTORY" "$evidence_output"
+if [[ "$profile" == "evaluate" ]]; then
+  bundle_dir=${RETRIEVAL_EVIDENCE_BUNDLE_DIR:-"$repository_root/public-evidence/releases/dense-hybrid-rrf-01"}
+  mkdir -p "$bundle_dir"
+fi
 
 compose=(docker compose -p "$COMPOSE_PROJECT_NAME")
 cleanup() {
   "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
+  if [[ -n "$temporary_runtime_config" ]]; then
+    rm -f "$temporary_runtime_config"
+  fi
 }
 trap cleanup EXIT
 
@@ -93,15 +115,29 @@ trap cleanup EXIT
 for _ in $(seq 1 60); do
   if curl -fsS "http://127.0.0.1:${BACKEND_HOST_PORT}/api/v1/health" >/dev/null; then
     source_revision=$(git -C "$repository_root" rev-parse HEAD)
-    "${compose[@]}" run --rm --no-deps \
-      --volume "$evidence_output:/evidence" \
-      --volume "$repository_root/evaluation:/evaluation:ro" \
-      backend python -m app.retrieval_evidence "$profile" \
-      --base-url http://backend:8000 \
-      --output-dir /evidence \
-      --source-revision "$source_revision" \
-      --run-id "$run_id" \
-      --evaluation-dir /evaluation
+    if [[ "$profile" == "evaluate" ]]; then
+      "${compose[@]}" run --rm --no-deps \
+        --volume "$evidence_output:/evidence" \
+        --volume "$repository_root/evaluation:/evaluation:ro" \
+        --volume "$bundle_dir:/bundle" \
+        backend python -m app.retrieval_evidence evaluate \
+        --output-dir /evidence \
+        --source-revision "$source_revision" \
+        --run-id "$run_id" \
+        --evaluation-dir /evaluation \
+        --bundle-dir /bundle \
+        --mode all
+    else
+      "${compose[@]}" run --rm --no-deps \
+        --volume "$evidence_output:/evidence" \
+        --volume "$repository_root/evaluation:/evaluation:ro" \
+        backend python -m app.retrieval_evidence "$profile" \
+        --base-url http://backend:8000 \
+        --output-dir /evidence \
+        --source-revision "$source_revision" \
+        --run-id "$run_id" \
+        --evaluation-dir /evaluation
+    fi
     exit $?
   fi
   sleep 2

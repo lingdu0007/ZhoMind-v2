@@ -348,6 +348,67 @@ def retrieval_metric_errors(section: dict[str, object], rel_path: str) -> list[t
     return errors
 
 
+def retrieval_mode_provenance_errors(
+    section: dict[str, object],
+    rel_path: str,
+    *,
+    source_revision: str,
+    known_run_ids: set[str],
+    corpora: list[dict[str, object]],
+    query_sets: list[dict[str, object]],
+) -> list[tuple[str, str]]:
+    """Reject provenance drift across an explicitly controlled mode comparison."""
+    records = section.get("conditions", {})
+    if not isinstance(records, dict) or "mode_provenance" not in records:
+        return []
+    mode_provenance = records.get("mode_provenance")
+    modes = section.get("modes")
+    if not isinstance(mode_provenance, list) or not isinstance(modes, list):
+        return []  # schema validation already reports structural violations
+
+    errors: list[tuple[str, str]] = []
+    expected_modes = {mode for mode in modes if isinstance(mode, str)}
+    seen_modes: set[str] = set()
+    identities: set[str] = set()
+    corpus_sha256 = next(
+        (str(item.get("sha256", "")) for item in corpora if item.get("corpus_id") == section.get("corpus_id")),
+        "",
+    )
+    query_set_sha256 = next(
+        (str(item.get("sha256", "")) for item in query_sets if item.get("query_set_id") == section.get("query_set_id")),
+        "",
+    )
+    for item in mode_provenance:
+        if not isinstance(item, dict):
+            continue
+        mode = item.get("mode")
+        if not isinstance(mode, str):
+            continue
+        if mode in seen_modes:
+            errors.append(("cross-mode provenance", f"{rel_path}: duplicate provenance for mode {mode}"))
+        seen_modes.add(mode)
+        if item.get("run_id") not in known_run_ids:
+            errors.append(("cross-mode provenance", f"{rel_path}: mode {mode} references an unknown run_id"))
+        if item.get("source_revision") != source_revision:
+            errors.append(("cross-mode provenance", f"{rel_path}: mode {mode} source_revision differs from bundle source_revision"))
+        if item.get("corpus_sha256") != corpus_sha256:
+            errors.append(("cross-mode provenance", f"{rel_path}: mode {mode} corpus_sha256 differs from bundle provenance"))
+        if item.get("query_set_sha256") != query_set_sha256:
+            errors.append(("cross-mode provenance", f"{rel_path}: mode {mode} query_set_sha256 differs from bundle provenance"))
+        identity = item.get("embedding_identity")
+        if isinstance(identity, str):
+            identities.add(identity)
+
+    if seen_modes != expected_modes:
+        errors.append(("cross-mode provenance", f"{rel_path}: mode_provenance modes do not equal retrieval modes"))
+    if len(identities) != 1:
+        errors.append(("cross-mode provenance", f"{rel_path}: comparison modes do not share one embedding identity"))
+    condition_identity = records.get("model_identity")
+    if identities and condition_identity not in identities:
+        errors.append(("cross-mode provenance", f"{rel_path}: conditions.model_identity differs from mode provenance"))
+    return errors
+
+
 def validate_bundle(
     bundle_dir: Path,
     manifest_schema: dict[str, object],
@@ -510,6 +571,16 @@ def validate_bundle(
         # Metric completeness and unit bounds for retrieval sections.
         if kind == "retrieval":
             errors.extend(retrieval_metric_errors(section, rel_path))
+            errors.extend(
+                retrieval_mode_provenance_errors(
+                    section,
+                    rel_path,
+                    source_revision=source_revision,
+                    known_run_ids=known_run_ids,
+                    corpora=corpora,
+                    query_sets=query_sets,
+                )
+            )
             conditions = section.get("conditions")
             if isinstance(conditions, dict):
                 corpus_version = conditions.get("corpus_version")
