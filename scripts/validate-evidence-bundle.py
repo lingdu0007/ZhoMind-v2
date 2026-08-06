@@ -100,7 +100,8 @@ def scan_sensitive_shapes(text: str) -> list[str]:
 # Minimal JSON Schema (draft-07 subset) validator.
 # The subset covers exactly the keywords used by the contract schemas:
 # type, const, enum, pattern, minLength, maxLength, minimum, maximum,
-# required, properties, additionalProperties, items, minItems.
+# required, properties, additionalProperties, items, minItems, maxItems,
+# contains, allOf, if, then.
 # ---------------------------------------------------------------------------
 
 
@@ -184,6 +185,23 @@ def schema_errors(instance: object, schema: dict[str, object], path: str) -> lis
         min_items = schema.get("minItems")
         if isinstance(min_items, int) and len(instance) < min_items:
             errors.append(f"{path}: fewer than minItems {min_items}")
+        max_items = schema.get("maxItems")
+        if isinstance(max_items, int) and len(instance) > max_items:
+            errors.append(f"{path}: more than maxItems {max_items}")
+        contains = schema.get("contains")
+        if isinstance(contains, dict) and not any(not schema_errors(item, contains, f"{path}[{index}]") for index, item in enumerate(instance)):
+            errors.append(f"{path}: no item matches contains schema")
+
+    all_of = schema.get("allOf")
+    if isinstance(all_of, list):
+        for item in all_of:
+            if isinstance(item, dict):
+                errors.extend(schema_errors(instance, item, path))
+
+    condition = schema.get("if")
+    consequent = schema.get("then")
+    if isinstance(condition, dict) and isinstance(consequent, dict) and not schema_errors(instance, condition, path):
+        errors.extend(schema_errors(instance, consequent, path))
 
     return errors
 
@@ -358,16 +376,26 @@ def retrieval_mode_provenance_errors(
     query_sets: list[dict[str, object]],
 ) -> list[tuple[str, str]]:
     """Reject provenance drift across an explicitly controlled mode comparison."""
-    records = section.get("conditions", {})
-    if not isinstance(records, dict) or "mode_provenance" not in records:
-        return []
-    mode_provenance = records.get("mode_provenance")
     modes = section.get("modes")
-    if not isinstance(mode_provenance, list) or not isinstance(modes, list):
-        return []  # schema validation already reports structural violations
+    comparison_modes = {"sparse_bm25", "dense", "hybrid_rrf"}
+    mode_values = {mode for mode in modes if isinstance(mode, str)} if isinstance(modes, list) else set()
+    if mode_values != comparison_modes or not isinstance(modes, list) or len(modes) != len(comparison_modes):
+        return []
+
+    records = section.get("conditions", {})
+    if not isinstance(records, dict):
+        return [("cross-mode provenance", f"{rel_path}: comparison conditions are missing")]
+    mode_provenance = records.get("mode_provenance")
+    if not isinstance(mode_provenance, list):
+        return [("cross-mode provenance", f"{rel_path}: comparison mode_provenance is missing")]
 
     errors: list[tuple[str, str]] = []
-    expected_modes = {mode for mode in modes if isinstance(mode, str)}
+    if records.get("candidate_depth") != 20:
+        errors.append(("cross-mode provenance", f"{rel_path}: comparison candidate_depth must equal 20"))
+    if not isinstance(records.get("model_identity"), str) or not records["model_identity"]:
+        errors.append(("cross-mode provenance", f"{rel_path}: comparison model_identity is missing"))
+
+    expected_modes = comparison_modes
     seen_modes: set[str] = set()
     identities: set[str] = set()
     corpus_sha256 = next(
@@ -664,6 +692,17 @@ def bundle_id_of(bundle_dir: Path) -> str:
     return "<invalid>"
 
 
+def schema_version_of(bundle_dir: Path) -> str:
+    manifest_path = bundle_dir / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return "<invalid>"
+    if isinstance(manifest, dict) and isinstance(manifest.get("schema_version"), str):
+        return manifest["schema_version"]
+    return "<invalid>"
+
+
 def _display(bundle_dir: Path) -> str:
     try:
         return bundle_dir.resolve().relative_to(REPO_ROOT).as_posix()
@@ -718,7 +757,7 @@ def main(argv: list[str] | None = None) -> int:
             for check, detail in errors:
                 print(f"ERROR {_display(bundle_dir)}: {check} — {detail}")
         else:
-            print(f"OK {_display(bundle_dir)}: bundle {bundle_id} schema 1.0.0 passes all contract checks")
+            print(f"OK {_display(bundle_dir)}: bundle {bundle_id} schema {schema_version_of(bundle_dir)} passes all contract checks")
     return 1 if failed else 0
 
 

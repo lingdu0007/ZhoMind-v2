@@ -11,7 +11,7 @@
       "const": "retrieval"
     },
     "schema_version": {
-      "const": "1.0.0"
+      "enum": ["1.0.0", "1.1.0"]
     },
     "run_ids": {
       "type": "array",
@@ -199,5 +199,34 @@
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["modes"],
+        "properties": {
+          "modes": {
+            "minItems": 3,
+            "maxItems": 3,
+            "allOf": [
+              {"contains": {"const": "sparse_bm25"}},
+              {"contains": {"const": "dense"}},
+              {"contains": {"const": "hybrid_rrf"}}
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "schema_version": {"const": "1.1.0"},
+          "conditions": {
+            "required": ["candidate_depth", "model_identity", "mode_provenance"],
+            "properties": {
+              "candidate_depth": {"const": 20}
+            }
+          }
+        }
+      }
+    }
+  ]
 }

@@ -69,11 +69,18 @@ query-set identity are reproducible from the committed files without storing cre
 
 ## Scope
 
-This directory freezes baseline inputs only. Genuine Sparse BM25 (Literal-Preserving
-Tokenization) and its answerable-query metrics are implemented by the Evaluation Retriever's
-`retrieval-evidence evaluate` command and exported as a Public Evidence Bundle; Dense and
-Hybrid RRF retrieval, reranking, and chunking ablations belong to later, separately labeled
-Retrieval Evidence work.
+This directory freezes the shared inputs for the three Evaluation Retriever modes:
+`sparse_bm25`, `dense`, and `hybrid_rrf`. The `retrieval-evidence evaluate` command holds the
+corpus and query-set hashes, QA Chunking, output depths, and metrics constant, then exports their
+compatible traces and metrics as one Public Evidence Bundle. Dense and Hybrid runs require an
+active embedding configuration and must follow the project's approved isolated remote-run
+procedure; the command never prints or exports its runtime configuration.
+
+Hybrid RRF takes a fixed top-20 candidate list from each Sparse and Dense retriever, deduplicates
+by `chunk_id`, and fuses reciprocal ranks with `k = 60`. It does not rerank candidates or average
+retriever scores. A comparison report may conclude that Dense or Hybrid does not improve the
+controlled metrics. Reranking and chunking ablations remain separately labeled Retrieval Evidence
+work.
 
 Run manifests project the Migration Retrieval fallback trace as a normalized, non-sensitive
 subset: `provider_error` is recorded as `code` and `type` only (never the provider message, which

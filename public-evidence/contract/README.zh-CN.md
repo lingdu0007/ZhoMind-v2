@@ -1,6 +1,6 @@
 # Public Evidence Bundle 契约
 
-版本：**1.0.0**（schema `evidence-bundle.schema.json`，sections schema 位于 `sections/`）
+版本：**1.1.0**（schema `evidence-bundle.schema.json`，sections schema 位于 `sections/`）
 
 ## 目的
 
@@ -14,7 +14,7 @@
 
 ```
 <bundle-dir>/
-  manifest.json                     # 必需：allowlist manifest（schema 1.0.0）
+  manifest.json                     # 必需：allowlist manifest（schema 1.1.0）
   sections/
     retrieval.json                  # 可选类型化 section
     answer.json                     # 可选类型化 section
@@ -33,7 +33,7 @@
 
 | 字段 | 类型 | 规则 |
 | --- | --- | --- |
-| `schema_version` | string | 必须等于 `1.0.0`。 |
+| `schema_version` | string | legacy bundle 使用 `1.0.0`；受控三模式检索对比必须使用 `1.1.0`。 |
 | `bundle_id` | string | `[a-z0-9][a-z0-9-]{0,127}`，在同一次调用（`--all` 或显式目录）检查的 bundle 间唯一。 |
 | `kind` | string | 必须等于 `public-evidence-bundle`。 |
 | `canonical_language` | string | 必须等于 `en`。 |
@@ -61,6 +61,8 @@
 | `sections/production-acceptance.json` | `production-acceptance.schema.json` | `path`（必须等于 `/api/v1/chat`）、`results`（有界的逐 check 结果与限制）。 |
 
 每个声明的评估 mode（`modes` 中除 `migration` 之外的所有 mode；`migration` 是单独报告的可用性机制）都必须携带完整的八项指标族。值有单位约束：`ratio` 在 [0, 1]、`rank` >= 1、`ms` >= 0。缺失指标族或越界值会以 `metric-completeness` 诊断失败。只报告 `migration` 可用性的 retrieval section 可以携带空的 `metrics` 数组。
+
+精确三模式对比（`sparse_bm25`、`dense` 与 `hybrid_rrf`，且不含 `migration` mode）属于 `1.1.0` retrieval section。它必须记录 `conditions.candidate_depth = 20`、一个非敏感 `model_identity`，以及每个 mode 一项 `mode_provenance`。每项携带 mode 的 run identity、source revision、corpus hash、query-set hash 和 embedding identity；validator 会拒绝缺失字段或跨 mode drift。
 
 ## 敏感字段策略
 
@@ -117,7 +119,7 @@ python3 scripts/validate-evidence-bundle.py --list
 
 ## 版本化
 
-契约通过每个 schema 内的 `schema_version` 进行版本化。生产者今天总是写 `1.0.0`。未来的契约变更会在同一次变更中提升 schema 和 validator 中的版本；旧的 bundle 将因 `schema_version` 校验失败而不会被静默重新解释。
+契约通过每个 schema 内的 `schema_version` 进行版本化。版本 `1.1.0` 在本次变更中加入受控三模式检索对比规则及 validator 支持。既有 `1.0.0` bundle 使用显式 legacy 校验路径；只有三模式对比必须使用 `1.1.0`，因此 legacy evidence 不会被静默重解释为 comparison evidence。
 
 ## 术语
 
