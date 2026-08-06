@@ -1,28 +1,28 @@
 {
   "schema_version": "1.0.0",
-  "bundle_id": "live-prompt-injection-20260806t0905z",
+  "bundle_id": "live-prompt-injection-20260807t024600z",
   "kind": "public-evidence-bundle",
   "canonical_language": "en",
   "mirror_language": "zh-CN",
-  "source_revision": "35d439ffe5a635077cf3ef50feb03bbf2b24fb24",
+  "source_revision": "23efd1fcb2e2c71f43bfc84a1b2062d2899d7bef",
   "release_candidate": {
     "identity": "portfolio-release-candidate-06",
-    "revision": "35d439ffe5a635077cf3ef50feb03bbf2b24fb24",
+    "revision": "23efd1fcb2e2c71f43bfc84a1b2062d2899d7bef",
     "status": "candidate",
-    "created_at": "2026-08-06T08:19:58Z"
+    "created_at": "2026-08-06T18:46:44.039384+00:00"
   },
   "provenance": {
     "revisions": [
-      "35d439ffe5a635077cf3ef50feb03bbf2b24fb24"
+      "23efd1fcb2e2c71f43bfc84a1b2062d2899d7bef"
     ],
     "runs": [
       {
-        "run_id": "live-prompt-injection-20260806T0905Z",
+        "run_id": "live-prompt-injection-20260807T024600Z",
         "kind": "prompt-injection-run",
-        "source_revision": "35d439ffe5a635077cf3ef50feb03bbf2b24fb24",
-        "started_at": "2026-08-06T08:19:58.249759+00:00",
-        "finished_at": "2026-08-06T08:21:09.673395+00:00",
-        "outcome": "completed-with-exceptions"
+        "source_revision": "23efd1fcb2e2c71f43bfc84a1b2062d2899d7bef",
+        "started_at": "2026-08-06T18:46:44.039384+00:00",
+        "finished_at": "2026-08-06T18:47:38.412167+00:00",
+        "outcome": "passed"
       }
     ],
     "corpora": [],
@@ -39,31 +39,26 @@
       "kind": "prompt-injection",
       "path": "sections/prompt-injection.json",
       "role": "section",
-      "sha256": "3e803e4c1356a03b83c9fb2ad86fca39ac6e9132631570b8892381dc32ee2239"
+      "sha256": "8662f93774b7b0496fa3b2f3b16c9c59e37b58a1386112802c3e8ab3152df5db"
     },
     {
       "kind": "report",
       "path": "REPORT.md",
       "role": "report-en",
-      "sha256": "2623ce363bcff31221d417d49e6f40be44e3c1f4148191e3e9910e02795f36f8"
+      "sha256": "b55bca395cc90f9d1da8811cd0b1a4be16f7f7f7b222900d4e092892e3fd263e"
     },
     {
       "kind": "report",
       "path": "REPORT.zh-CN.md",
       "role": "report-zh",
-      "sha256": "522a39624d69d6275df0090f1aa4dad00e6dbc6287bcb1e3f55420990a918cf6"
+      "sha256": "3b976cb527694e06b1eca1abbd825321e01c88e9ac7809949ee458e0681c6555"
     }
   ],
   "limits": [
     {
       "kind": "qualification",
-      "name": "no_generalization",
+      "name": "bounded_live_observation",
       "statement": "These classifications describe one bounded live-provider run and do not generalize beyond it or to other providers or models."
-    },
-    {
-      "kind": "qualification",
-      "name": "provider_behavior_variance",
-      "statement": "Secret-extraction resistance varied between runs of the same revision; case pass/fail is recorded as observed, never smoothed."
     },
     {
       "kind": "exclusion",
