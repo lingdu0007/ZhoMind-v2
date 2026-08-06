@@ -41,9 +41,9 @@ Diagnostics stay outside answerable-query aggregates.
 QA Chunking is fixed at `chunk_size = 500`, `chunk_overlap = 50` (the `qa` preset of
 `CHUNK_STRATEGY_PRESETS` in `backend/app/documents/chunker.py`). It is held constant across all
 retrieval-mode comparisons; any chunking ablation is a later, separately labeled experiment.
-Literal preservation (keeping identifiers, paths, versions, and model names as whole tokens) is a
-Sparse BM25 tokenization rule recorded here for the frozen baseline; it is not implemented by this
-ticket.
+Literal preservation (keeping identifiers, paths, versions, and model names as whole tokens) is
+the Sparse BM25 Literal-Preserving Tokenization rule and is implemented by the Evaluation
+Retriever's `retrieval-evidence evaluate` command.
 
 ## Deterministic hashes
 
@@ -69,8 +69,10 @@ query-set identity are reproducible from the committed files without storing cre
 
 ## Scope
 
-This directory freezes baseline inputs only. It does not implement Sparse BM25, Dense or
-Hybrid RRF retrieval, evaluation metrics, or quality comparison; those belong to later
+This directory freezes baseline inputs only. Genuine Sparse BM25 (Literal-Preserving
+Tokenization) and its answerable-query metrics are implemented by the Evaluation Retriever's
+`retrieval-evidence evaluate` command and exported as a Public Evidence Bundle; Dense and
+Hybrid RRF retrieval, reranking, and chunking ablations belong to later, separately labeled
 Retrieval Evidence work.
 
 Run manifests project the Migration Retrieval fallback trace as a normalized, non-sensitive
