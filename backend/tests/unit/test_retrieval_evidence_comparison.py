@@ -15,7 +15,11 @@ import sys
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+
+from app import retrieval_evidence
 from app.evaluation.evaluate import (
     DENSE_CANDIDATE_DEPTH,
     METRIC_NAMES,
@@ -98,6 +102,9 @@ def test_comparison_bundle_records_shared_provenance_and_validator_rejects_drift
 
     section_path = bundle_dir / "sections" / "retrieval.json"
     section = json.loads(section_path.read_text(encoding="utf-8"))
+    bundle_manifest_path = bundle_dir / "manifest.json"
+    bundle_manifest = json.loads(bundle_manifest_path.read_text(encoding="utf-8"))
+    assert bundle_manifest["schema_version"] == "1.1.0"
     assert section["modes"] == ["sparse_bm25", "dense", "hybrid_rrf"]
     mode_provenance = section["conditions"]["mode_provenance"]
     assert {item["mode"] for item in mode_provenance} == set(manifest["modes"])
@@ -112,15 +119,20 @@ def test_comparison_bundle_records_shared_provenance_and_validator_rejects_drift
     )
     assert accepted.returncode == 0, accepted.stdout + accepted.stderr
 
+    del section["conditions"]["mode_provenance"]
+    _rewrite_section_artifact_hash(section_path, section, bundle_manifest_path, bundle_manifest)
+    missing_provenance = subprocess.run(
+        [sys.executable, str(VALIDATOR), str(bundle_dir)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert missing_provenance.returncode == 1
+    assert "cross-mode provenance" in missing_provenance.stdout
+
+    section["conditions"]["mode_provenance"] = mode_provenance
     mode_provenance[1]["corpus_sha256"] = "0" * 64
-    section_content = json.dumps(section, ensure_ascii=False, indent=2) + "\n"
-    section_path.write_text(section_content, encoding="utf-8")
-    bundle_manifest_path = bundle_dir / "manifest.json"
-    bundle_manifest = json.loads(bundle_manifest_path.read_text(encoding="utf-8"))
-    for artifact in bundle_manifest["artifacts"]:
-        if artifact["path"] == "sections/retrieval.json":
-            artifact["sha256"] = sha256(section_content.encode("utf-8")).hexdigest()
-    bundle_manifest_path.write_text(json.dumps(bundle_manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _rewrite_section_artifact_hash(section_path, section, bundle_manifest_path, bundle_manifest)
 
     rejected = subprocess.run(
         [sys.executable, str(VALIDATOR), str(bundle_dir)],
@@ -130,3 +142,83 @@ def test_comparison_bundle_records_shared_provenance_and_validator_rejects_drift
     )
     assert rejected.returncode == 1
     assert "cross-mode provenance" in rejected.stdout
+
+
+def _rewrite_section_artifact_hash(
+    section_path: Path,
+    section: dict,
+    bundle_manifest_path: Path,
+    bundle_manifest: dict,
+) -> None:
+    section_content = json.dumps(section, ensure_ascii=False, indent=2) + "\n"
+    section_path.write_text(section_content, encoding="utf-8")
+    for artifact in bundle_manifest["artifacts"]:
+        if artifact["path"] == "sections/retrieval.json":
+            artifact["sha256"] = sha256(section_content.encode("utf-8")).hexdigest()
+    bundle_manifest_path.write_text(json.dumps(bundle_manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_modes"),
+    [
+        ("dense", ("dense",)),
+        ("hybrid_rrf", ("hybrid_rrf",)),
+        ("all", ("sparse_bm25", "dense", "hybrid_rrf")),
+    ],
+)
+def test_evaluate_cli_selects_requested_comparison_modes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mode: str,
+    expected_modes: tuple[str, ...],
+) -> None:
+    settings = SimpleNamespace(
+        embedding_api_key="fixture-api-key",
+        embedding_base_url_normalized="https://fixture.invalid/v1",
+        embedding_model_normalized="fixture-model",
+    )
+    captured: dict[str, object] = {}
+
+    async def fake_run_retrieval_evaluation(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {
+            "outcome": "passed",
+            "run_id": kwargs["run_id"],
+            "modes": list(kwargs["modes"]),
+        }
+
+    monkeypatch.setattr(retrieval_evidence, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        retrieval_evidence.DenseEmbeddingContract,
+        "from_settings",
+        lambda _settings: SimpleNamespace(active=True),
+    )
+    monkeypatch.setattr(retrieval_evidence, "OpenAIEmbeddingProvider", lambda **_kwargs: object())
+    monkeypatch.setattr(retrieval_evidence, "build_embedding_contract_fingerprint", lambda _settings: "fixture")
+    monkeypatch.setattr(retrieval_evidence, "run_retrieval_evaluation", fake_run_retrieval_evaluation)
+
+    exit_code = retrieval_evidence.main(
+        [
+            "evaluate",
+            "--output-dir",
+            str(tmp_path / "runs"),
+            "--source-revision",
+            REVISION,
+            "--run-id",
+            "comparison-cli-test-run",
+            "--evaluation-dir",
+            str(EVALUATION_DIR),
+            "--mode",
+            mode,
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["modes"] == expected_modes
+    assert captured["embedding_identity"] == "fixture-model:fixture"
+    assert json.loads(capsys.readouterr().out) == {
+        "modes": list(expected_modes),
+        "outcome": "passed",
+        "run_id": "comparison-cli-test-run",
+    }
