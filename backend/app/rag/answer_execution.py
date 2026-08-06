@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
+from time import perf_counter
 from types import MappingProxyType
 from typing import Any
 
@@ -239,12 +240,14 @@ class EvidenceGatedAnswerExecutor:
                 question=normalized_question,
             )
 
+        retrieval_started = perf_counter()
         runtime_result = await self._runner.run(
             request_id=request_id,
             user_id=user_id,
             session_id=session_id,
             question=normalized_question,
         )
+        retrieval_ms = round((perf_counter() - retrieval_started) * 1000)
         evidence = tuple(
             item
             for candidate in runtime_result.get("answer_evidence") or []
@@ -268,12 +271,14 @@ class EvidenceGatedAnswerExecutor:
             gate_reason = "reject_insufficient_evidence"
         else:
             generation_prompt = build_generation_prompt(normalized_question, evidence)
+            generation_started = perf_counter()
             provider_result = await self._provider_router.complete(
                 primary=self._primary_provider,
                 fallbacks=[],
                 prompt=generation_prompt.user_prompt,
                 system_prompt=generation_prompt.system_prompt,
             )
+            generation_provider_ms = round((perf_counter() - generation_started) * 1000)
             completion = str(provider_result.get("text") or "").strip()
             if completion:
                 kind = AnswerOutcomeKind.EVIDENCE_GATED_ANSWER
@@ -282,7 +287,14 @@ class EvidenceGatedAnswerExecutor:
                 kind = AnswerOutcomeKind.GENERATION_UNAVAILABLE
                 text = self._GENERATION_UNAVAILABLE_REPLY
 
+        if not gate_passed:
+            generation_provider_ms = 0
+
         runtime_result["gate"] = {"passed": gate_passed, "reason": gate_reason}
+        runtime_result["timing_ms"] = {
+            "retrieval_ms": retrieval_ms,
+            "generation_provider_ms": generation_provider_ms,
+        }
         runtime_result["final_provider"] = provider_result.get("final_provider")
         runtime_result["provider_attempts"] = list(provider_result.get("provider_attempts") or [])
         runtime_result["fallback_hops"] = int(provider_result.get("fallback_hops") or 0)
