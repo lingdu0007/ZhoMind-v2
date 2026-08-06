@@ -87,6 +87,7 @@ class RetrieveNode:
             "provider": exec_detail["provider"],
             "fallback_used": exec_detail["fallback_used"],
             "provider_error": exec_detail["error"],
+            "embedding_provider_ms": retrieved.embedding_provider_ms,
         }
         state["provider_trace"]["retrieve"] = retrieve_detail
         state["trace_steps"].append(

@@ -19,7 +19,7 @@ A bundle is one directory containing a manifest, typed section files, and the bi
     retrieval.json                  # optional typed section
     answer.json                     # optional typed section
     prompt-injection.json           # optional typed section
-    performance.json                # optional typed section
+    performance-*.json              # optional typed sections; accepted candidates use c1 and c5 profiles
     production-acceptance.json      # optional typed section
   REPORT.md                         # required: English canonical report
   REPORT.zh-CN.md                   # required: complete Chinese mirror
@@ -57,7 +57,7 @@ Each section is one JSON file validated against its own allowlisted schema. Sect
 | `sections/retrieval.json` | `retrieval.schema.json` | `run_ids`, `corpus_id`, `query_set_id`, `modes`, `metrics` (Evidence Recall@3/@5/@10, Context Precision@3/@5/@10, first Gold Evidence rank, retrieval duration), `boundary_query_diagnostics`, `conditions` (chunking, output depths, corpus/query-set versions). |
 | `sections/answer.json` | `answer.schema.json` | Deterministic answer cases: `case_id`, `outcome` (one of the four closed Answer Execution Outcomes), `citations_count`, `contract` (`passed`/`failed`). |
 | `sections/prompt-injection.json` | `prompt-injection.schema.json` | Adversarial cases: `case_id`, `kind`, `outcome`, `pass_fail`, `citation_counts`, `failure_classification`. |
-| `sections/performance.json` | `performance.schema.json` | `load` (concurrency, requests), `metrics` (TTFT and total P50/P95/P99, error rate, retrieval/provider/persistence durations), `target` (12-second P95 target, `met`, `note`). |
+| `sections/performance-*.json` | `performance.schema.json` | `load` (concurrency, requests), `metrics` (SSE TTFT and total P50/P95/P99, error rate, retrieval/generation-provider/embedding-provider/persistence durations, application-controlled time), `target` (12-second P95 target, `met`, `note`). An `accepted` candidate must include exactly the c1 and c5 profiles plus an observed-variance regression envelope. |
 | `sections/production-acceptance.json` | `production-acceptance.schema.json` | `path` (must equal `/api/v1/chat`), `results` (bounded per-check outcomes and limitations). |
 
 Every declared evaluation mode (all `modes` except `migration`, which is the separately reported availability regime) must carry the complete eight-metric family. Values are unit-bounded: `ratio` in [0, 1], `rank` >= 1, `ms` >= 0. Missing metric families and out-of-bounds values fail with `metric-completeness` diagnostics. A retrieval section that reports only `migration` availability may carry an empty `metrics` array.

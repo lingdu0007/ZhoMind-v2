@@ -338,7 +338,7 @@ class ChatService:
         if isinstance(timing, dict):
             diagnostics["timing_ms"] = {
                 key: self._diagnostic_count(timing.get(key))
-                for key in ("retrieval_ms", "generation_provider_ms", "persistence_ms")
+                for key in ("retrieval_ms", "generation_provider_ms", "embedding_provider_ms", "persistence_ms")
                 if self._diagnostic_count(timing.get(key)) is not None
             }
         diagnostics["trace_preview"] = self._diagnostic_trace_preview(trace)

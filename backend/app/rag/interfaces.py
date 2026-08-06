@@ -20,6 +20,7 @@ class RetrieveResult:
     lexical_scope: str = "full_published_live"
     fallback_used: bool = False
     provider_error: ProviderExecError | None = None
+    embedding_provider_ms: float = 0.0
 
     @classmethod
     def from_items(

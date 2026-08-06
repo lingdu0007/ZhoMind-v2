@@ -294,6 +294,9 @@ class EvidenceGatedAnswerExecutor:
         runtime_result["timing_ms"] = {
             "retrieval_ms": retrieval_ms,
             "generation_provider_ms": generation_provider_ms,
+            "embedding_provider_ms": float(
+                (runtime_result.get("provider_trace") or {}).get("retrieve", {}).get("embedding_provider_ms") or 0
+            ),
         }
         runtime_result["final_provider"] = provider_result.get("final_provider")
         runtime_result["provider_attempts"] = list(provider_result.get("provider_attempts") or [])

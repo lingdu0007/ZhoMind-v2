@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from time import perf_counter
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -72,9 +73,10 @@ class MixedModeDocumentRetrieverService:
         dense_items: list[dict[str, Any]] = []
         dense_query_failed = False
         dense_provider_error: ProviderExecError | None = None
+        embedding_provider_ms = 0.0
 
         try:
-            dense_candidates, dense_items = await self._dense_search(
+            dense_candidates, dense_items, embedding_provider_ms = await self._dense_search(
                 normalized_query,
                 top_k=top_k,
                 fingerprint=fingerprint,
@@ -104,6 +106,7 @@ class MixedModeDocumentRetrieverService:
             lexical_scope=lexical_scope,
             fallback_used=dense_query_failed,
             provider_error=dense_provider_error,
+            embedding_provider_ms=embedding_provider_ms,
         )
 
     def _tokenize(self, text: str) -> list[str]:
@@ -196,14 +199,16 @@ class MixedModeDocumentRetrieverService:
         *,
         top_k: int,
         fingerprint: str,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], float]:
         embedding_provider = self._resolve_embedding_provider()
         if embedding_provider is None:
             raise RuntimeError("dense embedding provider is unavailable")
 
+        embedding_started = perf_counter()
         vectors = await embedding_provider.embed([query])
+        embedding_provider_ms = round((perf_counter() - embedding_started) * 1000, 3)
         if not vectors:
-            return [], []
+            return [], [], embedding_provider_ms
 
         document_index = self._resolve_document_index()
         collection_name = build_milvus_collection_name(fingerprint)
@@ -229,7 +234,7 @@ class MixedModeDocumentRetrieverService:
             if len(dense_items) >= top_k:
                 break
 
-        return dense_candidates, dense_items
+        return dense_candidates, dense_items, embedding_provider_ms
 
     async def _hydrate_dense_hits(
         self,
