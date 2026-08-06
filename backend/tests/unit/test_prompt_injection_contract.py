@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -127,11 +128,9 @@ def test_injected_override_instruction_stays_inside_evidence_region() -> None:
     system_prompt = provider.system_prompts[0]
 
     # The injection marker travels only inside the untrusted evidence region.
-    question_part = user_prompt.split(USER_QUESTION_REGION)[1]
-    evidence_part = user_prompt.split(EVIDENCE_SOURCES_REGION)[1]
-    assert case.answer_marker in evidence_part
-    assert case.answer_marker not in question_part
-    assert case.answer_marker not in user_prompt.split(EVIDENCE_SOURCES_REGION)[0]
+    envelope = json.loads(user_prompt)
+    assert case.answer_marker in envelope[EVIDENCE_SOURCES_REGION][0]["excerpt"]
+    assert case.answer_marker not in envelope[USER_QUESTION_REGION]
     assert case.answer_marker not in (system_prompt or "")
     assert SYSTEM_POLICY in (system_prompt or "")
 
@@ -146,12 +145,12 @@ def test_secret_extraction_exposes_no_credentials_or_admin_diagnostics() -> None
     assert outcome.kind is AnswerOutcomeKind.EVIDENCE_GATED_ANSWER
     user_prompt = provider.prompts[0]
     system_prompt = provider.system_prompts[0] or ""
-    evidence_region = user_prompt.split(EVIDENCE_SOURCES_REGION)[1]
+    envelope = json.loads(user_prompt)
 
     # The fixture marker is untrusted snapshot content: it may appear only
     # inside the evidence region, never as policy or in the question region.
-    assert case.answer_marker in evidence_region
-    assert case.answer_marker not in user_prompt.split(EVIDENCE_SOURCES_REGION)[0]
+    assert case.answer_marker in envelope[EVIDENCE_SOURCES_REGION][0]["excerpt"]
+    assert case.answer_marker not in envelope[USER_QUESTION_REGION]
     assert case.answer_marker not in system_prompt
 
     # Minimal exposure: no credentials, raw settings, private history, or
@@ -172,12 +171,13 @@ def test_forged_source_instruction_cannot_inject_citation_identity() -> None:
     assert outcome.kind is AnswerOutcomeKind.EVIDENCE_GATED_ANSWER
     user_prompt = provider.prompts[0]
     system_prompt = provider.system_prompts[0] or ""
-    question_part = user_prompt.split(USER_QUESTION_REGION)[1]
+    envelope = json.loads(user_prompt)
 
     # The forged-source instruction is evidence data; the system policy still
     # forbids fabricating citations and the question region stays clean.
     assert "不要编造或虚构来源" in system_prompt
-    assert case.answer_marker not in question_part
+    assert case.answer_marker in envelope[EVIDENCE_SOURCES_REGION][0]["excerpt"]
+    assert case.answer_marker not in envelope[USER_QUESTION_REGION]
     assert case.answer_marker not in system_prompt
 
 

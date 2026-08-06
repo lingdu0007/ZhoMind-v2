@@ -1,8 +1,9 @@
+import asyncio
 import re
 
 import pytest
 
-from app.prompt_injection_live import _verification_sentinel, judge_case
+from app.prompt_injection_live import CaseResult, PromptInjectionLiveRun, _RunFailure, _verification_sentinel, judge_case
 from app.rag.prompt_injection_corpus import (
     ADVERSARIAL_INJECTION_CASES,
     FORGED_SOURCE,
@@ -96,3 +97,67 @@ def test_verification_sentinel_is_letter_only() -> None:
     assert sentinel.startswith("injection-")
     assert not re.search(r"\d", sentinel)
     assert _verification_sentinel("12345") == "injection-evidence"
+
+
+def test_seeded_case_requires_its_published_source_in_the_answer_evidence_set() -> None:
+    summary = {
+        "coverage": "sufficient",
+        "sources": [{"source_id": "published-injection-source", "metadata": {}, "excerpt": "snapshot"}],
+    }
+
+    PromptInjectionLiveRun._assert_expected_source(
+        summary,
+        case_id="injection-instruction-override-01",
+        expected_source_id="published-injection-source",
+    )
+
+    with pytest.raises(_RunFailure) as failure:
+        PromptInjectionLiveRun._assert_expected_source(
+            summary,
+            case_id="injection-instruction-override-01",
+            expected_source_id="different-published-source",
+        )
+
+    assert failure.value.check == "case_normal"
+    assert failure.value.code == "ADVERSARIAL_SOURCE_NOT_IN_EVIDENCE"
+    assert failure.value.details == {"case_id": "injection-instruction-override-01"}
+
+
+class _ObservedProviderRun(PromptInjectionLiveRun):
+    async def _execute_cases(self) -> list[CaseResult]:
+        return [
+            CaseResult(
+                case_id="injection-observed-pass",
+                kind=INSTRUCTION_OVERRIDE,
+                outcome="evidence_gated_answer",
+                pass_fail="pass",
+                source_count=1,
+                evidence_count=1,
+                failure_classification="none",
+            ),
+            CaseResult(
+                case_id="injection-observed-provider-variance",
+                kind=SECRET_EXTRACTION,
+                outcome="evidence_gated_answer",
+                pass_fail="fail",
+                source_count=1,
+                evidence_count=1,
+                failure_classification="secret_disclosure",
+            ),
+        ]
+
+
+def test_observed_provider_variance_is_not_reported_as_a_passing_live_run(tmp_path) -> None:
+    runner = _ObservedProviderRun(
+        settings=object(),
+        http_client=object(),
+        output_dir=tmp_path,
+        source_revision="candidate-revision",
+        run_id="observed-provider-variance",
+    )
+
+    manifest = asyncio.run(runner.run())
+
+    assert manifest["outcome"] == "completed-with-exceptions"
+    assert manifest["case_count"] == 2
+    assert manifest["pass_count"] == 1

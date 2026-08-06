@@ -177,11 +177,12 @@ class PromptInjectionLiveRun:
         try:
             cases = await self._execute_cases()
             section = self._section(cases)
+            pass_count = sum(1 for case in cases if case.pass_fail == "pass")
             manifest.update(
                 {
-                    "outcome": "passed",
+                    "outcome": "passed" if pass_count == len(cases) else "completed-with-exceptions",
                     "case_count": len(cases),
-                    "pass_count": sum(1 for case in cases if case.pass_fail == "pass"),
+                    "pass_count": pass_count,
                     "citation_counts_note": "evidence_count mirrors source_count: every Answer Evidence Set item projects one citation.",
                 }
             )
@@ -223,7 +224,7 @@ class PromptInjectionLiveRun:
         await self._expect_ok("health", "GET", "/api/v1/health")
         administrator_headers = await self._login_bootstrap_administrator()
 
-        published: dict[str, tuple[str, int]] = {}
+        published: dict[str, str] = {}
         for case in ADVERSARIAL_INJECTION_CASES:
             if case.document_source is None:
                 continue
@@ -232,18 +233,29 @@ class PromptInjectionLiveRun:
                 case=case,
             )
             await self._wait_for_job(job_id=job_id, headers=administrator_headers)
-            published_generation = await self._publish_document(document_id=document_id, headers=administrator_headers)
-            published[case.case_id] = (document_id, published_generation)
+            source_id = await self._verify_chunks(document_id=document_id, headers=administrator_headers)
+            await self._publish_document(document_id=document_id, headers=administrator_headers)
+            published[case.case_id] = source_id
 
         knowledge_user_headers = await self._admit_knowledge_user(administrator_headers=administrator_headers)
 
         results: list[CaseResult] = []
         for case in ADVERSARIAL_INJECTION_CASES:
-            result = await self._evaluate_case(case, headers=knowledge_user_headers)
+            result = await self._evaluate_case(
+                case,
+                headers=knowledge_user_headers,
+                expected_source_id=published.get(case.case_id),
+            )
             results.append(result)
         return results
 
-    async def _evaluate_case(self, case: InjectionCase, *, headers: Mapping[str, str]) -> CaseResult:
+    async def _evaluate_case(
+        self,
+        case: InjectionCase,
+        *,
+        headers: Mapping[str, str],
+        expected_source_id: str | None,
+    ) -> CaseResult:
         session_id = f"injection-{sha256(self._run_id.encode('utf-8')).hexdigest()[:20]}-{case.case_id}"
         normal = await self._expect_ok(
             "case_normal",
@@ -259,6 +271,7 @@ class PromptInjectionLiveRun:
         summary = message.get("evidence_summary") if isinstance(message, Mapping) else None
         if not isinstance(summary, Mapping):
             raise _RunFailure("case_normal", "EVIDENCE_SUMMARY_MISSING", {"case_id": case.case_id})
+        self._assert_expected_source(summary, case_id=case.case_id, expected_source_id=expected_source_id)
         answer = normal.get("answer")
         if not isinstance(answer, str):
             raise _RunFailure("case_normal", "ANSWER_MISSING", {"case_id": case.case_id})
@@ -290,6 +303,22 @@ class PromptInjectionLiveRun:
         self._verify_history(history, expected_outcome=outcome, expected_summary=summary, case_id=case.case_id)
 
         return judge_case(case, outcome=outcome, answer_text=answer, source_count=source_count)
+
+    @staticmethod
+    def _assert_expected_source(
+        summary: Mapping[str, Any],
+        *,
+        case_id: str,
+        expected_source_id: str | None,
+    ) -> None:
+        if expected_source_id is None:
+            return
+        sources = summary.get("sources")
+        if isinstance(sources, list) and any(
+            isinstance(source, Mapping) and source.get("source_id") == expected_source_id for source in sources
+        ):
+            return
+        raise _RunFailure("case_normal", "ADVERSARIAL_SOURCE_NOT_IN_EVIDENCE", {"case_id": case_id})
 
     @staticmethod
     def _parse_stream(body: str) -> tuple[str, Mapping[str, Any]]:
@@ -415,6 +444,24 @@ class PromptInjectionLiveRun:
             await self._sleep(_POLL_INTERVAL_SECONDS)
         raise _RunFailure("document_build", "DOCUMENT_BUILD_TIMED_OUT")
 
+    async def _verify_chunks(self, *, document_id: str, headers: Mapping[str, str]) -> str:
+        payload = await self._expect_ok(
+            "document_build",
+            "GET",
+            f"/api/v1/documents/{document_id}/chunks?page=1&page_size=1",
+            headers=headers,
+        )
+        pagination = payload.get("pagination")
+        chunk_count = pagination.get("total") if isinstance(pagination, Mapping) else None
+        if not isinstance(chunk_count, int) or chunk_count <= 0:
+            raise _RunFailure("document_build", "ADVERSARIAL_DOCUMENT_CHUNKS_MISSING")
+        items = payload.get("items")
+        first_chunk = items[0] if isinstance(items, list) and items else None
+        source_id = first_chunk.get("chunk_id") if isinstance(first_chunk, Mapping) else None
+        if not isinstance(source_id, str) or not source_id:
+            raise _RunFailure("document_build", "ADVERSARIAL_DOCUMENT_SOURCE_ID_MISSING")
+        return source_id
+
     async def _publish_document(self, *, document_id: str, headers: Mapping[str, str]) -> int:
         payload = await self._expect_ok(
             "document_publication",
@@ -485,7 +532,7 @@ def main(argv: list[str] | None = None) -> int:
             sort_keys=True,
         )
     )
-    return 0 if manifest["outcome"] == "passed" else 1
+    return 0 if manifest["outcome"] != "failed" else 1
 
 
 if __name__ == "__main__":

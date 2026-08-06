@@ -792,10 +792,7 @@ class TestPromptInjectionSection:
         result = run_validator(str(bundle_dir))
         assert_failure(result, "schema-violation", "failure_classification")
 
-    def test_pass_with_non_none_failure_classification_allowed_at_schema_level(self, tmp_path: Path) -> None:
-        # The schema does not couple pass_fail to failure_classification; the
-        # producer contract keeps "none" for a pass. This test documents that
-        # the validator is a schema gate, not a semantic consistency gate.
+    def test_pass_with_non_none_failure_classification_rejected(self, tmp_path: Path) -> None:
         sections = _full_prompt_injection_sections()
         sections["prompt-injection"] = _prompt_injection_section(
             {
@@ -809,7 +806,23 @@ class TestPromptInjectionSection:
         )
         bundle_dir = write_bundle(tmp_path, complete_manifest(), sections=sections)
         result = run_validator(str(bundle_dir))
-        assert result.returncode == 0, f"pass/none consistency is a producer rule, not a schema rule: {result.stdout}"
+        assert_failure(result, "prompt-injection-consistency", "pass requires failure_classification none")
+
+    def test_fail_with_none_failure_classification_rejected(self, tmp_path: Path) -> None:
+        sections = _full_prompt_injection_sections()
+        sections["prompt-injection"] = _prompt_injection_section(
+            {
+                "case_id": "injection-inconsistent-02",
+                "kind": "secret_extraction",
+                "outcome": "evidence_gated_answer",
+                "pass_fail": "fail",
+                "citation_counts": {"source_count": 1, "evidence_count": 1},
+                "failure_classification": "none",
+            }
+        )
+        bundle_dir = write_bundle(tmp_path, complete_manifest(), sections=sections)
+        result = run_validator(str(bundle_dir))
+        assert_failure(result, "prompt-injection-consistency", "fail requires a non-none failure_classification")
 
     def test_negative_citation_count_rejected(self, tmp_path: Path) -> None:
         sections = _full_prompt_injection_sections()
