@@ -1,6 +1,6 @@
 # Public Evidence Bundle Contract
 
-Version: **1.0.0** (schema `evidence-bundle.schema.json`, section schemas in `sections/`)
+Version: **1.1.0** (schema `evidence-bundle.schema.json`, section schemas in `sections/`)
 
 ## Purpose
 
@@ -14,7 +14,7 @@ A bundle is one directory containing a manifest, typed section files, and the bi
 
 ```
 <bundle-dir>/
-  manifest.json                     # required: allowlisted manifest (schema 1.0.0)
+  manifest.json                     # required: allowlisted manifest (schema 1.1.0)
   sections/
     retrieval.json                  # optional typed section
     answer.json                     # optional typed section
@@ -33,7 +33,7 @@ A bundle must contain at least one typed section. Section files and reports are 
 
 | Field | Type | Rule |
 | --- | --- | --- |
-| `schema_version` | string | Must equal `1.0.0`. |
+| `schema_version` | string | Legacy bundles use `1.0.0`; controlled three-mode retrieval comparisons must use `1.1.0`. |
 | `bundle_id` | string | `[a-z0-9][a-z0-9-]{0,127}`, unique across bundles checked in one invocation (`--all` or explicit directories). |
 | `kind` | string | Must equal `public-evidence-bundle`. |
 | `canonical_language` | string | Must equal `en`. |
@@ -61,6 +61,8 @@ Each section is one JSON file validated against its own allowlisted schema. Sect
 | `sections/production-acceptance.json` | `production-acceptance.schema.json` | `path` (must equal `/api/v1/chat`), `results` (bounded per-check outcomes and limitations). |
 
 Every declared evaluation mode (all `modes` except `migration`, which is the separately reported availability regime) must carry the complete eight-metric family. Values are unit-bounded: `ratio` in [0, 1], `rank` >= 1, `ms` >= 0. Missing metric families and out-of-bounds values fail with `metric-completeness` diagnostics. A retrieval section that reports only `migration` availability may carry an empty `metrics` array.
+
+An exact three-mode comparison (`sparse_bm25`, `dense`, and `hybrid_rrf`, with no `migration` mode) is a `1.1.0` retrieval section. It must record `conditions.candidate_depth = 20`, one non-sensitive `model_identity`, and one `mode_provenance` item per mode. Each item carries the mode's run identity, source revision, corpus hash, query-set hash, and embedding identity; the validator rejects missing fields or cross-mode drift.
 
 ## Sensitive-field policy
 
@@ -117,7 +119,7 @@ Exit code `0` means every checked bundle conforms; `1` means at least one check 
 
 ## Versioning
 
-The contract is versioned by `schema_version` inside each schema. Producers always write `1.0.0` today. A future contract change bumps the version in the schemas and the validator in the same change; old bundles then fail `schema_version` validation rather than being silently reinterpreted.
+The contract is versioned by `schema_version` inside each schema. Version `1.1.0` adds the controlled three-mode retrieval-comparison rules and the validator support in this same change. Existing `1.0.0` bundles remain on an explicit legacy validation path; only a three-mode comparison must use `1.1.0`, so legacy evidence is not silently reinterpreted as comparison evidence.
 
 ## Terminology
 

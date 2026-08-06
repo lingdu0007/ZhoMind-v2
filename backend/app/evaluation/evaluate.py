@@ -47,6 +47,7 @@ BM25_K1 = 1.5
 BM25_B = 0.75
 BUNDLE_ID = "sparse-bm25-01"
 BUNDLE_SCHEMA_VERSION = "1.0.0"
+COMPARISON_BUNDLE_SCHEMA_VERSION = "1.1.0"
 RELEASE_CANDIDATE_IDENTITY = "portfolio-release-candidate-01"
 COMPARISON_BUNDLE_ID = "dense-hybrid-rrf-01"
 COMPARISON_MODES: tuple[str, ...] = ("sparse_bm25", "dense", "hybrid_rrf")
@@ -1189,7 +1190,7 @@ def _export_comparison_bundle(
         for item in (mode_results[mode] for mode in modes)
     ]
     bundle_manifest: dict[str, Any] = {
-        "schema_version": BUNDLE_SCHEMA_VERSION,
+        "schema_version": COMPARISON_BUNDLE_SCHEMA_VERSION,
         "bundle_id": COMPARISON_BUNDLE_ID,
         "kind": "public-evidence-bundle",
         "canonical_language": "en",
@@ -1259,7 +1260,7 @@ def _export_comparison_bundle(
     }
     retrieval_section = {
         "section": "retrieval",
-        "schema_version": BUNDLE_SCHEMA_VERSION,
+        "schema_version": COMPARISON_BUNDLE_SCHEMA_VERSION,
         "run_ids": [item["run_id"] for item in mode_provenance],
         "corpus_id": inputs["corpus_id"],
         "query_set_id": inputs["query_set_id"],
@@ -1292,7 +1293,7 @@ def _export_comparison_bundle(
         },
     }
     annotations = {
-        "schema_version": BUNDLE_SCHEMA_VERSION,
+        "schema_version": COMPARISON_BUNDLE_SCHEMA_VERSION,
         "query_set_id": inputs["query_set_id"],
         "query_set_version": inputs["query_set_version"],
         "queries": [
@@ -1307,7 +1308,7 @@ def _export_comparison_bundle(
         ],
     }
     candidates = {
-        "schema_version": BUNDLE_SCHEMA_VERSION,
+        "schema_version": COMPARISON_BUNDLE_SCHEMA_VERSION,
         "modes": modes,
         "run_ids": [item["run_id"] for item in mode_provenance],
         "output_depths": list(OUTPUT_DEPTHS),
@@ -1334,7 +1335,7 @@ def _export_comparison_bundle(
         ],
     }
     run_conditions = {
-        "schema_version": BUNDLE_SCHEMA_VERSION,
+        "schema_version": COMPARISON_BUNDLE_SCHEMA_VERSION,
         "modes": modes,
         "embedding_identity": manifest["embedding_identity"],
         "chunking": dict(inputs["qa_chunking"]),
