@@ -1,0 +1,74 @@
+{
+  "schema_version": "1.1.0",
+  "modes": [
+    "sparse_bm25",
+    "dense",
+    "hybrid_rrf"
+  ],
+  "embedding_identity": "Qwen/Qwen3-Embedding-8B:8cfc4ef25f497deccfd2eb0d23b4a8bdd7360e588db0ea9b80ffae616f5d82b9",
+  "chunking": {
+    "chunk_chars": 500,
+    "overlap_chars": 50,
+    "policy": "qa"
+  },
+  "output_depths": [
+    3,
+    5,
+    10
+  ],
+  "candidate_depth": 20,
+  "hybrid_rrf": {
+    "k": 60,
+    "deduplicate_by": "chunk_id",
+    "reranker": false,
+    "score_averaging": false
+  },
+  "evaluation_inputs": {
+    "corpus_id": "project-derived-corpus",
+    "corpus_version": "1.0.0",
+    "corpus_sha256": "894d10004f25a2a6462870c1a869586ca83dfc28f0407f75f8cc33d9757ac39d",
+    "query_set_id": "evaluation-query-set",
+    "query_set_version": "1.0.0",
+    "query_set_sha256": "a468a1af9fc0c7b979ec1c5dfa8874a5ad27e25bcc79de1e0142564db992df20",
+    "query_count": 16,
+    "qa_chunking": {
+      "chunk_chars": 500,
+      "overlap_chars": 50,
+      "policy": "qa"
+    }
+  },
+  "metric_definitions": {
+    "evidence_recall@3": {
+      "unit": "ratio",
+      "aggregate": "macro mean over the 12 answerable queries"
+    },
+    "evidence_recall@5": {
+      "unit": "ratio",
+      "aggregate": "macro mean over the 12 answerable queries"
+    },
+    "evidence_recall@10": {
+      "unit": "ratio",
+      "aggregate": "macro mean over the 12 answerable queries"
+    },
+    "context_precision@3": {
+      "unit": "ratio",
+      "aggregate": "macro mean over the 12 answerable queries"
+    },
+    "context_precision@5": {
+      "unit": "ratio",
+      "aggregate": "macro mean over the 12 answerable queries"
+    },
+    "context_precision@10": {
+      "unit": "ratio",
+      "aggregate": "macro mean over the 12 answerable queries"
+    },
+    "first_gold_rank": {
+      "unit": "rank",
+      "aggregate": "macro mean over the 12 answerable queries"
+    },
+    "retrieval_duration_ms": {
+      "unit": "ms",
+      "aggregate": "macro mean over the 12 answerable queries"
+    }
+  }
+}
