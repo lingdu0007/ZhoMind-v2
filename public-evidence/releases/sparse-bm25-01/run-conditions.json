@@ -1,0 +1,84 @@
+{
+  "schema_version": "1.0.0",
+  "mode": "sparse_bm25",
+  "tokenizer": {
+    "name": "literal_preserving_jieba",
+    "segments_chinese_with": "jieba",
+    "preserves_literals": [
+      "configuration_keys",
+      "paths",
+      "status_codes",
+      "versions",
+      "model_names",
+      "underscore_identifiers"
+    ]
+  },
+  "bm25": {
+    "k1": 1.5,
+    "b": 0.75,
+    "idf": "lucene"
+  },
+  "chunking": {
+    "chunk_chars": 500,
+    "overlap_chars": 50,
+    "policy": "qa"
+  },
+  "output_depths": [
+    3,
+    5,
+    10
+  ],
+  "gold_evidence_matching": {
+    "rule": "character_span_overlap",
+    "coverage_ratio": 0.5
+  },
+  "first_gold_rank_unmatched_value": 11,
+  "evaluation_inputs": {
+    "corpus_id": "project-derived-corpus",
+    "corpus_version": "1.0.0",
+    "corpus_sha256": "894d10004f25a2a6462870c1a869586ca83dfc28f0407f75f8cc33d9757ac39d",
+    "query_set_id": "evaluation-query-set",
+    "query_set_version": "1.0.0",
+    "query_set_sha256": "a468a1af9fc0c7b979ec1c5dfa8874a5ad27e25bcc79de1e0142564db992df20",
+    "query_count": 16,
+    "qa_chunking": {
+      "chunk_chars": 500,
+      "overlap_chars": 50,
+      "policy": "qa"
+    }
+  },
+  "metric_definitions": {
+    "evidence_recall@3": {
+      "unit": "ratio",
+      "aggregate": "macro mean over the 12 answerable queries"
+    },
+    "evidence_recall@5": {
+      "unit": "ratio",
+      "aggregate": "macro mean over the 12 answerable queries"
+    },
+    "evidence_recall@10": {
+      "unit": "ratio",
+      "aggregate": "macro mean over the 12 answerable queries"
+    },
+    "context_precision@3": {
+      "unit": "ratio",
+      "aggregate": "macro mean over the 12 answerable queries"
+    },
+    "context_precision@5": {
+      "unit": "ratio",
+      "aggregate": "macro mean over the 12 answerable queries"
+    },
+    "context_precision@10": {
+      "unit": "ratio",
+      "aggregate": "macro mean over the 12 answerable queries"
+    },
+    "first_gold_rank": {
+      "unit": "rank",
+      "aggregate": "macro mean over the 12 answerable queries"
+    },
+    "retrieval_duration_ms": {
+      "unit": "ms",
+      "aggregate": "macro mean over the 12 answerable queries"
+    }
+  }
+}

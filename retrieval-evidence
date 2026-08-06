@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 1 || ( "$1" != "smoke" && "$1" != "fallback" && "$1" != "generation-smoke" ) ]]; then
-  printf 'usage: retrieval-evidence {smoke|fallback|generation-smoke}\n' >&2
+if [[ $# -ne 1 || ( "$1" != "smoke" && "$1" != "fallback" && "$1" != "evaluate" && "$1" != "generation-smoke" ) ]]; then
+  printf 'usage: retrieval-evidence {smoke|fallback|evaluate|generation-smoke}\n' >&2
   exit 2
 fi
 
@@ -21,6 +21,36 @@ fi
 if [[ -n "$(git -C "$repository_root" status --porcelain --untracked-files=all)" ]]; then
   printf 'retrieval-evidence smoke requires a clean working tree\n' >&2
   exit 2
+fi
+
+# The evaluate profile is a deterministic in-process run over the frozen
+# evaluation inputs: it needs no Compose stack, no runtime configuration, and
+# no provider. It writes the internal run manifest and the public Evidence
+# Bundle through the locked backend environment (uv run --frozen).
+if [[ "$1" == "evaluate" ]]; then
+  run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+  evidence_output=${RETRIEVAL_EVIDENCE_OUTPUT_DIR:-"$workspace_root/evidence/runs"}
+  bundle_dir=${RETRIEVAL_EVIDENCE_BUNDLE_DIR:-"$repository_root/public-evidence/releases/sparse-bm25-01"}
+  source_revision=$(git -C "$repository_root" rev-parse HEAD)
+  mkdir -p "$evidence_output"
+  if command -v uv >/dev/null 2>&1; then
+    uv_bin=(uv)
+  elif [[ -x "$HOME/.local/bin/uv" ]]; then
+    uv_bin=("$HOME/.local/bin/uv")
+  else
+    printf 'uv is required to run retrieval-evidence evaluate\n' >&2
+    exit 2
+  fi
+  (
+    cd "$repository_root/backend"
+    "${uv_bin[@]}" run --frozen python -m app.retrieval_evidence evaluate \
+      --output-dir "$evidence_output" \
+      --source-revision "$source_revision" \
+      --run-id "$run_id" \
+      --evaluation-dir "$repository_root/evaluation" \
+      --bundle-dir "$bundle_dir"
+  )
+  exit $?
 fi
 
 if [[ ! -f "$runtime_config" ]]; then
