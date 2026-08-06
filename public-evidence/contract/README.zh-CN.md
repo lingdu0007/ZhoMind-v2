@@ -19,7 +19,7 @@
     retrieval.json                  # 可选类型化 section
     answer.json                     # 可选类型化 section
     prompt-injection.json           # 可选类型化 section
-    performance.json                # 可选类型化 section
+    performance-*.json              # 可选类型化 sections；已接受 candidate 使用 c1 与 c5 profiles
     production-acceptance.json      # 可选类型化 section
   REPORT.md                         # 必需：English canonical 报告
   REPORT.zh-CN.md                   # 必需：完整中文镜像
@@ -57,7 +57,7 @@
 | `sections/retrieval.json` | `retrieval.schema.json` | `run_ids`、`corpus_id`、`query_set_id`、`modes`、`metrics`（Evidence Recall@3/@5/@10、Context Precision@3/@5/@10、first Gold Evidence rank、retrieval duration）、`boundary_query_diagnostics`、`conditions`（chunking、output depths、corpus/query-set versions）。 |
 | `sections/answer.json` | `answer.schema.json` | 确定性回答 cases：`case_id`、`outcome`（四个闭值 Answer Execution Outcomes 之一）、`citations_count`、`contract`（`passed`/`failed`）。 |
 | `sections/prompt-injection.json` | `prompt-injection.schema.json` | 对抗 cases：`case_id`、`kind`、`outcome`、`pass_fail`、`citation_counts`、`failure_classification`。 |
-| `sections/performance.json` | `performance.schema.json` | `load`（concurrency、requests）、`metrics`（TTFT 与 total P50/P95/P99、error rate、retrieval/provider/persistence durations）、`target`（12 秒 P95 target、`met`、`note`）。 |
+| `sections/performance-*.json` | `performance.schema.json` | `load`（concurrency、requests）、`metrics`（SSE TTFT 与 total P50/P95/P99、error rate、retrieval/generation-provider/embedding-provider/persistence durations、application-controlled time）、`target`（12 秒 P95 target、`met`、`note`）。`accepted` candidate 必须包含恰好 c1 与 c5 profiles，以及基于观测方差的 regression envelope。 |
 | `sections/production-acceptance.json` | `production-acceptance.schema.json` | `path`（必须等于 `/api/v1/chat`）、`results`（有界的逐 check 结果与限制）。 |
 
 每个声明的评估 mode（`modes` 中除 `migration` 之外的所有 mode；`migration` 是单独报告的可用性机制）都必须携带完整的八项指标族。值有单位约束：`ratio` 在 [0, 1]、`rank` >= 1、`ms` >= 0。缺失指标族或越界值会以 `metric-completeness` 诊断失败。只报告 `migration` 可用性的 retrieval section 可以携带空的 `metrics` 数组。

@@ -78,6 +78,11 @@
           "minimum": 0,
           "description": "External generation-provider time, reported separately from application-controlled stages."
         },
+        "embedding_provider_ms": {
+          "type": "number",
+          "minimum": 0,
+          "description": "External embedding-provider time, reported separately from the retrieval aggregate and application-controlled stages."
+        },
         "persistence_ms": {
           "type": "number",
           "minimum": 0

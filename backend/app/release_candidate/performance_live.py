@@ -24,37 +24,69 @@ def _post(base_url: str, path: str, payload: dict[str, Any], headers: dict[str, 
 
 
 def _sample(base_url: str, token: str, question: str, timeout: float) -> PerformanceSample:
+    return _stream_sample(base_url, token, question, timeout)
+
+
+def _stream_sample(base_url: str, token: str, question: str, timeout: float) -> PerformanceSample:
     started = perf_counter()
-    status, raw = _post(
-        base_url,
-        "/api/v1/chat",
-        {"message": question},
-        {"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
-        timeout,
+    request = Request(
+        f"{base_url.rstrip('/')}/api/v1/chat/stream",
+        data=json.dumps({"message": question}).encode(),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+        method="POST",
     )
-    total = (perf_counter() - started) * 1000
-    data: dict[str, Any] = {}
+    status = 0
+    raw = b""
+    ttft = 0.0
     try:
-        parsed = json.loads(raw.decode())
-        data = parsed.get("data", parsed) if isinstance(parsed, dict) else {}
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        pass
-    diagnostics = data.get("retrieval_diagnostics") if isinstance(data, dict) else None
+        with urlopen(request, timeout=timeout) as response:  # noqa: S310 - explicit deployment URL.
+            status = response.status
+            first_byte = response.read(1)
+            ttft = (perf_counter() - started) * 1000
+            raw = first_byte + response.read()
+    except (HTTPError, URLError, TimeoutError):
+        ttft = (perf_counter() - started) * 1000
+    total = (perf_counter() - started) * 1000
+    outcome, diagnostics = _stream_diagnostics(raw)
     timing = diagnostics.get("timing_ms") if isinstance(diagnostics, dict) and isinstance(diagnostics.get("timing_ms"), dict) else {}
     fallback = diagnostics.get("fallback") if isinstance(diagnostics, dict) and isinstance(diagnostics.get("fallback"), dict) else {}
-    outcome = str(data.get("outcome", "transport_error")) if isinstance(data, dict) else "transport_error"
     error = None if status == 200 and outcome == "evidence_gated_answer" and timing else "UNEXPECTED_OUTCOME_OR_TIMING"
     return PerformanceSample(
-        ttft_ms=total,
+        ttft_ms=ttft,
         total_ms=total,
         retrieval_ms=float(timing.get("retrieval_ms") or 0),
         generation_provider_ms=float(timing.get("generation_provider_ms") or 0),
-        embedding_provider_ms=0,
+        embedding_provider_ms=float(timing.get("embedding_provider_ms") or 0),
         persistence_ms=float(timing.get("persistence_ms") or 0),
         outcome=outcome,
         error_code=error,
         fallback_hops=int(fallback.get("hops") or 0),
     )
+
+
+def _stream_diagnostics(raw: bytes) -> tuple[str, dict[str, Any]]:
+    outcome = "transport_error"
+    diagnostics: dict[str, Any] = {}
+    try:
+        stream = raw.decode()
+    except UnicodeDecodeError:
+        return outcome, diagnostics
+    for event in stream.split("\n\n"):
+        lines = event.splitlines()
+        if not lines or not lines[0].startswith("event: "):
+            continue
+        data_line = next((line for line in lines[1:] if line.startswith("data: ")), "")
+        try:
+            payload = json.loads(data_line.removeprefix("data: "))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if lines[0] == "event: outcome" and isinstance(payload.get("outcome"), str):
+            outcome = payload["outcome"]
+        elif lines[0] == "event: retrieval_diagnostics" and isinstance(payload.get("retrieval_diagnostics"), dict):
+            diagnostics = payload["retrieval_diagnostics"]
+    return outcome, diagnostics
 
 
 async def _collect(base_url: str, token: str, question: str, concurrency: int, requests: int, timeout: float) -> tuple[PerformanceSample, ...]:
@@ -93,10 +125,10 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         "kind": "performance-run",
         "source_revision": args.source_revision,
         "generated_at": datetime.now(UTC).isoformat(),
-        "conditions": {"authenticated_role": "admin", "request_path": "/api/v1/chat", "ttft_definition": "normal-response first byte; SSE TTFT is not independently measured by this buffered endpoint", "timeout_seconds": args.timeout_seconds},
+        "conditions": {"authenticated_role": "admin", "request_path": "/api/v1/chat/stream", "ttft_definition": "first body byte received from the authenticated SSE response", "timeout_seconds": args.timeout_seconds},
         "profiles": [
             {"section": "performance", "schema_version": "1.0.0", "run_ids": [profile.run_id], "load": profile.load,
-             "metrics": {"ttft_ms": profile.metrics["ttft_ms"], "total_ms": profile.metrics["total_ms"], "error_rate": profile.metrics["error_rate"], "retrieval_ms": profile.metrics["retrieval_ms"], "provider_ms": profile.metrics["generation_provider_ms"], "persistence_ms": profile.metrics["persistence_ms"], "application_controlled_ms": profile.metrics["application_controlled_ms"]},
+             "metrics": {"ttft_ms": profile.metrics["ttft_ms"], "total_ms": profile.metrics["total_ms"], "error_rate": profile.metrics["error_rate"], "retrieval_ms": profile.metrics["retrieval_ms"], "provider_ms": profile.metrics["generation_provider_ms"], "embedding_provider_ms": profile.metrics["embedding_provider_ms"], "persistence_ms": profile.metrics["persistence_ms"], "application_controlled_ms": profile.metrics["application_controlled_ms"]},
              "target": {"p95_seconds_target": 12, "met": profile.metrics["total_ms"]["p95"] <= 12000, "note": "Measured end-to-end P95; the target does not determine tolerance."},
              "error_counts": profile.error_counts, "regression_envelope": envelope}
             for profile in profiles

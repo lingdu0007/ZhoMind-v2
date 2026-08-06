@@ -398,6 +398,7 @@ def prompt_injection_consistency_errors(section: dict[str, object], rel_path: st
 def accepted_release_completeness_errors(
     candidate: object,
     sections_by_kind: dict[str, list[dict[str, object]]],
+    runs: list[dict[str, object]],
 ) -> list[tuple[str, str]]:
     """Apply the stricter evidence inventory only to an accepted candidate."""
     if not isinstance(candidate, dict) or candidate.get("status") != "accepted":
@@ -408,13 +409,37 @@ def accepted_release_completeness_errors(
     if missing:
         return [("release-completeness", f"accepted candidate is missing section kinds: {', '.join(missing)}")]
 
-    concurrencies = {
+    concurrencies = [
         section.get("load", {}).get("concurrency")
         for section in sections_by_kind["performance"]
         if isinstance(section.get("load"), dict)
-    }
-    if concurrencies != {1, 5}:
+    ]
+    if len(concurrencies) != 2 or set(concurrencies) != {1, 5} or len(sections_by_kind["performance"]) != 2:
         return [("release-completeness", "accepted candidate performance profiles must record concurrency 1 and 5")]
+
+    for section in sections_by_kind["performance"]:
+        metrics = section.get("metrics")
+        if not isinstance(metrics, dict) or not {"application_controlled_ms", "embedding_provider_ms"}.issubset(metrics):
+            return [("release-completeness", "accepted candidate performance profiles must separate application and embedding-provider time")]
+        if not isinstance(section.get("regression_envelope"), dict):
+            return [("release-completeness", "accepted candidate performance profiles must record an observed-variance regression envelope")]
+
+    revision = candidate.get("revision")
+    run_revisions = {
+        str(run.get("run_id")): run.get("source_revision")
+        for run in runs
+        if isinstance(run.get("run_id"), str)
+    }
+    referenced_runs = {
+        run_id
+        for sections in sections_by_kind.values()
+        for section in sections
+        for run_id in section.get("run_ids", [])
+        if isinstance(run_id, str)
+    }
+    drifted = sorted(run_id for run_id in referenced_runs if run_revisions.get(run_id) != revision)
+    if drifted:
+        return [("release-completeness", "accepted candidate evidence must use its source revision for every referenced run")]
     return []
 
 def retrieval_mode_provenance_errors(
@@ -701,7 +726,7 @@ def validate_bundle(
         if isinstance(query_set_id, str) and query_set_id not in known_query_set_ids:
             errors.append(("provenance-reference", f"{rel_path}: query_set_id {query_set_id} not in provenance.query_sets"))
 
-    errors.extend(accepted_release_completeness_errors(candidate, sections_by_kind))
+    errors.extend(accepted_release_completeness_errors(candidate, sections_by_kind, runs))
 
     # --- Bilingual report pair --------------------------------------------------------
     errors.extend(_report_errors(bundle_dir / REPORT_EN_PATH, "report-en", declared_roles))

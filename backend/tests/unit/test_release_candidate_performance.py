@@ -4,6 +4,7 @@ import math
 
 import pytest
 
+from app.release_candidate import performance_live
 from app.release_candidate.performance import (
     PerformanceSample,
     build_performance_profile,
@@ -146,3 +147,45 @@ def test_profile_rejects_provider_fallback_as_latency_evidence() -> None:
                 ),
             ),
         )
+
+
+def test_stream_sample_measures_first_sse_body_byte_and_uses_only_diagnostics(monkeypatch) -> None:
+    class _Response:
+        status = 200
+
+        def __init__(self) -> None:
+            self._payload = (
+                b'event: outcome\ndata: {"outcome":"evidence_gated_answer"}\n\n'
+                b'event: retrieval_diagnostics\ndata: {"retrieval_diagnostics":'
+                b'{"timing_ms":{"retrieval_ms":7,"generation_provider_ms":9,"embedding_provider_ms":5,"persistence_ms":3},'
+                b'"fallback":{"hops":0}}}\n\n'
+            )
+            self.calls: list[int] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def read(self, amount: int = -1) -> bytes:
+            self.calls.append(amount)
+            if amount == 1:
+                first, self._payload = self._payload[:1], self._payload[1:]
+                return first
+            remaining, self._payload = self._payload, b""
+            return remaining
+
+    response = _Response()
+    monkeypatch.setattr(performance_live, "urlopen", lambda *_args, **_kwargs: response)
+
+    sample = performance_live._stream_sample("https://example.invalid", "token", "private question", 5)
+
+    assert response.calls == [1, -1]
+    assert sample.error_code is None
+    assert sample.outcome == "evidence_gated_answer"
+    assert sample.retrieval_ms == 7
+    assert sample.generation_provider_ms == 9
+    assert sample.embedding_provider_ms == 5
+    assert sample.persistence_ms == 3
+    assert sample.total_ms >= sample.ttft_ms >= 0
