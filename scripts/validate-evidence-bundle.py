@@ -392,6 +392,30 @@ def prompt_injection_consistency_errors(section: dict[str, object], rel_path: st
                     f"{rel_path}: case {case_id} fail requires a non-none failure_classification",
                 )
             )
+    return errors
+
+
+def accepted_release_completeness_errors(
+    candidate: object,
+    sections_by_kind: dict[str, list[dict[str, object]]],
+) -> list[tuple[str, str]]:
+    """Apply the stricter evidence inventory only to an accepted candidate."""
+    if not isinstance(candidate, dict) or candidate.get("status") != "accepted":
+        return []
+
+    required_kinds = {"retrieval", "answer", "prompt-injection", "performance", "production-acceptance"}
+    missing = sorted(required_kinds - set(sections_by_kind))
+    if missing:
+        return [("release-completeness", f"accepted candidate is missing section kinds: {', '.join(missing)}")]
+
+    concurrencies = {
+        section.get("load", {}).get("concurrency")
+        for section in sections_by_kind["performance"]
+        if isinstance(section.get("load"), dict)
+    }
+    if concurrencies != {1, 5}:
+        return [("release-completeness", "accepted candidate performance profiles must record concurrency 1 and 5")]
+    return []
 
 def retrieval_mode_provenance_errors(
     section: dict[str, object],
@@ -600,6 +624,7 @@ def validate_bundle(
         errors.append(("no-sections", "bundle must contain at least one typed section artifact"))
 
     # --- Typed section files ----------------------------------------------------------
+    sections_by_kind: dict[str, list[dict[str, object]]] = {}
     for rel_path, kind in declared_sections:
         section_schema = section_schemas.get(kind)
         if section_schema is None:
@@ -614,6 +639,7 @@ def validate_bundle(
         if not isinstance(section, dict):
             errors.append(("invalid-json", f"{rel_path}: section file is not a JSON object"))
             continue
+        sections_by_kind.setdefault(kind, []).append(section)
         for violation in schema_errors(section, section_schema, rel_path):
             errors.append(("schema-violation", violation))
         if str(section.get("section", "")) != kind:
@@ -674,6 +700,8 @@ def validate_bundle(
         query_set_id = section.get("query_set_id")
         if isinstance(query_set_id, str) and query_set_id not in known_query_set_ids:
             errors.append(("provenance-reference", f"{rel_path}: query_set_id {query_set_id} not in provenance.query_sets"))
+
+    errors.extend(accepted_release_completeness_errors(candidate, sections_by_kind))
 
     # --- Bilingual report pair --------------------------------------------------------
     errors.extend(_report_errors(bundle_dir / REPORT_EN_PATH, "report-en", declared_roles))
