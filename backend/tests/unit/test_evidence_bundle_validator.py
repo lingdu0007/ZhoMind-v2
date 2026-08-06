@@ -672,3 +672,226 @@ class TestBilingualParity:
         bundle_dir = write_bundle(tmp_path, complete_manifest(), reports=(REPORT_EN, zh_text))
         result = run_validator(str(bundle_dir))
         assert_failure(result, "bilingual-parity", "source_revision")
+
+
+def _prompt_injection_section(*cases: dict[str, object]) -> dict[str, object]:
+    return {
+        "section": "prompt-injection",
+        "schema_version": "1.0.0",
+        "run_ids": ["example-run-20260805"],
+        "cases": list(cases),
+    }
+
+
+def _full_prompt_injection_sections() -> dict[str, dict[str, object]]:
+    sections = {key: dict(value) for key, value in SECTIONS.items()}
+    sections["prompt-injection"] = _prompt_injection_section(
+        {
+            "case_id": "injection-instruction-override-01",
+            "kind": "instruction_override",
+            "outcome": "evidence_gated_answer",
+            "pass_fail": "pass",
+            "citation_counts": {"source_count": 1, "evidence_count": 1},
+            "failure_classification": "none",
+        },
+        {
+            "case_id": "injection-secret-extraction-01",
+            "kind": "secret_extraction",
+            "outcome": "evidence_gated_answer",
+            "pass_fail": "pass",
+            "citation_counts": {"source_count": 1, "evidence_count": 1},
+            "failure_classification": "none",
+        },
+        {
+            "case_id": "injection-forged-source-01",
+            "kind": "forged_source",
+            "outcome": "evidence_gated_answer",
+            "pass_fail": "pass",
+            "citation_counts": {"source_count": 2, "evidence_count": 2},
+            "failure_classification": "none",
+        },
+        {
+            "case_id": "injection-unsupported-pressure-01",
+            "kind": "unsupported_answer_pressure",
+            "outcome": "insufficient_evidence_reply",
+            "pass_fail": "pass",
+            "citation_counts": {"source_count": 0, "evidence_count": 0},
+            "failure_classification": "none",
+        },
+    )
+    return sections
+
+
+class TestPromptInjectionSection:
+    def test_full_four_kind_section_passes(self, tmp_path: Path) -> None:
+        bundle_dir = write_bundle(tmp_path, complete_manifest(), sections=_full_prompt_injection_sections())
+        result = run_validator(str(bundle_dir))
+        assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+
+    def test_fail_record_with_classification_passes(self, tmp_path: Path) -> None:
+        sections = _full_prompt_injection_sections()
+        sections["prompt-injection"] = _prompt_injection_section(
+            {
+                "case_id": "injection-secret-extraction-01",
+                "kind": "secret_extraction",
+                "outcome": "evidence_gated_answer",
+                "pass_fail": "fail",
+                "citation_counts": {"source_count": 1, "evidence_count": 1},
+                "failure_classification": "secret_disclosure",
+            }
+        )
+        bundle_dir = write_bundle(tmp_path, complete_manifest(), sections=sections)
+        result = run_validator(str(bundle_dir))
+        assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+
+    def test_unknown_kind_rejected(self, tmp_path: Path) -> None:
+        sections = _full_prompt_injection_sections()
+        sections["prompt-injection"] = _prompt_injection_section(
+            {
+                "case_id": "injection-unknown-01",
+                "kind": "agent_takeover",
+                "outcome": "evidence_gated_answer",
+                "pass_fail": "pass",
+                "citation_counts": {"source_count": 1, "evidence_count": 1},
+                "failure_classification": "none",
+            }
+        )
+        bundle_dir = write_bundle(tmp_path, complete_manifest(), sections=sections)
+        result = run_validator(str(bundle_dir))
+        assert_failure(result, "schema-violation", "kind")
+
+    def test_unknown_outcome_rejected(self, tmp_path: Path) -> None:
+        sections = _full_prompt_injection_sections()
+        sections["prompt-injection"] = _prompt_injection_section(
+            {
+                "case_id": "injection-unknown-02",
+                "kind": "instruction_override",
+                "outcome": "confident_fallback",
+                "pass_fail": "pass",
+                "citation_counts": {"source_count": 1, "evidence_count": 1},
+                "failure_classification": "none",
+            }
+        )
+        bundle_dir = write_bundle(tmp_path, complete_manifest(), sections=sections)
+        result = run_validator(str(bundle_dir))
+        assert_failure(result, "schema-violation", "outcome")
+
+    def test_unknown_failure_classification_rejected(self, tmp_path: Path) -> None:
+        sections = _full_prompt_injection_sections()
+        sections["prompt-injection"] = _prompt_injection_section(
+            {
+                "case_id": "injection-unknown-03",
+                "kind": "forged_source",
+                "outcome": "evidence_gated_answer",
+                "pass_fail": "fail",
+                "citation_counts": {"source_count": 1, "evidence_count": 1},
+                "failure_classification": "hallucinated_routing",
+            }
+        )
+        bundle_dir = write_bundle(tmp_path, complete_manifest(), sections=sections)
+        result = run_validator(str(bundle_dir))
+        assert_failure(result, "schema-violation", "failure_classification")
+
+    def test_pass_with_non_none_failure_classification_allowed_at_schema_level(self, tmp_path: Path) -> None:
+        # The schema does not couple pass_fail to failure_classification; the
+        # producer contract keeps "none" for a pass. This test documents that
+        # the validator is a schema gate, not a semantic consistency gate.
+        sections = _full_prompt_injection_sections()
+        sections["prompt-injection"] = _prompt_injection_section(
+            {
+                "case_id": "injection-inconsistent-01",
+                "kind": "instruction_override",
+                "outcome": "evidence_gated_answer",
+                "pass_fail": "pass",
+                "citation_counts": {"source_count": 1, "evidence_count": 1},
+                "failure_classification": "policy_override",
+            }
+        )
+        bundle_dir = write_bundle(tmp_path, complete_manifest(), sections=sections)
+        result = run_validator(str(bundle_dir))
+        assert result.returncode == 0, f"pass/none consistency is a producer rule, not a schema rule: {result.stdout}"
+
+    def test_negative_citation_count_rejected(self, tmp_path: Path) -> None:
+        sections = _full_prompt_injection_sections()
+        sections["prompt-injection"] = _prompt_injection_section(
+            {
+                "case_id": "injection-negative-01",
+                "kind": "instruction_override",
+                "outcome": "evidence_gated_answer",
+                "pass_fail": "pass",
+                "citation_counts": {"source_count": -1, "evidence_count": 0},
+                "failure_classification": "none",
+            }
+        )
+        bundle_dir = write_bundle(tmp_path, complete_manifest(), sections=sections)
+        result = run_validator(str(bundle_dir))
+        assert_failure(result, "schema-violation", "source_count")
+
+    def test_missing_citation_count_field_rejected(self, tmp_path: Path) -> None:
+        sections = _full_prompt_injection_sections()
+        sections["prompt-injection"] = _prompt_injection_section(
+            {
+                "case_id": "injection-missing-count-01",
+                "kind": "instruction_override",
+                "outcome": "evidence_gated_answer",
+                "pass_fail": "pass",
+                "citation_counts": {"source_count": 1},
+                "failure_classification": "none",
+            }
+        )
+        bundle_dir = write_bundle(tmp_path, complete_manifest(), sections=sections)
+        result = run_validator(str(bundle_dir))
+        assert_failure(result, "schema-violation", "evidence_count")
+
+    def test_unknown_case_field_rejected(self, tmp_path: Path) -> None:
+        sections = _full_prompt_injection_sections()
+        sections["prompt-injection"] = _prompt_injection_section(
+            {
+                "case_id": "injection-extra-field-01",
+                "kind": "instruction_override",
+                "outcome": "evidence_gated_answer",
+                "pass_fail": "pass",
+                "citation_counts": {"source_count": 1, "evidence_count": 1},
+                "failure_classification": "none",
+                "answer_text": "the full model answer must never be recorded",
+            }
+        )
+        bundle_dir = write_bundle(tmp_path, complete_manifest(), sections=sections)
+        result = run_validator(str(bundle_dir))
+        assert_failure(result, "schema-violation", "answer_text")
+
+    def test_prompt_shaped_value_rejected_by_sensitive_scan(self, tmp_path: Path) -> None:
+        # A section carrying raw prompt text is sensitive-shaped even though no
+        # field name allows it; the value scan must catch it.
+        sections = _full_prompt_injection_sections()
+        sections["prompt-injection"] = _prompt_injection_section(
+            {
+                "case_id": "injection-leak-01",
+                "kind": "instruction_override",
+                "outcome": "evidence_gated_answer",
+                "pass_fail": "pass",
+                "citation_counts": {"source_count": 1, "evidence_count": 1},
+                "failure_classification": "none",
+                "prompt": "system_policy=... user_question=... evidence=...",
+            }
+        )
+        bundle_dir = write_bundle(tmp_path, complete_manifest(), sections=sections)
+        result = run_validator(str(bundle_dir))
+        assert_failure(result, "schema-violation", "prompt")
+
+    def test_host_shaped_value_rejected_by_sensitive_scan(self, tmp_path: Path) -> None:
+        sections = _full_prompt_injection_sections()
+        sections["prompt-injection"] = _prompt_injection_section(
+            {
+                "case_id": "injection-host-01",
+                "kind": "instruction_override",
+                "outcome": "evidence_gated_answer",
+                "pass_fail": "pass",
+                "citation_counts": {"source_count": 1, "evidence_count": 1},
+                "failure_classification": "none",
+                "host": "192.0.2.33:8443",
+            }
+        )
+        bundle_dir = write_bundle(tmp_path, complete_manifest(), sections=sections)
+        result = run_validator(str(bundle_dir))
+        assert_failure(result, "sensitive-shape")
