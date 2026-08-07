@@ -4,6 +4,7 @@ import re
 from time import perf_counter
 from typing import Any
 
+import jieba
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -112,6 +113,13 @@ class MixedModeDocumentRetrieverService:
     def _tokenize(self, text: str) -> list[str]:
         return [item for item in re.split(r"[\s\W_]+", text.lower()) if len(item) >= 2]
 
+    def _complete_anchor_tokens(self, text: str) -> set[str]:
+        return {
+            token
+            for raw_token in jieba.cut(text)
+            if len(token := raw_token.strip().casefold()) >= 2
+        }
+
     def _compact(self, text: str) -> str:
         return "".join(ch for ch in text.lower() if ch.isalnum())
 
@@ -159,7 +167,7 @@ class MixedModeDocumentRetrieverService:
         if query_tokens and query_tokens.intersection(self._tokenize(content_norm)):
             return True
 
-        return False
+        return bool(self._complete_anchor_tokens(query_norm) & self._complete_anchor_tokens(content_norm))
 
     async def _lexical_search(
         self,
