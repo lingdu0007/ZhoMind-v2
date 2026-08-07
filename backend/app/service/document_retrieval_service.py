@@ -144,6 +144,23 @@ class MixedModeDocumentRetrieverService:
         score += min(self._bigram_overlap(query_compact, content_compact), 6) * 0.8
         return score
 
+    def _has_lexical_anchor(self, query: str, content: str) -> bool:
+        query_norm = query.strip().lower()
+        content_norm = (content or "").strip().lower()
+        if not query_norm or not content_norm:
+            return False
+
+        query_compact = self._compact(query_norm)
+        content_compact = self._compact(content_norm)
+        if query_compact and query_compact in content_compact:
+            return True
+
+        query_tokens = set(self._tokenize(query_norm))
+        if query_tokens and query_tokens.intersection(self._tokenize(content_norm)):
+            return True
+
+        return self._bigram_overlap(query_compact, content_compact) > 0
+
     async def _lexical_search(
         self,
         query: str,
@@ -187,6 +204,7 @@ class MixedModeDocumentRetrieverService:
                     "content_preview": chunk.content[:160],
                     "metadata": self._citation_metadata(chunk=chunk, document=document),
                     "retrieval_source": "lexical",
+                    "answer_evidence_eligible": True,
                 }
             )
 
@@ -230,6 +248,7 @@ class MixedModeDocumentRetrieverService:
             dense_items = await self._hydrate_dense_hits(
                 dense_candidates=dense_candidates,
                 fingerprint=fingerprint,
+                query=query,
             )
             if len(dense_items) >= top_k:
                 break
@@ -241,6 +260,7 @@ class MixedModeDocumentRetrieverService:
         *,
         dense_candidates: list[dict[str, Any]],
         fingerprint: str,
+        query: str,
     ) -> list[dict[str, Any]]:
         if not dense_candidates:
             return []
@@ -291,6 +311,9 @@ class MixedModeDocumentRetrieverService:
                     "content_preview": chunk.content[:160],
                     "metadata": self._citation_metadata(chunk=chunk, document=document),
                     "retrieval_source": "dense",
+                    # Dense nearest-neighbor results remain diagnostic candidates. Only
+                    # candidates with a lexical anchor may enter the Answer Evidence Set.
+                    "answer_evidence_eligible": self._has_lexical_anchor(query, chunk.content),
                 }
             )
         return hydrated

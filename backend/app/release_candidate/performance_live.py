@@ -48,8 +48,10 @@ def _stream_sample(base_url: str, token: str, question: str, timeout: float) -> 
         ttft = (perf_counter() - started) * 1000
     total = (perf_counter() - started) * 1000
     outcome, diagnostics = _stream_diagnostics(raw)
-    timing = diagnostics.get("timing_ms") if isinstance(diagnostics, dict) and isinstance(diagnostics.get("timing_ms"), dict) else {}
-    fallback = diagnostics.get("fallback") if isinstance(diagnostics, dict) and isinstance(diagnostics.get("fallback"), dict) else {}
+    timing_value = diagnostics.get("timing_ms")
+    timing = timing_value if isinstance(timing_value, dict) else {}
+    fallback_value = diagnostics.get("fallback")
+    fallback = fallback_value if isinstance(fallback_value, dict) else {}
     if status != 200:
         error = f"HTTP_{status or 0}"
     elif outcome != "evidence_gated_answer":
@@ -96,12 +98,19 @@ def _stream_diagnostics(raw: bytes) -> tuple[str, dict[str, Any]]:
     return outcome, diagnostics
 
 
-async def _collect(base_url: str, token: str, question: str, concurrency: int, requests: int, timeout: float) -> tuple[PerformanceSample, ...]:
+async def _collect(
+    base_url: str,
+    token: str,
+    question: str,
+    concurrency: int,
+    requests: int,
+    timeout_seconds: float,
+) -> tuple[PerformanceSample, ...]:
     semaphore = asyncio.Semaphore(concurrency)
 
     async def one() -> PerformanceSample:
         async with semaphore:
-            return await asyncio.to_thread(_sample, base_url, token, question, timeout)
+            return await asyncio.to_thread(_sample, base_url, token, question, timeout_seconds)
 
     return tuple(await asyncio.gather(*(one() for _ in range(requests))))
 
@@ -126,20 +135,54 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     profiles = []
     for concurrency in (1, 5):
         samples = await _collect(args.base_url, token, args.question, concurrency, args.requests, args.timeout_seconds)
-        profiles.append(build_performance_profile(run_id=f"{args.run_id}-c{concurrency}", concurrency=concurrency, samples=samples))
+        profiles.append(
+            build_performance_profile(
+                run_id=f"{args.run_id}-c{concurrency}",
+                concurrency=concurrency,
+                samples=samples,
+            )
+        )
     envelope = freeze_regression_envelope(tuple(profiles))
+    conditions = {
+        "authenticated_role": "admin",
+        "request_path": "/api/v1/chat/stream",
+        "ttft_definition": "first body byte received from the authenticated SSE response",
+        "timeout_seconds": args.timeout_seconds,
+    }
+    serialized_profiles = []
+    for profile in profiles:
+        metrics = profile.metrics
+        serialized_profiles.append(
+            {
+                "section": "performance",
+                "schema_version": "1.0.0",
+                "run_ids": [profile.run_id],
+                "load": profile.load,
+                "metrics": {
+                    "ttft_ms": metrics["ttft_ms"],
+                    "total_ms": metrics["total_ms"],
+                    "error_rate": metrics["error_rate"],
+                    "retrieval_ms": metrics["retrieval_ms"],
+                    "provider_ms": metrics["generation_provider_ms"],
+                    "embedding_provider_ms": metrics["embedding_provider_ms"],
+                    "persistence_ms": metrics["persistence_ms"],
+                    "application_controlled_ms": metrics["application_controlled_ms"],
+                },
+                "target": {
+                    "p95_seconds_target": 12,
+                    "met": metrics["total_ms"]["p95"] <= 12000,
+                    "note": "Measured end-to-end P95; the target does not determine tolerance.",
+                },
+                "error_counts": profile.error_counts,
+                "regression_envelope": envelope,
+            }
+        )
     return {
         "kind": "performance-run",
         "source_revision": args.source_revision,
         "generated_at": datetime.now(UTC).isoformat(),
-        "conditions": {"authenticated_role": "admin", "request_path": "/api/v1/chat/stream", "ttft_definition": "first body byte received from the authenticated SSE response", "timeout_seconds": args.timeout_seconds},
-        "profiles": [
-            {"section": "performance", "schema_version": "1.0.0", "run_ids": [profile.run_id], "load": profile.load,
-             "metrics": {"ttft_ms": profile.metrics["ttft_ms"], "total_ms": profile.metrics["total_ms"], "error_rate": profile.metrics["error_rate"], "retrieval_ms": profile.metrics["retrieval_ms"], "provider_ms": profile.metrics["generation_provider_ms"], "embedding_provider_ms": profile.metrics["embedding_provider_ms"], "persistence_ms": profile.metrics["persistence_ms"], "application_controlled_ms": profile.metrics["application_controlled_ms"]},
-             "target": {"p95_seconds_target": 12, "met": profile.metrics["total_ms"]["p95"] <= 12000, "note": "Measured end-to-end P95; the target does not determine tolerance."},
-             "error_counts": profile.error_counts, "regression_envelope": envelope}
-            for profile in profiles
-        ],
+        "conditions": conditions,
+        "profiles": serialized_profiles,
     }
 
 
