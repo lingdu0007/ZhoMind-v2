@@ -159,7 +159,7 @@ class MixedModeDocumentRetrieverService:
         if query_tokens and query_tokens.intersection(self._tokenize(content_norm)):
             return True
 
-        return self._bigram_overlap(query_compact, content_compact) > 0
+        return False
 
     async def _lexical_search(
         self,
@@ -204,7 +204,7 @@ class MixedModeDocumentRetrieverService:
                     "content_preview": chunk.content[:160],
                     "metadata": self._citation_metadata(chunk=chunk, document=document),
                     "retrieval_source": "lexical",
-                    "answer_evidence_eligible": True,
+                    "answer_evidence_eligible": self._has_lexical_anchor(query, chunk.content),
                 }
             )
 
@@ -312,7 +312,7 @@ class MixedModeDocumentRetrieverService:
                     "metadata": self._citation_metadata(chunk=chunk, document=document),
                     "retrieval_source": "dense",
                     # Dense nearest-neighbor results remain diagnostic candidates. Only
-                    # candidates with a lexical anchor may enter the Answer Evidence Set.
+                    # passages with a complete lexical anchor may enter answer evidence.
                     "answer_evidence_eligible": self._has_lexical_anchor(query, chunk.content),
                 }
             )
