@@ -204,8 +204,13 @@ class ContextPackNode:
         self.max_excerpt_chars = max_excerpt_chars
 
     async def run(self, state: RagStateDict) -> RagStateDict:
+        eligible_candidates = [
+            candidate
+            for candidate in state["candidates_reranked"]
+            if candidate.get("answer_evidence_eligible") is not False
+        ]
         evidence = select_answer_evidence(
-            state["candidates_reranked"],
+            eligible_candidates,
             max_items=self.top_k,
             max_excerpt_chars=self.max_excerpt_chars,
         )

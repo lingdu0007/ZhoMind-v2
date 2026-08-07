@@ -18,6 +18,7 @@ class ProviderTraceDetail(TypedDict):
     lexical_scope: NotRequired[str]
     sparse_count: NotRequired[int]
     dense_count: NotRequired[int]
+    embedding_provider_ms: NotRequired[float]
 
 
 class RagStateDict(TypedDict):
