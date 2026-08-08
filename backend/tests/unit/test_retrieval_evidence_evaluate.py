@@ -274,3 +274,9 @@ def test_retrieval_evidence_script_exposes_the_evaluate_profile() -> None:
     script = (REPOSITORY_ROOT / "retrieval-evidence").read_text(encoding="utf-8")
     assert "retrieval-evidence {smoke|fallback|evaluate|generation-smoke}" in script
     assert "evaluate" in script
+
+
+def test_retrieval_evidence_isolated_config_preserves_bootstrap_authentication() -> None:
+    script = (REPOSITORY_ROOT / "retrieval-evidence").read_text(encoding="utf-8")
+    assert 'needed["BOOTSTRAP_ADMIN_USERNAME"] = 1' in script
+    assert 'needed["BOOTSTRAP_ADMIN_PASSWORD"] = 1' in script
