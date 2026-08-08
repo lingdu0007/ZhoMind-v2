@@ -46,6 +46,8 @@ if [[ -n "$source_runtime_config" ]]; then
       needed["EMBEDDING_BASE_URL"] = 1
       needed["EMBEDDING_MODEL"] = 1
       needed["DENSE_EMBEDDING_DIM"] = 1
+      needed["BOOTSTRAP_ADMIN_USERNAME"] = 1
+      needed["BOOTSTRAP_ADMIN_PASSWORD"] = 1
     }
     {
       separator = index($0, "=")
