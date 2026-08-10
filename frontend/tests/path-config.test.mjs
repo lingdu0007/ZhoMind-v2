@@ -18,3 +18,8 @@ test('http adapter has explicit direct backend /api/v1 fallback', () => {
   const content = read('./src/api/http.js');
   assert.match(content, /http:\/\/127\.0\.0\.1:8000\/api\/v1/);
 });
+
+test('browser base gate isolates resource-heavy acceptance files', () => {
+  const packageJson = JSON.parse(read('./package.json'));
+  assert.match(packageJson.scripts['test:browser:base'], /node --test --test-concurrency=1 /);
+});
