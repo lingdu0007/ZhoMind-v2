@@ -21,6 +21,44 @@ from app.rag.interfaces import EmbeddingProvider, ProviderExecError, RetrieveRes
 from app.settings.runtime import get_runtime_settings
 
 _DEFAULT_EMBEDDING_PROVIDER = "embedding-default"
+_ANSWER_EVIDENCE_QUERY_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "is",
+        "are",
+        "was",
+        "were",
+        "what",
+        "which",
+        "who",
+        "where",
+        "when",
+        "why",
+        "how",
+        "please",
+        "explain",
+        "describe",
+        "tell",
+        "about",
+        "based",
+        "according",
+        "请问",
+        "说明",
+        "解释",
+        "描述",
+        "回答",
+        "介绍",
+        "根据",
+        "资料",
+        "一下",
+        "什么",
+        "如何",
+        "怎么",
+        "为什么",
+    }
+)
 
 
 def _normalize_provider_error(exc: Exception) -> ProviderExecError:
@@ -113,12 +151,13 @@ class MixedModeDocumentRetrieverService:
     def _tokenize(self, text: str) -> list[str]:
         return [item for item in re.split(r"[\s\W_]+", text.lower()) if len(item) >= 2]
 
-    def _complete_anchor_tokens(self, text: str) -> set[str]:
-        return {
-            token
-            for raw_token in jieba.cut(text)
-            if len(token := raw_token.strip().casefold()) >= 2
-        }
+    def _complete_anchor_tokens(self, text: str) -> list[str]:
+        tokens: list[str] = []
+        for raw_token in jieba.cut(text):
+            for token in self._tokenize(raw_token):
+                if token not in _ANSWER_EVIDENCE_QUERY_STOPWORDS:
+                    tokens.append(token)
+        return tokens
 
     def _compact(self, text: str) -> str:
         return "".join(ch for ch in text.lower() if ch.isalnum())
@@ -163,11 +202,15 @@ class MixedModeDocumentRetrieverService:
         if query_compact and query_compact in content_compact:
             return True
 
-        query_tokens = set(self._tokenize(query_norm))
-        if query_tokens and query_tokens.intersection(self._tokenize(content_norm)):
-            return True
+        query_tokens = self._complete_anchor_tokens(query_norm)
+        content_tokens = self._complete_anchor_tokens(content_norm)
+        if not query_tokens:
+            return False
+        if len(query_tokens) == 1:
+            return query_tokens[0] in content_tokens
 
-        return bool(self._complete_anchor_tokens(query_norm) & self._complete_anchor_tokens(content_norm))
+        content_pairs = set(zip(content_tokens, content_tokens[1:], strict=False))
+        return any(pair in content_pairs for pair in zip(query_tokens, query_tokens[1:], strict=False))
 
     async def _lexical_search(
         self,

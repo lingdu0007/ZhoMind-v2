@@ -780,9 +780,12 @@ def test_dense_only_candidate_without_lexical_anchor_is_insufficient_evidence(mo
             response = client.post(
                 "/api/v1/chat",
                 headers=headers,
-                # This shares a bigram with the published passage but is neither a
-                # query substring nor a passage token. It is not answer evidence.
-                json={"message": "qxevidencez", "session_id": "session_dense_unmatched_1"},
+                # A generic shared token is not a complete query anchor. The
+                # published passage says nothing about the requested subject.
+                json={
+                    "message": "what evidence supports the warranty period",
+                    "session_id": "session_dense_unmatched_1",
+                },
             )
             assert response.status_code == 200
             data = _extract_data(response.json())
