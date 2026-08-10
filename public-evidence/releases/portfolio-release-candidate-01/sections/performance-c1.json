@@ -1,0 +1,44 @@
+{
+  "error_counts": {},
+  "load": {
+    "concurrency": 1,
+    "requests": 20
+  },
+  "metrics": {
+    "application_controlled_ms": 249.7371997994851,
+    "embedding_provider_ms": 4009.84035,
+    "error_rate": 0.0,
+    "persistence_ms": 6.85,
+    "provider_ms": 4727.4,
+    "retrieval_ms": 4152.85,
+    "total_ms": {
+      "p50": 7654.209283005912,
+      "p95": 15929.913056024816,
+      "p99": 23627.261002955493
+    },
+    "ttft_ms": {
+      "p50": 7651.02577599464,
+      "p95": 15928.33052703645,
+      "p99": 23625.012543983757
+    }
+  },
+  "regression_envelope": {
+    "center_ms": 653.0494788753111,
+    "derivation": "p95 plus three observed population standard deviations; not derived from the 12-second target",
+    "metric": "application_controlled_ms",
+    "observed_sample_count": 40,
+    "spread_ms": 1156.405866422761,
+    "threshold_ms": 6128.298830001827,
+    "tolerance_ms": 3470.0
+  },
+  "run_ids": [
+    "performance-20260810T143000Z-c1"
+  ],
+  "schema_version": "1.0.0",
+  "section": "performance",
+  "target": {
+    "met": false,
+    "note": "Measured end-to-end P95; the target does not determine tolerance.",
+    "p95_seconds_target": 12
+  }
+}

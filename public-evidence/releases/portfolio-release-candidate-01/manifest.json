@@ -1,0 +1,306 @@
+{
+  "artifacts": [
+    {
+      "kind": "manifest",
+      "path": "manifest.json",
+      "role": "manifest",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "kind": "retrieval",
+      "path": "sections/retrieval.json",
+      "role": "section",
+      "sha256": "d2c02ed7b64313aa4db3c53164a80ba2d5028d25803b5c8fc14d99747c14218e"
+    },
+    {
+      "kind": "answer",
+      "path": "sections/answer.json",
+      "role": "section",
+      "sha256": "078bab6a15fb62fd858c5253f11e043f30dc98e2ff7080301016583248fb8805"
+    },
+    {
+      "kind": "prompt-injection",
+      "path": "sections/prompt-injection.json",
+      "role": "section",
+      "sha256": "9ecd9806865c63d485c002ebf39609ce4085e276ef22f5837eaa7955245a9fad"
+    },
+    {
+      "kind": "performance",
+      "path": "sections/performance-c1.json",
+      "role": "section",
+      "sha256": "bcd477afe002d3d5d74852f9444940f87f1487595a7b8d3740b8b1378a2755fb"
+    },
+    {
+      "kind": "performance",
+      "path": "sections/performance-c5.json",
+      "role": "section",
+      "sha256": "74bfc3ecdfebc0d027044b23195e6c5e2910a25fa024517470b2bf7490cde68e"
+    },
+    {
+      "kind": "production-acceptance",
+      "path": "sections/production-acceptance.json",
+      "role": "section",
+      "sha256": "5e144ca89b43977927c75cc30faa35cf34369f745b166bab7698f85bdf729d68"
+    },
+    {
+      "description": "Corpus integrity inventory; source excerpts are excluded.",
+      "kind": "corpus",
+      "path": "corpus-manifest.json",
+      "role": "inventory",
+      "sha256": "41cabcf6ada06e9594ccb3f187cc0bf9eeb2ea637e84ff69a2ab66ec2c9a391a"
+    },
+    {
+      "description": "Query-set identity and hash; prompt text is excluded.",
+      "kind": "query-set",
+      "path": "query-set-manifest.json",
+      "role": "inventory",
+      "sha256": "97258d3447da99f1881a15f30c53dae7bd2cd29a6e8fcd440ea5dd025648e6cf"
+    },
+    {
+      "description": "Normalized relevance annotations keyed only by public query and passage identifiers.",
+      "kind": "annotation",
+      "path": "annotations.json",
+      "role": "data",
+      "sha256": "bdfa9959e3ba0d90703f5b2c2e0015f9488e414eaedcc40c807a5f2619075f12"
+    },
+    {
+      "description": "Sanitized retrieval candidate traces without source excerpts.",
+      "kind": "trace",
+      "path": "candidates.json",
+      "role": "data",
+      "sha256": "8c075e7f83c5d46a70e4cce5479a00d2826e1f7c16600e3af073b70f73d1e847"
+    },
+    {
+      "description": "Frozen evaluation inputs, model identity, chunking, and metric definitions.",
+      "kind": "retrieval",
+      "path": "retrieval-run-conditions.json",
+      "role": "data",
+      "sha256": "0defeb799ead5b6a3873046b2783e30cfdb52abfd3617596118d5d6f2c40a6ab"
+    },
+    {
+      "description": "Workload, model identity, latency boundaries, and non-identifying environment class.",
+      "kind": "performance",
+      "path": "performance-run-conditions.json",
+      "role": "data",
+      "sha256": "660e3aaf62b6f4bd6a5d73231628483aa5bc8a0ed0813b748385cac77943aa61"
+    },
+    {
+      "description": "Two normalized independent clean-start smoke outcomes.",
+      "kind": "production-acceptance",
+      "path": "clean-start-smoke.json",
+      "role": "data",
+      "sha256": "d15279c685086c59499693c2f7ed3c315e4669d13d3be9ea23a6de7f27ac371f"
+    },
+    {
+      "description": "Normalized persistent-stack Administrator and Knowledge User browser role outcomes.",
+      "kind": "production-acceptance",
+      "path": "production-browser-roles.json",
+      "role": "data",
+      "sha256": "0530feb8f64cd2afa4417856d1ca8c8a1a7678dc61a046702a18e7f20f8a3d43"
+    },
+    {
+      "kind": "report",
+      "path": "REPORT.md",
+      "role": "report-en",
+      "sha256": "5fa44011df8045334cec544b43dac76970a59b10740324251d6c216d7852bef4"
+    },
+    {
+      "kind": "report",
+      "path": "REPORT.zh-CN.md",
+      "role": "report-zh",
+      "sha256": "42809c15570cc721b970265f8efc15d41eddbb8e230d667767659f174678bb46"
+    }
+  ],
+  "bundle_id": "portfolio-release-candidate-01",
+  "canonical_language": "en",
+  "kind": "public-evidence-bundle",
+  "limits": [
+    {
+      "kind": "target",
+      "name": "twelve_second_p95_target",
+      "statement": "The twelve-second end-to-end P95 target was not met by either recorded load profile; c5 remains an explicit limitation, not a functional acceptance blocker."
+    },
+    {
+      "kind": "qualification",
+      "name": "provider_latency_separation",
+      "statement": "Generation-provider and embedding-provider time are external observations and are reported separately from application-controlled time."
+    },
+    {
+      "kind": "qualification",
+      "name": "recorded_conditions_only",
+      "statement": "Results apply only to the recorded corpus, query set, model identity, load, host envelope, and observation window."
+    },
+    {
+      "kind": "exclusion",
+      "name": "no_universal_retrieval_winner",
+      "statement": "The controlled comparison does not claim a universal retrieval winner or relabel production Migration Retrieval."
+    }
+  ],
+  "mirror_language": "zh-CN",
+  "provenance": {
+    "corpora": [
+      {
+        "corpus_id": "project-derived-corpus",
+        "sha256": "894d10004f25a2a6462870c1a869586ca83dfc28f0407f75f8cc33d9757ac39d",
+        "version": "1.0.0"
+      }
+    ],
+    "query_sets": [
+      {
+        "query_count": 16,
+        "query_set_id": "evaluation-query-set",
+        "sha256": "a468a1af9fc0c7b979ec1c5dfa8874a5ad27e25bcc79de1e0142564db992df20",
+        "version": "1.0.0"
+      }
+    ],
+    "revisions": [
+      "91753f1c1ff6fc07bc262dfa50fb719a63210e0b"
+    ],
+    "runs": [
+      {
+        "finished_at": "2026-08-10T14:53:01.785003+00:00",
+        "kind": "retrieval-evaluation",
+        "outcome": "passed",
+        "run_id": "quality-20260810T145500Z-dense",
+        "source_revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b",
+        "started_at": "2026-08-10T14:51:02.612040+00:00"
+      },
+      {
+        "finished_at": "2026-08-10T14:53:01.785003+00:00",
+        "kind": "retrieval-evaluation",
+        "outcome": "passed",
+        "run_id": "quality-20260810T145500Z-hybrid_rrf",
+        "source_revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b",
+        "started_at": "2026-08-10T14:51:02.612040+00:00"
+      },
+      {
+        "finished_at": "2026-08-10T14:53:01.785003+00:00",
+        "kind": "retrieval-evaluation",
+        "outcome": "passed",
+        "run_id": "quality-20260810T145500Z-sparse_bm25",
+        "source_revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b",
+        "started_at": "2026-08-10T14:51:02.612040+00:00"
+      },
+      {
+        "finished_at": "2026-08-10T14:25:35.715084+00:00",
+        "kind": "retrieval-smoke",
+        "outcome": "passed",
+        "run_id": "production-20260810T142508Z-2384065-31253",
+        "source_revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b",
+        "started_at": "2026-08-10T14:25:17.865402+00:00"
+      },
+      {
+        "finished_at": "2026-08-10T14:26:13.525093+00:00",
+        "kind": "generation-smoke",
+        "outcome": "passed",
+        "run_id": "production-20260810T142508Z-2384065-31253-generation",
+        "source_revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b",
+        "started_at": "2026-08-10T14:25:44.321984+00:00"
+      },
+      {
+        "finished_at": "2026-08-10T14:27:54.876262+00:00",
+        "kind": "answer-acceptance",
+        "outcome": "passed",
+        "run_id": "production-insufficient-20260810T142700Z",
+        "source_revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b",
+        "started_at": "2026-08-10T14:27:52.057354+00:00"
+      },
+      {
+        "finished_at": "2026-08-10T14:29:30.876379+00:00",
+        "kind": "answer-acceptance",
+        "outcome": "passed",
+        "run_id": "generation-unavailable-20260810T142800Z",
+        "source_revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b",
+        "started_at": "2026-08-10T14:29:09.495432+00:00"
+      },
+      {
+        "finished_at": "2026-08-10T14:48:07.657873+00:00",
+        "kind": "production-acceptance",
+        "outcome": "passed",
+        "run_id": "production-lifecycle-20260810T145200Z",
+        "source_revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b",
+        "started_at": "2026-08-10T14:48:05.396614+00:00"
+      },
+      {
+        "finished_at": "2026-08-10T13:03:25Z",
+        "kind": "production-acceptance",
+        "outcome": "passed",
+        "run_id": "deployment-20260810T124000Z",
+        "source_revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b",
+        "started_at": "2026-08-10T13:02:24Z"
+      },
+      {
+        "finished_at": "2026-08-10T14:50:59Z",
+        "kind": "production-acceptance",
+        "outcome": "passed",
+        "run_id": "production-browser-roles-20260810T145000Z",
+        "source_revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b",
+        "started_at": "2026-08-10T14:50:00Z"
+      },
+      {
+        "finished_at": "2026-08-10T13:15:33Z",
+        "kind": "production-acceptance",
+        "outcome": "passed",
+        "run_id": "browser-gate-20260810T130400Z",
+        "source_revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b",
+        "started_at": "2026-08-10T13:04:38Z"
+      },
+      {
+        "finished_at": "2026-08-10T14:35:37.852648+00:00",
+        "kind": "performance-run",
+        "outcome": "passed",
+        "run_id": "performance-20260810T143000Z",
+        "source_revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b",
+        "started_at": "2026-08-10T14:30:00Z"
+      },
+      {
+        "finished_at": "2026-08-10T14:35:37.852648+00:00",
+        "kind": "performance-run",
+        "outcome": "passed",
+        "run_id": "performance-20260810T143000Z-c1",
+        "source_revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b",
+        "started_at": "2026-08-10T14:30:00Z"
+      },
+      {
+        "finished_at": "2026-08-10T14:35:37.852648+00:00",
+        "kind": "performance-run",
+        "outcome": "passed",
+        "run_id": "performance-20260810T143000Z-c5",
+        "source_revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b",
+        "started_at": "2026-08-10T14:30:00Z"
+      },
+      {
+        "finished_at": "2026-08-10T14:54:24.297992+00:00",
+        "kind": "retrieval-smoke",
+        "outcome": "passed",
+        "run_id": "clean-start-20260810T145500Z-1",
+        "source_revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b",
+        "started_at": "2026-08-10T14:54:01.324631+00:00"
+      },
+      {
+        "finished_at": "2026-08-10T14:56:06.699509+00:00",
+        "kind": "retrieval-smoke",
+        "outcome": "passed",
+        "run_id": "clean-start-20260810T145500Z-2",
+        "source_revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b",
+        "started_at": "2026-08-10T14:55:45.097690+00:00"
+      },
+      {
+        "finished_at": "2026-08-10T14:59:05.543981+00:00",
+        "kind": "prompt-injection-run",
+        "outcome": "passed",
+        "run_id": "prompt-injection-20260810T145500Z",
+        "source_revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b",
+        "started_at": "2026-08-10T14:57:27.064381+00:00"
+      }
+    ]
+  },
+  "release_candidate": {
+    "created_at": "2026-08-10T14:59:05Z",
+    "identity": "portfolio-release-candidate-01",
+    "revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b",
+    "status": "accepted"
+  },
+  "schema_version": "1.1.0",
+  "source_revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b"
+}

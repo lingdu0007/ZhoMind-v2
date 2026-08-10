@@ -1,0 +1,29 @@
+{
+  "runs": [
+    {
+      "finished_at": "2026-08-10T14:54:24.297992+00:00",
+      "observations": {
+        "authenticated_retrieval_smoke_passed": true,
+        "isolated_compose_started_cleanly": true,
+        "isolated_resources_cleaned": true
+      },
+      "outcome": "passed",
+      "run_id": "clean-start-20260810T145500Z-1",
+      "source_revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b",
+      "started_at": "2026-08-10T14:54:01.324631+00:00"
+    },
+    {
+      "finished_at": "2026-08-10T14:56:06.699509+00:00",
+      "observations": {
+        "authenticated_retrieval_smoke_passed": true,
+        "isolated_compose_started_cleanly": true,
+        "isolated_resources_cleaned": true
+      },
+      "outcome": "passed",
+      "run_id": "clean-start-20260810T145500Z-2",
+      "source_revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b",
+      "started_at": "2026-08-10T14:55:45.097690+00:00"
+    }
+  ],
+  "schema_version": "1.0.0"
+}
