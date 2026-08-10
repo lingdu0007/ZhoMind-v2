@@ -150,7 +150,7 @@ async def _seed_chat_retrieval_docs(
             document_id="doc-chat-dense",
             generation=1,
             chunk_index=0,
-            content="alpha evidence from dense corpus",
+            content="alpha beta evidence from dense corpus",
             keywords=[],
             generated_questions=[],
             chunk_metadata={"source": "dense"},
@@ -160,7 +160,7 @@ async def _seed_chat_retrieval_docs(
             document_id="doc-chat-lexical",
             generation=1,
             chunk_index=0,
-            content="beta evidence from lexical fallback",
+            content="alpha beta evidence from lexical fallback",
             keywords=[],
             generated_questions=[],
             chunk_metadata={"source": "lexical"},
@@ -608,7 +608,7 @@ def test_chat_dense_trace_uses_default_mixed_mode_retriever(monkeypatch) -> None
         "document_id": "doc-chat-dense",
         "generation": 1,
         "chunk_index": 0,
-        "content_sha256": hashlib.sha256(b"alpha evidence from dense corpus").hexdigest(),
+        "content_sha256": hashlib.sha256(b"alpha beta evidence from dense corpus").hexdigest(),
         "distance": 0.97,
     }
 
@@ -728,7 +728,7 @@ def test_dense_only_candidate_without_lexical_anchor_is_insufficient_evidence(mo
         "document_id": "doc-chat-dense",
         "generation": 1,
         "chunk_index": 0,
-        "content_sha256": hashlib.sha256(b"alpha evidence from dense corpus").hexdigest(),
+        "content_sha256": hashlib.sha256(b"alpha beta evidence from dense corpus").hexdigest(),
         "distance": 0.97,
     }
 
