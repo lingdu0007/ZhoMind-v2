@@ -60,7 +60,7 @@ test('Conversation Workspace reports streaming and completed answers through the
   await page.goto(`${baseUrl}chat`);
   await page.getByRole('heading', { name: '对话工作区' }).waitFor();
 
-  await sendQuestion(page, '请说明部署流程');
+  await sendQuestion(page, '部署前需要做什么？');
 
   await page.getByText('部署前需要完成变更审批。').waitFor();
   await page.getByRole('status').filter({ hasText: '已完成' }).waitFor();
@@ -75,7 +75,7 @@ test('stopping a streamed answer marks it incomplete without fabricated content'
   await page.goto(`${baseUrl}chat`);
   await page.getByRole('heading', { name: '对话工作区' }).waitFor();
 
-  await sendQuestion(page, '请说明部署流程');
+  await sendQuestion(page, '部署前需要做什么？');
   await page.getByRole('button', { name: '停止' }).waitFor();
   await page.getByRole('button', { name: '停止' }).click();
 
@@ -90,10 +90,10 @@ test('a generation-unavailable answer stays fail-closed and a retried question s
   await page.goto(`${baseUrl}chat`);
   await page.getByRole('heading', { name: '对话工作区' }).waitFor();
 
-  await sendQuestion(page, '请说明部署流程');
+  await sendQuestion(page, '部署前需要做什么？');
   await page.getByText('【生成不可用】生成服务暂不可用，请稍后重试。').waitFor();
 
-  await sendQuestion(page, '请说明部署流程');
+  await sendQuestion(page, '部署前需要做什么？');
   await page.getByText('部署前需要完成变更审批。').waitFor();
   assert.equal(await page.getByText('【生成不可用】生成服务暂不可用，请稍后重试。').count(), 1);
 });
