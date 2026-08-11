@@ -10,7 +10,7 @@ The screenshot is a bounded static render of the existing Chinese application en
 
 ## Portfolio Release
 
-The accepted code candidate is `91753f1c1ff6fc07bc262dfa50fb719a63210e0b`. Its reviewed, non-sensitive [Public Evidence Bundle](public-evidence/releases/portfolio-release-candidate-01/REPORT.md) is `portfolio-release-candidate-01`; the [manifest](public-evidence/releases/portfolio-release-candidate-01/manifest.json) binds run identities, frozen corpus/query hashes, artifact hashes, and declared limits to that revision.
+The accepted runtime source candidate is `91753f1c1ff6fc07bc262dfa50fb719a63210e0b`. Its reviewed, non-sensitive [Public Evidence Bundle](public-evidence/releases/portfolio-release-candidate-01/REPORT.md) is `portfolio-release-candidate-01`; the [manifest](public-evidence/releases/portfolio-release-candidate-01/manifest.json) binds run identities, frozen corpus/query hashes, artifact hashes, and declared limits to that source revision. The release artifact revision is the Git commit that contains this checked bundle and the bilingual release materials; before tagging, it must equal local `main`, the authoritative remote `main`, and the tag target. The source revision must be an ancestor of that artifact revision, because a generated bundle cannot self-reference the hash of the commit that adds it.
 
 The [Interview Dossier](docs/portfolio/INTERVIEW-DOSSIER.md) maps every portfolio claim to a source file, accepted test, or bundle artifact. The [Release Notes](docs/releases/PORTFOLIO-RELEASE-v1.0.0.md) summarize the development sequence and release boundary without requiring a reviewer to reconstruct the commit history.
 
@@ -108,7 +108,7 @@ cd ..
 python3 scripts/check-docs-parity.py
 python3 scripts/validate-evidence-bundle.py --all
 python3 scripts/scan-secrets.py
-python3 scripts/verify-portfolio-release.py --expected-source-revision 91753f1c1ff6fc07bc262dfa50fb719a63210e0b
+python3 scripts/verify-portfolio-release.py --expected-source-revision 91753f1c1ff6fc07bc262dfa50fb719a63210e0b --expected-release-revision HEAD
 ```
 
 Real embedding, Milvus, provider, Compose, and persistent-stack acceptance are deliberately separate remote-only checks. Review [the Public Evidence Bundle](public-evidence/releases/portfolio-release-candidate-01/REPORT.md) for its recorded conditions and limits rather than treating a local deterministic run as live-provider or production evidence.

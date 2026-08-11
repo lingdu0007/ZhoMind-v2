@@ -4,7 +4,7 @@
 
 ## Release Scope
 
-This Portfolio Release publishes the reviewed project narrative and the accepted, non-sensitive evidence subset for source candidate `91753f1c1ff6fc07bc262dfa50fb719a63210e0b`. The release record and tag identify the exact merged revision; the source candidate remains the provenance identity for accepted runtime observations because a generated bundle cannot self-reference the commit that adds it.
+This Portfolio Release publishes the reviewed project narrative and the accepted, non-sensitive evidence subset for runtime source candidate `91753f1c1ff6fc07bc262dfa50fb719a63210e0b`. The release artifact revision is the exact merged commit containing the bundle and these bilingual materials; the release record and tag identify that revision. The source candidate remains the provenance identity for accepted runtime observations because a generated bundle cannot self-reference the commit that adds it.
 
 ## Meaningful Development History
 
