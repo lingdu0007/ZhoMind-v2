@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import time
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -67,7 +67,7 @@ class ProviderRouter:
                 if not self._is_retryable(exc):
                     break
 
-        hops = max(0, len([x for x in attempts if x["error_code"]]))
+        hops = max(0, len(attempts) - 1)
         return {
             "text": text,
             "final_provider": final_provider,

@@ -1,0 +1,182 @@
+{
+  "section": "retrieval",
+  "schema_version": "1.0.0",
+  "run_ids": [
+    "example-run-20260805"
+  ],
+  "corpus_id": "project-derived-corpus",
+  "query_set_id": "evaluation-query-set",
+  "modes": [
+    "sparse_bm25",
+    "dense",
+    "hybrid_rrf",
+    "migration"
+  ],
+  "metrics": [
+    {
+      "name": "evidence_recall@3",
+      "mode": "sparse_bm25",
+      "value": 0.66,
+      "unit": "ratio"
+    },
+    {
+      "name": "evidence_recall@5",
+      "mode": "sparse_bm25",
+      "value": 1.0,
+      "unit": "ratio"
+    },
+    {
+      "name": "evidence_recall@10",
+      "mode": "sparse_bm25",
+      "value": 1.0,
+      "unit": "ratio"
+    },
+    {
+      "name": "context_precision@3",
+      "mode": "sparse_bm25",
+      "value": 0.5,
+      "unit": "ratio"
+    },
+    {
+      "name": "context_precision@5",
+      "mode": "sparse_bm25",
+      "value": 0.5,
+      "unit": "ratio"
+    },
+    {
+      "name": "context_precision@10",
+      "mode": "sparse_bm25",
+      "value": 0.5,
+      "unit": "ratio"
+    },
+    {
+      "name": "first_gold_rank",
+      "mode": "sparse_bm25",
+      "value": 1,
+      "unit": "rank"
+    },
+    {
+      "name": "retrieval_duration_ms",
+      "mode": "sparse_bm25",
+      "value": 12.0,
+      "unit": "ms"
+    },
+    {
+      "name": "evidence_recall@3",
+      "mode": "dense",
+      "value": 0.5,
+      "unit": "ratio"
+    },
+    {
+      "name": "evidence_recall@5",
+      "mode": "dense",
+      "value": 0.75,
+      "unit": "ratio"
+    },
+    {
+      "name": "evidence_recall@10",
+      "mode": "dense",
+      "value": 1.0,
+      "unit": "ratio"
+    },
+    {
+      "name": "context_precision@3",
+      "mode": "dense",
+      "value": 0.5,
+      "unit": "ratio"
+    },
+    {
+      "name": "context_precision@5",
+      "mode": "dense",
+      "value": 0.5,
+      "unit": "ratio"
+    },
+    {
+      "name": "context_precision@10",
+      "mode": "dense",
+      "value": 0.5,
+      "unit": "ratio"
+    },
+    {
+      "name": "first_gold_rank",
+      "mode": "dense",
+      "value": 1,
+      "unit": "rank"
+    },
+    {
+      "name": "retrieval_duration_ms",
+      "mode": "dense",
+      "value": 18.0,
+      "unit": "ms"
+    },
+    {
+      "name": "evidence_recall@3",
+      "mode": "hybrid_rrf",
+      "value": 0.66,
+      "unit": "ratio"
+    },
+    {
+      "name": "evidence_recall@5",
+      "mode": "hybrid_rrf",
+      "value": 1.0,
+      "unit": "ratio"
+    },
+    {
+      "name": "evidence_recall@10",
+      "mode": "hybrid_rrf",
+      "value": 1.0,
+      "unit": "ratio"
+    },
+    {
+      "name": "context_precision@3",
+      "mode": "hybrid_rrf",
+      "value": 0.5,
+      "unit": "ratio"
+    },
+    {
+      "name": "context_precision@5",
+      "mode": "hybrid_rrf",
+      "value": 0.5,
+      "unit": "ratio"
+    },
+    {
+      "name": "context_precision@10",
+      "mode": "hybrid_rrf",
+      "value": 0.5,
+      "unit": "ratio"
+    },
+    {
+      "name": "first_gold_rank",
+      "mode": "hybrid_rrf",
+      "value": 1,
+      "unit": "rank"
+    },
+    {
+      "name": "retrieval_duration_ms",
+      "mode": "hybrid_rrf",
+      "value": 24.0,
+      "unit": "ms"
+    }
+  ],
+  "boundary_query_diagnostics": [
+    {
+      "query_id": "boundary-conflicting-01",
+      "reason_kind": "conflicting",
+      "explanation": "The corpus contains two published versions with contradictory instructions for this boundary case."
+    }
+  ],
+  "conditions": {
+    "chunking": {
+      "policy": "qa_chunking",
+      "chunk_chars": 500,
+      "overlap_chars": 50
+    },
+    "output_depths": [
+      3,
+      5,
+      10
+    ],
+    "corpus_version": "1.0.0",
+    "query_set_version": "1.0.0"
+  }
+}

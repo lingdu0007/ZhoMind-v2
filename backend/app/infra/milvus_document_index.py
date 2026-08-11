@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
-from typing import Any
+from collections.abc import AsyncIterator, Iterable
+from typing import Any, cast
 
 from pymilvus import MilvusClient
 
@@ -99,6 +99,35 @@ class MilvusDocumentIndex:
         if not results:
             return []
         return list(results[0])
+
+    async def search_batches(
+        self,
+        *,
+        collection_name: str,
+        vector: list[float],
+        batch_size: int,
+        filter: str = "",
+        output_fields: list[str] | None = None,
+    ) -> AsyncIterator[list[dict[str, Any]]]:
+        iterator = await asyncio.to_thread(
+            self._client.search_iterator,
+            collection_name=collection_name,
+            data=[vector],
+            batch_size=batch_size,
+            filter=filter or None,
+            limit=-1,
+            output_fields=output_fields,
+        )
+        try:
+            while True:
+                page = await asyncio.to_thread(iterator.next)
+                if not page:
+                    return
+                # SearchPage iterates the flattened hits; `list(page)` keeps the
+                # existing runtime contract while satisfying the declared type.
+                yield cast("list[dict[str, Any]]", list(page))
+        finally:
+            await asyncio.to_thread(iterator.close)
 
     @staticmethod
     def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:

@@ -1,13 +1,10 @@
 from dataclasses import dataclass, field
 from functools import lru_cache
 
-from langchain_anthropic import ChatAnthropic
-from langchain_openai import ChatOpenAI
-
-from app.common.config import get_settings
-from app.extensions.langchain_chat_providers import AnthropicChatProvider, OpenAICompatibleChatProvider
+from app.extensions.generation_factory import build_generation_provider
 from app.extensions.langchain_embedding_providers import OpenAIEmbeddingProvider
 from app.rag.interfaces import EmbeddingProvider, LlmProvider, RelevanceJudge, Reranker, Retriever
+from app.settings.runtime import get_runtime_settings
 from app.tasks.interfaces import InMemoryTaskBackend, TaskBackend, create_inmemory_task_backend
 
 
@@ -83,38 +80,21 @@ class ExtensionRegistry:
 @lru_cache
 def get_extension_registry() -> ExtensionRegistry:
     registry = ExtensionRegistry()
-    settings = get_settings()
+    settings = get_runtime_settings()
 
-    if settings.ark_api_key and settings.llm_base_url and settings.llm_model:
-        ark_model = ChatOpenAI(
-            api_key=settings.ark_api_key,
-            base_url=settings.llm_base_url,
-            model=settings.llm_model,
-            temperature=0.2,
-        )
-        registry.register_llm("ark", OpenAICompatibleChatProvider(model=ark_model, provider_name="ark"))
-
-    if settings.openai_api_key and settings.openai_model:
-        openai_kwargs = {
-            "api_key": settings.openai_api_key,
-            "model": settings.openai_model,
-            "temperature": 0.2,
-        }
-        if settings.openai_base_url:
-            openai_kwargs["base_url"] = settings.openai_base_url
-        openai_model = ChatOpenAI(**openai_kwargs)
-        registry.register_llm("openai", OpenAICompatibleChatProvider(model=openai_model, provider_name="openai"))
-
-    if settings.anthropic_api_key and settings.anthropic_model:
-        anthropic_model = ChatAnthropic(
-            api_key=settings.anthropic_api_key,
-            model=settings.anthropic_model,
-            temperature=0.2,
-        )
-        registry.register_llm("anthropic", AnthropicChatProvider(model=anthropic_model, provider_name="anthropic"))
-
-    if "ark" in registry.llm_providers:
-        registry.register_llm("chat-default-llm", registry.llm_providers["ark"])
+    if settings.runtime_generation_settings_managed:
+        generation_provider = build_generation_provider(settings)
+        if generation_provider is not None:
+            registry.register_llm(settings.rag_primary_llm_provider, generation_provider)
+            registry.register_llm("chat-default-llm", generation_provider)
+    else:
+        for provider_type in ("ark", "openai", "anthropic"):
+            candidate = settings.model_copy(update={"rag_primary_llm_provider": provider_type})
+            provider = build_generation_provider(candidate)
+            if provider is not None:
+                registry.register_llm(provider_type, provider)
+        if "ark" in registry.llm_providers:
+            registry.register_llm("chat-default-llm", registry.llm_providers["ark"])
 
     if (
         settings.embedding_api_key_configured

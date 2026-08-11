@@ -1,0 +1,829 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from hashlib import sha256
+from pathlib import Path
+from secrets import token_urlsafe
+from typing import Any, Protocol, cast
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+from uuid import uuid4
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from app.common.config import Settings, get_settings
+from app.evaluation.evaluate import run_retrieval_evaluation, run_sparse_bm25_evaluation
+from app.evaluation_inputs import load_evaluation_inputs
+from app.extensions.langchain_embedding_providers import OpenAIEmbeddingProvider
+from app.infra.milvus_document_index import MilvusDocumentIndex
+from app.rag.dense_contract import DenseEmbeddingContract, build_embedding_contract_fingerprint
+from app.rag.interfaces import RetrieveResult
+from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
+
+_POLL_ATTEMPTS = 120
+_POLL_INTERVAL_SECONDS = 0.5
+_ACCEPTANCE_MARKER_WORDS = ("晨雾", "海棠", "松林", "星河", "竹影", "云雀", "银杏", "潮汐")
+
+
+@dataclass(frozen=True)
+class HttpResponse:
+    status_code: int
+    payload: Mapping[str, Any]
+    body: str = ""
+
+
+class EvidenceHttpClient(Protocol):
+    async def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+        upload: tuple[str, bytes] | None = None,
+    ) -> HttpResponse: ...
+
+
+class _SmokeFailure(Exception):
+    def __init__(self, check: str, code: str, details: Mapping[str, Any] | None = None) -> None:
+        super().__init__(code)
+        self.check = check
+        self.code = code
+        self.details = dict(details or {})
+
+
+class UrllibHttpClient:
+    def __init__(self, *, base_url: str, timeout_seconds: float) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._timeout_seconds = timeout_seconds
+
+    async def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+        upload: tuple[str, bytes] | None = None,
+    ) -> HttpResponse:
+        return await asyncio.to_thread(
+            self._request_sync,
+            method,
+            path,
+            json_body=json_body,
+            headers=headers,
+            upload=upload,
+        )
+
+    def _request_sync(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: Mapping[str, Any] | None,
+        headers: Mapping[str, str] | None,
+        upload: tuple[str, bytes] | None,
+    ) -> HttpResponse:
+        request_headers = dict(headers or {})
+        request_body: bytes | None = None
+        if json_body is not None:
+            request_body = json.dumps(json_body).encode("utf-8")
+            request_headers["Content-Type"] = "application/json"
+        elif upload is not None:
+            filename, content = upload
+            boundary = f"retrieval-evidence-{uuid4().hex}"
+            request_body = self._multipart_body(boundary=boundary, filename=filename, content=content)
+            request_headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+
+        request = Request(
+            f"{self._base_url}{path}",
+            data=request_body,
+            headers=request_headers,
+            method=method,
+        )
+        try:
+            with urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310 - localhost service URL is explicit input.
+                raw = response.read()
+                return HttpResponse(status_code=response.status, payload=self._decode_payload(raw), body=self._decode_body(raw))
+        except HTTPError as exc:
+            raw = exc.read()
+            return HttpResponse(status_code=exc.code, payload=self._decode_payload(raw), body=self._decode_body(raw))
+        except (URLError, TimeoutError):
+            return HttpResponse(status_code=0, payload={})
+
+    @staticmethod
+    def _multipart_body(*, boundary: str, filename: str, content: bytes) -> bytes:
+        prefix = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+            "Content-Type: text/markdown\r\n\r\n"
+        ).encode()
+        return b"".join((prefix, content, f"\r\n--{boundary}--\r\n".encode()))
+
+    @staticmethod
+    def _decode_payload(raw: bytes) -> Mapping[str, Any]:
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, Mapping) else {}
+
+    @staticmethod
+    def _decode_body(raw: bytes) -> str:
+        return raw.decode("utf-8", errors="replace")
+
+
+class RetrievalEvidenceSmoke:
+    """Run the Retrieval Smoke through the existing application and retrieval paths."""
+
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        http_client: EvidenceHttpClient,
+        retrieve: Callable[[str], Awaitable[RetrieveResult]],
+        output_dir: Path,
+        source_revision: str,
+        run_id: str | None = None,
+        include_generation: bool = False,
+        fallback_mode: bool = False,
+        evaluation_inputs: Mapping[str, Any] | None = None,
+        now: Callable[[], datetime] | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        self._settings = settings
+        self._http_client = http_client
+        self._retrieve = retrieve
+        self._output_dir = output_dir
+        self._source_revision = source_revision
+        self._run_id = run_id or uuid4().hex
+        self._include_generation = include_generation
+        self._fallback_mode = fallback_mode
+        self._evaluation_inputs = evaluation_inputs
+        self._now = now or (lambda: datetime.now(UTC))
+        self._sleep = sleep
+
+    async def run(self) -> dict[str, Any]:
+        started_at = self._now()
+        acceptance_time = self._acceptance_time(started_at)
+        acceptance_marker = self._acceptance_marker()
+        question = self._generation_smoke_question(acceptance_marker, acceptance_time)
+        try:
+            missing = self._missing_configuration()
+            if missing:
+                raise _SmokeFailure(
+                    "runtime_configuration",
+                    "REQUIRED_CONFIGURATION_MISSING",
+                    {"missing_configuration": missing},
+                )
+
+            await self._expect_ok("health", "GET", "/api/v1/health")
+            access_token = await self._login_bootstrap_administrator()
+            headers = {"Authorization": f"Bearer {access_token}"}
+            document_id, job_id = await self._upload_markdown(
+                headers=headers,
+                acceptance_marker=acceptance_marker,
+                acceptance_time=acceptance_time,
+            )
+            job = await self._wait_for_job(job_id=job_id, headers=headers)
+            chunk_count, published_source_id = await self._verify_chunks(document_id=document_id, headers=headers)
+            published_generation = await self._publish_document(document_id=document_id, headers=headers)
+            result = await self._retrieve(question)
+            if self._fallback_mode:
+                fallback_check = self._verify_fallback_retrieval(result=result, document_id=document_id)
+            else:
+                candidate = self._verify_dense_retrieval(result=result, document_id=document_id)
+            chat_model_check = {"invoked": False}
+            if self._include_generation:
+                knowledge_user_headers = await self._admit_knowledge_user(administrator_headers=headers)
+                chat_model_check = await self._verify_generation_loop(
+                    headers=knowledge_user_headers,
+                    question=question,
+                    expected_source_id=published_source_id,
+                )
+
+            checks: dict[str, Any] = {
+                "health": {"status": "ready"},
+                "document_build": {
+                    "document_id": document_id,
+                    "job_id": job_id,
+                    "status": str(job["status"]),
+                    "chunk_count": chunk_count,
+                },
+                "document_publication": {
+                    "document_id": document_id,
+                    "published_generation": published_generation,
+                },
+                "live_embedding": {
+                    "provider": "qwen",
+                    "status": "completed",
+                    "embedding_contract_fingerprint": build_embedding_contract_fingerprint(self._settings),
+                },
+                "indexing": {
+                    "dense_candidate_count": result.dense_candidate_count,
+                    "dense_hydrated_count": result.dense_hydrated_count,
+                },
+                "chat_model": chat_model_check,
+            }
+            if self._fallback_mode:
+                checks["migration_retrieval_fallback"] = fallback_check
+            else:
+                checks["retrieval"] = {
+                    "candidate_document_id": str(candidate["document_id"]),
+                    "candidate_chunk_id": str(candidate["chunk_id"]),
+                    "candidate_belongs_to_ingested_document": True,
+                }
+
+            manifest = self._manifest_base(started_at=started_at)
+            manifest.update(
+                {
+                    "outcome": "passed",
+                    "checks": checks,
+                }
+            )
+        except _SmokeFailure as failure:
+            manifest = self._manifest_base(started_at=started_at)
+            manifest.update(
+                {
+                    "outcome": "failed",
+                    "failed_check": failure.check,
+                    "failure_code": failure.code,
+                    **failure.details,
+                }
+            )
+        except Exception:
+            manifest = self._manifest_base(started_at=started_at)
+            manifest.update(
+                {
+                    "outcome": "failed",
+                    "failed_check": "command",
+                    "failure_code": "UNEXPECTED_FAILURE",
+                }
+            )
+
+        manifest["finished_at"] = self._now().isoformat()
+        self._write_manifest(manifest)
+        return manifest
+
+    def _missing_configuration(self) -> list[str]:
+        missing: list[str] = []
+        if not self._settings.bootstrap_admin_username.strip():
+            missing.append("BOOTSTRAP_ADMIN_USERNAME")
+        if not self._settings.bootstrap_admin_password.strip():
+            missing.append("BOOTSTRAP_ADMIN_PASSWORD")
+        if not self._settings.jwt_secret.strip() or self._settings.jwt_secret == "change-me":
+            missing.append("JWT_SECRET")
+        if not self._settings.embedding_api_key_configured:
+            missing.append("EMBEDDING_API_KEY")
+        if not self._settings.embedding_base_url_normalized:
+            missing.append("EMBEDDING_BASE_URL")
+        if not self._settings.embedding_model_normalized:
+            missing.append("EMBEDDING_MODEL")
+        elif "qwen" not in self._settings.embedding_model_normalized.lower():
+            missing.append("EMBEDDING_MODEL_QWEN")
+        if self._settings.dense_embedding_dim <= 0:
+            missing.append("DENSE_EMBEDDING_DIM")
+        if not self._settings.milvus_uri_normalized:
+            missing.append("MILVUS_URI")
+        if self._include_generation:
+            if self._settings.rag_primary_llm_provider != "ark":
+                missing.append("RAG_PRIMARY_LLM_PROVIDER_ARK")
+            if not self._settings.ark_api_key.strip():
+                missing.append("ARK_API_KEY")
+            if not self._settings.llm_base_url.strip():
+                missing.append("BASE_URL")
+            if not self._settings.llm_model.strip():
+                missing.append("MODEL")
+        return missing
+
+    async def _login_bootstrap_administrator(self) -> str:
+        login = await self._expect_ok(
+            "administrator_login",
+            "POST",
+            "/api/v1/auth/login",
+            json_body={
+                "username": self._settings.bootstrap_admin_username,
+                "password": self._settings.bootstrap_admin_password,
+            },
+        )
+        access_token = login.get("access_token")
+        if not isinstance(access_token, str) or not access_token:
+            raise _SmokeFailure("administrator_login", "ACCESS_TOKEN_MISSING")
+        return access_token
+
+    async def _admit_knowledge_user(self, *, administrator_headers: Mapping[str, str]) -> Mapping[str, str]:
+        invitation = await self._expect_ok(
+            "knowledge_user_admission",
+            "POST",
+            "/api/v1/members/invitations",
+            headers=administrator_headers,
+            json_body={},
+        )
+        invitation_code = invitation.get("invitation_code")
+        if not isinstance(invitation_code, str) or not invitation_code:
+            raise _SmokeFailure("knowledge_user_admission", "INVITATION_CODE_MISSING")
+
+        suffix = sha256(self._run_id.encode("utf-8")).hexdigest()[:24]
+        username = f"generation-smoke-{suffix}"
+        password = token_urlsafe(32)
+        registration = await self._expect_ok(
+            "knowledge_user_admission",
+            "POST",
+            "/api/v1/auth/register",
+            json_body={
+                "username": username,
+                "password": password,
+                "invitation_code": invitation_code,
+            },
+        )
+        access_token = registration.get("access_token")
+        if not isinstance(access_token, str) or not access_token:
+            raise _SmokeFailure("knowledge_user_admission", "KNOWLEDGE_USER_ACCESS_TOKEN_MISSING")
+        return {"Authorization": f"Bearer {access_token}"}
+
+    @staticmethod
+    def _acceptance_time(started_at: datetime) -> str:
+        return (
+            f"{started_at.year}年{started_at.month}月{started_at.day}日"
+            f"{started_at.hour}时{started_at.minute:02d}分{started_at.second:02d}秒"
+        )
+
+    @staticmethod
+    def _generation_smoke_question(acceptance_marker: str, acceptance_time: str) -> str:
+        return f"根据{acceptance_marker}（{acceptance_time}）的验收事实，蓝松石版本在生成带引用回答时具有什么作用？"
+
+    def _acceptance_marker(self) -> str:
+        digest = sha256(self._run_id.encode("utf-8")).digest()
+        words = "".join(_ACCEPTANCE_MARKER_WORDS[value % len(_ACCEPTANCE_MARKER_WORDS)] for value in digest[:3])
+        return f"{words}验收"
+
+    async def _upload_markdown(
+        self,
+        *,
+        headers: Mapping[str, str],
+        acceptance_marker: str,
+        acceptance_time: str,
+    ) -> tuple[str, str]:
+        sentinel = f"retrieval-evidence-{self._run_id}"
+        source = (
+            "# Generation Smoke Source\n\n"
+            f"验收事实：蓝松石版本在{acceptance_marker}（{acceptance_time}）的生产验收中，是生成带引用回答的唯一已发布知识版本。\n\n"
+            f"验证标识：{sentinel}\n"
+        )
+        upload = await self._expect_ok(
+            "document_ingestion",
+            "POST",
+            "/api/v1/documents/upload",
+            headers=headers,
+            upload=(f"{sentinel}.md", source.encode("utf-8")),
+        )
+        document_id = upload.get("document_id")
+        job_id = upload.get("job_id")
+        if not isinstance(document_id, str) or not isinstance(job_id, str):
+            raise _SmokeFailure("document_ingestion", "DOCUMENT_JOB_IDENTIFIERS_MISSING")
+        return document_id, job_id
+
+    async def _wait_for_job(self, *, job_id: str, headers: Mapping[str, str]) -> Mapping[str, Any]:
+        for _ in range(_POLL_ATTEMPTS):
+            job = await self._expect_ok("document_build", "GET", f"/api/v1/documents/jobs/{job_id}", headers=headers)
+            status = job.get("status")
+            if status == "succeeded":
+                return job
+            if status in {"failed", "canceled"}:
+                raise _SmokeFailure("document_build", "DOCUMENT_BUILD_NOT_SUCCEEDED")
+            await self._sleep(_POLL_INTERVAL_SECONDS)
+        raise _SmokeFailure("document_build", "DOCUMENT_BUILD_TIMED_OUT")
+
+    async def _verify_chunks(self, *, document_id: str, headers: Mapping[str, str]) -> tuple[int, str]:
+        payload = await self._expect_ok(
+            "document_build",
+            "GET",
+            f"/api/v1/documents/{document_id}/chunks?page=1&page_size=1",
+            headers=headers,
+        )
+        pagination = payload.get("pagination")
+        chunk_count = pagination.get("total") if isinstance(pagination, Mapping) else None
+        if not isinstance(chunk_count, int) or chunk_count <= 0:
+            raise _SmokeFailure("document_build", "DOCUMENT_CHUNKS_MISSING")
+        items = payload.get("items")
+        first_chunk = items[0] if isinstance(items, list) and items else None
+        source_id = first_chunk.get("chunk_id") if isinstance(first_chunk, Mapping) else None
+        if not isinstance(source_id, str) or not source_id:
+            raise _SmokeFailure("document_build", "DOCUMENT_CHUNK_ID_MISSING")
+        return chunk_count, source_id
+
+    async def _publish_document(self, *, document_id: str, headers: Mapping[str, str]) -> int:
+        payload = await self._expect_ok(
+            "document_publication",
+            "POST",
+            f"/api/v1/documents/{document_id}/publish",
+            headers=headers,
+        )
+        published_generation = payload.get("published_generation")
+        if isinstance(published_generation, bool) or not isinstance(published_generation, int) or published_generation < 1:
+            raise _SmokeFailure("document_publication", "DOCUMENT_PUBLICATION_INVALID")
+        return published_generation
+
+    def _verify_fallback_retrieval(self, *, result: RetrieveResult, document_id: str) -> Mapping[str, Any]:
+        """Accept the Migration Retrieval fallback contract for the Retrieval Evidence baseline.
+
+        The production Lexical Heuristic is verified as the availability fallback only; it is never
+        relabeled as Sparse BM25 or Hybrid Retrieval.
+        """
+        if not result.dense_query_failed:
+            raise _SmokeFailure("migration_retrieval_fallback", "DENSE_FAILURE_NOT_INDUCED")
+        if not result.fallback_used:
+            raise _SmokeFailure("migration_retrieval_fallback", "FALLBACK_NOT_USED")
+        if result.lexical_scope != "full_published_live":
+            raise _SmokeFailure("migration_retrieval_fallback", "LEXICAL_SCOPE_NOT_FULL_PUBLISHED_LIVE")
+        if result.lexical_candidate_count <= 0:
+            raise _SmokeFailure("migration_retrieval_fallback", "LEXICAL_CANDIDATES_MISSING")
+        matched = next(
+            (
+                item
+                for item in result.items
+                if item.get("retrieval_source") == "lexical" and item.get("document_id") == document_id
+            ),
+            None,
+        )
+        if matched is None:
+            raise _SmokeFailure("migration_retrieval_fallback", "PUBLISHED_DOCUMENT_NOT_RETRIEVED_LEXICALLY")
+        provider_error = result.provider_error or {}
+        return {
+            "induced_dense_failure": True,
+            "fallback_used": True,
+            "lexical_scope": result.lexical_scope,
+            "lexical_candidate_count": result.lexical_candidate_count,
+            "dense_candidate_count": result.dense_candidate_count,
+            "dense_hydrated_count": result.dense_hydrated_count,
+            "candidate_document_id": str(matched["document_id"]),
+            "candidate_belongs_to_published_document": True,
+            "provider_error": {
+                "code": provider_error.get("code"),
+                "type": provider_error.get("type"),
+            },
+        }
+
+    def _verify_dense_retrieval(self, *, result: RetrieveResult, document_id: str) -> Mapping[str, Any]:
+        if result.dense_query_failed:
+            raise _SmokeFailure("live_embedding", "DENSE_QUERY_FAILED")
+        if result.dense_candidate_count <= 0 or result.dense_hydrated_count <= 0:
+            raise _SmokeFailure("indexing", "DENSE_INDEX_CANDIDATES_MISSING")
+        for item in result.items:
+            if item.get("retrieval_source") == "dense" and item.get("document_id") == document_id:
+                return item
+        raise _SmokeFailure("retrieval", "INGESTED_DOCUMENT_NOT_RETRIEVED")
+
+    async def _verify_generation_loop(
+        self,
+        *,
+        headers: Mapping[str, str],
+        question: str,
+        expected_source_id: str,
+    ) -> dict[str, Any]:
+        session_id = f"generation-{sha256(self._run_id.encode('utf-8')).hexdigest()[:24]}"
+        response = await self._expect_ok(
+            "generation_normal",
+            "POST",
+            "/api/v1/chat",
+            headers=headers,
+            json_body={"message": question, "session_id": session_id},
+        )
+        answer = response.get("answer")
+        message = response.get("message")
+        if (
+            not isinstance(answer, str)
+            or not answer.strip()
+            or answer.startswith("【生成不可用】")
+            or response.get("outcome") != "evidence_gated_answer"
+            or not isinstance(message, Mapping)
+            or message.get("outcome") != "evidence_gated_answer"
+        ):
+            raise _SmokeFailure("generation_normal", "GENERATION_RESPONSE_INVALID")
+        citation_source_count = self._verify_cited_response(response, expected_source_id=expected_source_id)
+        normal_summary = message.get("evidence_summary")
+
+        stream = await self._http_client.request(
+            "POST",
+            "/api/v1/chat/stream",
+            headers=headers,
+            json_body={"message": question, "session_id": session_id},
+        )
+        if stream.status_code < 200 or stream.status_code >= 300:
+            raise _SmokeFailure("generation_stream", "APPLICATION_REQUEST_FAILED")
+        if not all(
+            marker in stream.body
+            for marker in (
+                "event: outcome",
+                "event: content",
+                "event: evidence_summary",
+                "event: done",
+                '"outcome": "evidence_gated_answer"',
+                '"coverage": "sufficient"',
+            )
+        ):
+            raise _SmokeFailure("generation_stream", "STREAM_CONTRACT_INVALID")
+        stream_summary = self._verify_stream_cited_response(stream.body, expected_source_id=expected_source_id)
+        if stream_summary != normal_summary:
+            raise _SmokeFailure("generation_stream", "STREAM_EVIDENCE_MISMATCH")
+
+        history = await self._expect_ok(
+            "generation_history",
+            "GET",
+            f"/api/v1/sessions/{session_id}",
+            headers=headers,
+        )
+        self._verify_history_citations(
+            history,
+            expected_source_id=expected_source_id,
+            expected_summary=normal_summary,
+        )
+        return {
+            "invoked": True,
+            "normal_contract": "passed",
+            "stream_contract": "passed",
+            "history_contract": "passed",
+            "citation_source_count": citation_source_count,
+        }
+
+    @staticmethod
+    def _verify_cited_response(response: Mapping[str, Any], *, expected_source_id: str) -> int:
+        message = response.get("message")
+        summary = message.get("evidence_summary") if isinstance(message, Mapping) else None
+        return RetrievalEvidenceSmoke._verify_evidence_summary(summary, expected_source_id=expected_source_id)
+
+    @staticmethod
+    def _verify_stream_cited_response(body: str, *, expected_source_id: str) -> Mapping[str, Any]:
+        for event in body.split("\n\n"):
+            lines = event.splitlines()
+            if not lines or lines[0] != "event: evidence_summary":
+                continue
+            data_line = next((line for line in lines[1:] if line.startswith("data: ")), "")
+            try:
+                payload = json.loads(data_line.removeprefix("data: "))
+            except json.JSONDecodeError:
+                break
+            try:
+                summary = payload.get("evidence_summary") if isinstance(payload, Mapping) else None
+                RetrievalEvidenceSmoke._verify_evidence_summary(
+                    summary,
+                    expected_source_id=expected_source_id,
+                )
+            except _SmokeFailure as exc:
+                raise _SmokeFailure("generation_stream", "STREAM_CITATION_MISSING") from exc
+            if isinstance(summary, Mapping):
+                return summary
+            break
+        raise _SmokeFailure("generation_stream", "STREAM_CITATION_MISSING")
+
+    @staticmethod
+    def _verify_history_citations(
+        history: Mapping[str, Any],
+        *,
+        expected_source_id: str,
+        expected_summary: object,
+    ) -> None:
+        messages = history.get("messages")
+        assistant_messages = (
+            [item for item in messages if isinstance(item, Mapping) and item.get("type") == "assistant"]
+            if isinstance(messages, list)
+            else []
+        )
+        if len(assistant_messages) < 2:
+            raise _SmokeFailure("generation_history", "HISTORY_OUTCOME_MISSING")
+        for message in assistant_messages[-2:]:
+            if message.get("outcome") != "evidence_gated_answer":
+                raise _SmokeFailure("generation_history", "HISTORY_OUTCOME_MISSING")
+            summary = message.get("evidence_summary")
+            RetrievalEvidenceSmoke._verify_evidence_summary(summary, expected_source_id=expected_source_id)
+            if summary != expected_summary:
+                raise _SmokeFailure("generation_history", "HISTORY_EVIDENCE_MISMATCH")
+
+    @staticmethod
+    def _verify_evidence_summary(summary: object, *, expected_source_id: str) -> int:
+        if not isinstance(summary, Mapping) or summary.get("coverage") != "sufficient":
+            raise _SmokeFailure("generation_normal", "CITATION_MISSING")
+        sources = summary.get("sources")
+        if not isinstance(sources, list) or not sources:
+            raise _SmokeFailure("generation_normal", "CITATION_MISSING")
+        if not any(isinstance(source, Mapping) and source.get("source_id") == expected_source_id for source in sources):
+            raise _SmokeFailure("generation_normal", "INGESTED_SOURCE_NOT_CITED")
+        for source in sources:
+            metadata = source.get("metadata") if isinstance(source, Mapping) else None
+            if (
+                not isinstance(metadata, Mapping)
+                or not isinstance(metadata.get("title"), str)
+                or not metadata["title"].strip()
+                or not isinstance(metadata.get("publication_version"), str)
+                or not metadata["publication_version"].strip()
+                or not isinstance(source.get("excerpt"), str)
+                or not source["excerpt"].strip()
+            ):
+                raise _SmokeFailure("generation_normal", "CITATION_MISSING")
+        return len(sources)
+
+    async def _expect_ok(
+        self,
+        check: str,
+        method: str,
+        path: str,
+        *,
+        json_body: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+        upload: tuple[str, bytes] | None = None,
+    ) -> Mapping[str, Any]:
+        response = await self._http_client.request(
+            method,
+            path,
+            json_body=json_body,
+            headers=headers,
+            upload=upload,
+        )
+        if response.status_code < 200 or response.status_code >= 300:
+            raise _SmokeFailure(check, "APPLICATION_REQUEST_FAILED")
+        data = response.payload.get("data")
+        if not isinstance(data, Mapping):
+            raise _SmokeFailure(check, "APPLICATION_RESPONSE_INVALID")
+        return data
+
+    def _manifest_base(self, *, started_at: datetime) -> dict[str, Any]:
+        if self._include_generation:
+            command = "retrieval-evidence generation-smoke"
+        elif self._fallback_mode:
+            command = "retrieval-evidence fallback"
+        else:
+            command = "retrieval-evidence smoke"
+        return {
+            "schema_version": 1,
+            "run_id": self._run_id,
+            "command": command,
+            "source_revision": self._source_revision,
+            "started_at": started_at.isoformat(),
+            "evaluation_inputs": dict(self._evaluation_inputs or {}),
+            "runtime_configuration": {
+                "path": "backend/.env",
+                "values_recorded": False,
+            },
+        }
+
+    def _write_manifest(self, manifest: Mapping[str, Any]) -> None:
+        run_directory = self._output_dir / self._run_id
+        run_directory.mkdir(parents=True, exist_ok=True)
+        (run_directory / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+
+class _ForcedDenseFailureIndex:
+    """Controlled dense-dependency failure for the Migration Retrieval fallback profile.
+
+    Exists only on the experiment command path (retrieval-evidence fallback) and never changes
+    production Migration Retrieval behavior.
+    """
+
+    async def search_batches(self, **kwargs: object):
+        # Async-generator form matches the real MilvusDocumentIndex.search_batches contract; the
+        # raise fires when the consumer starts iterating, so no coroutine is left un-awaited.
+        raise RuntimeError("milvus unavailable: forced dense failure for retrieval-evidence fallback")
+        yield  # pragma: no cover - unreachable; makes this an async generator.
+
+    async def upsert_generation(self, **kwargs: object) -> None:
+        return None
+
+
+async def _retrieve_from_application(
+    settings: Settings,
+    query: str,
+    *,
+    force_dense_failure: bool = False,
+) -> RetrieveResult:
+    engine = create_async_engine(settings.database_url)
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            if force_dense_failure:
+                document_index = cast(MilvusDocumentIndex, _ForcedDenseFailureIndex())
+            else:
+                document_index = None
+            service = MixedModeDocumentRetrieverService(
+                session,
+                settings=settings,
+                document_index=document_index,
+            )
+            return await service.retrieve(query, top_k=5)
+    finally:
+        await engine.dispose()
+
+
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="retrieval-evidence")
+    subparsers = parser.add_subparsers(dest="profile", required=True)
+    for profile in ("smoke", "fallback", "generation-smoke"):
+        command = subparsers.add_parser(profile)
+        command.add_argument("--base-url", required=True)
+        command.add_argument("--output-dir", required=True, type=Path)
+        command.add_argument("--source-revision", required=True)
+        command.add_argument("--run-id")
+        command.add_argument("--timeout-seconds", type=float, default=15.0)
+        command.add_argument("--evaluation-dir", type=Path)
+    evaluate_command = subparsers.add_parser("evaluate")
+    evaluate_command.add_argument("--output-dir", required=True, type=Path)
+    evaluate_command.add_argument("--source-revision", required=True)
+    evaluate_command.add_argument("--run-id")
+    evaluate_command.add_argument("--evaluation-dir", required=True, type=Path)
+    evaluate_command.add_argument("--bundle-dir", type=Path)
+    evaluate_command.add_argument(
+        "--mode",
+        choices=("sparse_bm25", "dense", "hybrid_rrf", "all"),
+        default="sparse_bm25",
+        help="Evaluation Retriever mode; all writes the controlled three-mode comparison bundle.",
+    )
+    return parser.parse_args(argv)
+
+
+def _run_evaluate_profile(args: argparse.Namespace) -> int:
+    """Run one Evaluation Retriever mode or the controlled three-mode comparison."""
+    run_id = args.run_id or uuid4().hex
+    if args.mode == "sparse_bm25":
+        manifest = run_sparse_bm25_evaluation(
+            evaluation_dir=args.evaluation_dir,
+            output_dir=args.output_dir,
+            source_revision=args.source_revision,
+            run_id=run_id,
+            bundle_dir=args.bundle_dir,
+        )
+        print(json.dumps({"outcome": manifest["outcome"], "run_id": manifest["run_id"]}, sort_keys=True))
+        return 0 if manifest["outcome"] == "passed" else 1
+
+    settings = get_settings()
+    contract = DenseEmbeddingContract.from_settings(settings)
+    if not contract.active:
+        raise ValueError("Dense and Hybrid RRF evaluation require an active embedding configuration")
+    embedding_provider = OpenAIEmbeddingProvider(
+        api_key=settings.embedding_api_key,
+        base_url=settings.embedding_base_url_normalized,
+        model=settings.embedding_model_normalized,
+    )
+    modes = ("sparse_bm25", "dense", "hybrid_rrf") if args.mode == "all" else (args.mode,)
+    manifest = asyncio.run(
+        run_retrieval_evaluation(
+            evaluation_dir=args.evaluation_dir,
+            output_dir=args.output_dir,
+            source_revision=args.source_revision,
+            modes=modes,
+            embedding_provider=embedding_provider,
+            embedding_identity=(
+                f"{settings.embedding_model_normalized}:"
+                f"{build_embedding_contract_fingerprint(settings)}"
+            ),
+            run_id=run_id,
+            bundle_dir=args.bundle_dir,
+        )
+    )
+    print(
+        json.dumps(
+            {"outcome": manifest["outcome"], "run_id": manifest["run_id"], "modes": manifest["modes"]},
+            sort_keys=True,
+        )
+    )
+    return 0 if manifest["outcome"] == "passed" else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    if args.profile == "evaluate":
+        return _run_evaluate_profile(args)
+    settings = get_settings()
+    http_client = UrllibHttpClient(base_url=args.base_url, timeout_seconds=args.timeout_seconds)
+    force_dense_failure = args.profile == "fallback"
+    evaluation_inputs: Mapping[str, Any] | None = None
+    if args.evaluation_dir is not None:
+        evaluation_inputs = load_evaluation_inputs(args.evaluation_dir)
+    runner = RetrievalEvidenceSmoke(
+        settings=settings,
+        http_client=http_client,
+        retrieve=lambda query: _retrieve_from_application(
+            settings,
+            query,
+            force_dense_failure=force_dense_failure,
+        ),
+        output_dir=args.output_dir,
+        source_revision=args.source_revision,
+        run_id=args.run_id,
+        include_generation=args.profile == "generation-smoke",
+        fallback_mode=args.profile == "fallback",
+        evaluation_inputs=evaluation_inputs,
+    )
+    manifest = asyncio.run(runner.run())
+    print(json.dumps({"outcome": manifest["outcome"], "run_id": manifest["run_id"]}, sort_keys=True))
+    return 0 if manifest["outcome"] == "passed" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

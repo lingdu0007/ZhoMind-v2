@@ -1,5 +1,11 @@
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, TypedDict
+
+
+class ProviderExecError(TypedDict):
+    code: str
+    message: str
+    type: str
 
 
 @dataclass(frozen=True)
@@ -13,7 +19,8 @@ class RetrieveResult:
     dense_query_failed: bool = False
     lexical_scope: str = "full_published_live"
     fallback_used: bool = False
-    provider_error: dict[str, Any] | None = None
+    provider_error: ProviderExecError | None = None
+    embedding_provider_ms: float = 0.0
 
     @classmethod
     def from_items(

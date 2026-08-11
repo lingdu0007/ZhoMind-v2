@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from contextlib import suppress
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 
 from sqlalchemy import and_, delete, or_, select, update
@@ -124,7 +124,7 @@ class DocumentBuildService:
 
     async def _claim_generation(self, *, document: Document, job: DocumentJob) -> bool:
         generation = self._require_build_generation(job)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         lease_cutoff = now - _CLAIM_LEASE_TIMEOUT
         claim_result = await self.session.execute(
             update(Document)
@@ -254,7 +254,7 @@ class DocumentBuildService:
                 Document.active_build_generation == generation,
                 Document.active_build_job_id == job.id,
             )
-            .values(active_build_heartbeat_at=datetime.now(timezone.utc))
+            .values(active_build_heartbeat_at=datetime.now(UTC))
         )
         return heartbeat_result.rowcount == 1
 
@@ -318,7 +318,7 @@ class DocumentBuildService:
         chunks: list[ChunkRecord],
     ) -> None:
         dense_ready_generation, dense_ready_fingerprint = self._resolve_dense_readiness(generation=generation)
-        publish_result = await self.session.execute(
+        complete_result = await self.session.execute(
             update(Document)
             .where(
                 Document.id == document.id,
@@ -328,18 +328,18 @@ class DocumentBuildService:
                 Document.active_build_job_id == job.id,
             )
             .values(
-                published_generation=generation,
-                dense_ready_generation=dense_ready_generation,
-                dense_ready_fingerprint=dense_ready_fingerprint,
-                chunk_strategy=job.requested_chunk_strategy or document.chunk_strategy,
-                chunk_count=len(chunks),
-                status="ready",
+                candidate_generation=generation,
+                candidate_dense_ready_generation=dense_ready_generation,
+                candidate_dense_ready_fingerprint=dense_ready_fingerprint,
+                candidate_chunk_strategy=job.requested_chunk_strategy or document.chunk_strategy,
+                candidate_chunk_count=len(chunks),
+                status="candidate",
                 active_build_generation=None,
                 active_build_job_id=None,
                 active_build_heartbeat_at=None,
             )
         )
-        if publish_result.rowcount != 1:
+        if complete_result.rowcount != 1:
             await self.session.rollback()
             await self._terminalize_non_owner(document=document, job=job)
             return
@@ -347,7 +347,7 @@ class DocumentBuildService:
         job.status = "succeeded"
         job.stage = "completed"
         job.progress = 100
-        job.message = "document build completed"
+        job.message = "candidate build completed; awaiting publication"
         await self.session.commit()
 
     async def _terminalize_non_owner(self, *, document: Document, job: DocumentJob) -> None:
@@ -468,6 +468,8 @@ class DocumentBuildService:
 
     @staticmethod
     def _derive_non_publish_status(document: Document) -> str:
+        if document.candidate_generation is not None:
+            return "candidate"
         if document.published_generation > 0 and document.latest_requested_generation > document.published_generation:
             return "pending"
         if document.published_generation > 0:

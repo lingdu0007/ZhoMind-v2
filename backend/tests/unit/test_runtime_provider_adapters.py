@@ -9,7 +9,6 @@ from app.rag.runtime.provider_adapters import (
 )
 
 
-
 class _RetrieverOk:
     async def retrieve(self, query: str, top_k: int) -> list[dict]:
         return [{"chunk_id": "c1", "content": f"{query}-{top_k}"}]

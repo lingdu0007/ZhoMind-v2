@@ -1,0 +1,232 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://zhomind.invalid/public-evidence/sections/retrieval.schema.json",
+  "title": "Public Evidence Bundle section: retrieval",
+  "description": "Retrieval metrics and conditions. Answerable-query aggregates (evidence recall, context precision, first gold evidence rank, retrieval duration) are computed over the fixed Evaluation Query Set at the declared output depths; Boundary Query Diagnostics stay outside those aggregates.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["section", "schema_version", "run_ids", "corpus_id", "query_set_id", "modes", "metrics", "conditions"],
+  "properties": {
+    "section": {
+      "const": "retrieval"
+    },
+    "schema_version": {
+      "enum": ["1.0.0", "1.1.0"]
+    },
+    "run_ids": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "description": "Each run_id must appear in the bundle manifest provenance.runs."
+      }
+    },
+    "corpus_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Must appear in the bundle manifest provenance.corpora."
+    },
+    "query_set_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Must appear in the bundle manifest provenance.query_sets."
+    },
+    "modes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "enum": ["sparse_bm25", "dense", "hybrid_rrf", "migration"],
+        "description": "Quality modes belong to the Evaluation Retriever; migration is the production availability regime and is reported separately."
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "mode", "value", "unit"],
+        "properties": {
+          "name": {
+            "enum": [
+              "evidence_recall@3",
+              "evidence_recall@5",
+              "evidence_recall@10",
+              "context_precision@3",
+              "context_precision@5",
+              "context_precision@10",
+              "first_gold_rank",
+              "retrieval_duration_ms"
+            ],
+            "description": "Metric names are contract literals and are preserved verbatim in the Chinese report."
+          },
+          "mode": {
+            "enum": ["sparse_bm25", "dense", "hybrid_rrf", "migration"]
+          },
+          "value": {
+            "type": "number",
+            "description": "Numerical value only; no encoded text, excerpts, or answers."
+          },
+          "unit": {
+            "enum": ["ratio", "rank", "ms"],
+            "description": "ratio = 0..1 fraction; rank = 1-based first gold evidence rank; ms = milliseconds."
+          }
+        }
+      }
+    },
+    "boundary_query_diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["query_id", "reason_kind", "explanation"],
+        "properties": {
+          "query_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "reason_kind": {
+            "enum": ["insufficient", "conflicting", "stale"],
+            "description": "Why the boundary query must not be treated as normally answerable."
+          },
+          "explanation": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000,
+            "description": "Non-sensitive explanation; must not quote private questions or source excerpts."
+          }
+        }
+      }
+    },
+    "conditions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["chunking", "output_depths", "corpus_version", "query_set_version"],
+      "properties": {
+        "chunking": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["policy", "chunk_chars", "overlap_chars"],
+          "properties": {
+            "policy": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Fixed chunking policy name, e.g. qa_chunking."
+            },
+            "chunk_chars": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "overlap_chars": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "output_depths": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "description": "Depths at which the recall and precision metrics are evaluated."
+        },
+        "corpus_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+          "description": "Must equal the corpus version recorded in the manifest provenance."
+        },
+        "query_set_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+          "description": "Must equal the query-set version recorded in the manifest provenance."
+        },
+        "candidate_depth": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Fixed per-source candidate depth before Evaluation Retriever fusion."
+        },
+        "model_identity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "Non-sensitive active embedding model identity shared by comparison modes."
+        },
+        "mode_provenance": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["mode", "run_id", "source_revision", "corpus_sha256", "query_set_sha256", "embedding_identity"],
+            "properties": {
+              "mode": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "run_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "source_revision": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "corpus_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "query_set_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "embedding_identity": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              }
+            }
+          },
+          "description": "Per-mode identity records used to reject controlled-comparison provenance drift."
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["modes"],
+        "properties": {
+          "modes": {
+            "minItems": 3,
+            "maxItems": 3,
+            "allOf": [
+              {"contains": {"const": "sparse_bm25"}},
+              {"contains": {"const": "dense"}},
+              {"contains": {"const": "hybrid_rrf"}}
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "schema_version": {"const": "1.1.0"},
+          "conditions": {
+            "required": ["candidate_depth", "model_identity", "mode_provenance"],
+            "properties": {
+              "candidate_depth": {"const": 20}
+            }
+          }
+        }
+      }
+    }
+  ]
+}

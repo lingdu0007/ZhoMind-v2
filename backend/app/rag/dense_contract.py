@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import json
+from dataclasses import dataclass
 
 from app.common.config import Settings
 
@@ -17,7 +17,7 @@ class DenseEmbeddingContract:
     active: bool
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> "DenseEmbeddingContract":
+    def from_settings(cls, settings: Settings) -> DenseEmbeddingContract:
         base_url = settings.embedding_base_url_normalized
         model = settings.embedding_model_normalized
         dimension = settings.dense_embedding_dim

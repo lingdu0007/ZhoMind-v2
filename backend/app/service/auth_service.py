@@ -1,12 +1,21 @@
-from datetime import datetime, timezone
+from collections.abc import Awaitable
+from datetime import UTC, datetime
+from typing import cast
 
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.common.config import get_settings
 from app.common.exceptions import AppError
-from app.common.security import build_auth_session_key, create_access_token, decode_access_token, hash_password, verify_password
+from app.common.security import (
+    build_auth_session_key,
+    create_access_token,
+    decode_access_token,
+    hash_password,
+    verify_password,
+)
+from app.operations.limits import MAX_ACTIVE_MEMBERS
 from app.repository.user_repository import UserRepository
+from app.service.member_admission_service import MemberAdmissionService
 
 
 class AuthService:
@@ -22,37 +31,43 @@ class AuthService:
         if exp <= 0 or not jti:
             raise AppError(status_code=500, code="AUTH_TOKEN_INVALID_PAYLOAD", message="token payload missing exp or jti")
 
-        ttl = max(exp - int(datetime.now(timezone.utc).timestamp()), 1)
+        ttl = max(exp - int(datetime.now(UTC).timestamp()), 1)
         key = build_auth_session_key(subject=username, jti=jti)
-        await self.redis.hset(
+        # redis.asyncio types hset as Union[Awaitable[int], int]; the asyncio
+        # client always returns an awaitable, so cast narrows the union.
+        await cast(Awaitable[int], self.redis.hset(
             key,
             mapping={
                 "username": username,
                 "role": role,
                 "issued_at": str(payload.get("iat") or ""),
             },
-        )
+        ))
         await self.redis.expire(key, ttl)
 
-    async def register(self, username: str, password: str, role: str, admin_code: str | None) -> dict[str, str]:
+    async def register(self, username: str, password: str, invitation_code: str) -> dict[str, str]:
         normalized_username = username.strip()
         normalized_password = password.strip()
         if not normalized_username or not normalized_password:
             raise AppError(status_code=400, code="VALIDATION_ERROR", message="username and password are required")
 
-        normalized_role = "admin" if role == "admin" else "user"
-        settings = get_settings()
-        if normalized_role == "admin" and settings.admin_invite_code != (admin_code or ""):
-            raise AppError(status_code=403, code="AUTH_FORBIDDEN", message="invalid admin invite code")
-
         existing = await self.repo.get_by_username(normalized_username)
         if existing:
             raise AppError(status_code=409, code="RESOURCE_CONFLICT", message="username already exists")
 
+        await MemberAdmissionService(self.session, self.redis).verify_registration_invitation(invitation_code)
+        await self.repo.lock_active_members()
+        if await self.repo.count_active_members() >= MAX_ACTIVE_MEMBERS:
+            raise AppError(
+                status_code=409,
+                code="ACTIVE_MEMBER_LIMIT_REACHED",
+                message="the first-release active member limit has been reached",
+            )
+
         user = await self.repo.create_user(
             username=normalized_username,
             password_hash=hash_password(normalized_password),
-            role=normalized_role,
+            role="user",
         )
         await self.session.commit()
         token = create_access_token(subject=user.username, role=user.role)
@@ -63,6 +78,8 @@ class AuthService:
         user = await self.repo.get_by_username(username.strip())
         if not user or not verify_password(password.strip(), user.password_hash):
             raise AppError(status_code=401, code="AUTH_INVALID_CREDENTIALS", message="invalid username or password")
+        if not user.is_active:
+            raise AppError(status_code=403, code="AUTH_INACTIVE", message="member is deactivated")
         token = create_access_token(subject=user.username, role=user.role)
         await self._persist_auth_session(token=token, username=user.username, role=user.role)
         return {"access_token": token, "token_type": "bearer", "username": user.username, "role": user.role}

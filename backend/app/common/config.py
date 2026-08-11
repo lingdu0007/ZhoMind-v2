@@ -18,8 +18,24 @@ class Settings(BaseSettings):
     jwt_secret: str = Field("change-me", alias="JWT_SECRET")
     jwt_algorithm: str = Field("HS256", alias="JWT_ALGORITHM")
     jwt_expire_minutes: int = Field(120, alias="JWT_EXPIRE_MINUTES")
-    admin_invite_code: str = Field("", alias="ADMIN_INVITE_CODE")
+    bootstrap_admin_username: str = Field("", alias="BOOTSTRAP_ADMIN_USERNAME")
+    bootstrap_admin_password: str = Field("", alias="BOOTSTRAP_ADMIN_PASSWORD")
     redis_url: str = Field("redis://localhost:6379/0", alias="REDIS_URL")
+    system_settings_draft_enabled: bool = Field(False, alias="SYSTEM_SETTINGS_DRAFT_ENABLED")
+    system_settings_application_enabled: bool = Field(False, alias="SYSTEM_SETTINGS_APPLICATION_ENABLED")
+    system_settings_encryption_key: str = Field("", alias="SYSTEM_SETTINGS_ENCRYPTION_KEY")
+
+    # Applied System Settings are process-local runtime values, never browser input.
+    runtime_retrieval_top_k: int = 5
+    runtime_score_threshold: float = 0.0
+    runtime_generation_settings_managed: bool = False
+    runtime_answer_evidence_max_items: int = Field(3, alias="RUNTIME_ANSWER_EVIDENCE_MAX_ITEMS", ge=1, le=10)
+    runtime_answer_evidence_max_chars_per_source: int = Field(
+        160,
+        alias="RUNTIME_ANSWER_EVIDENCE_MAX_CHARS_PER_SOURCE",
+        ge=1,
+        le=4000,
+    )
 
     # LLM / ARK
     ark_api_key: str = Field("", alias="ARK_API_KEY")
@@ -48,7 +64,7 @@ class Settings(BaseSettings):
     bm25_state_path: str = Field("", alias="BM25_STATE_PATH")
     document_allowed_extensions_raw: str = Field("txt,md,pdf", alias="DOCUMENT_ALLOWED_EXTENSIONS")
     doc_worker_enabled: bool = Field(True, alias="DOC_WORKER_ENABLED")
-    doc_worker_max_concurrency: int = Field(1, alias="DOC_WORKER_MAX_CONCURRENCY", ge=1)
+    doc_worker_max_concurrency: int = Field(1, alias="DOC_WORKER_MAX_CONCURRENCY", ge=1, le=1)
 
     rag_graph_alias: str = Field("default_v1", alias="RAG_GRAPH_ALIAS")
     rag_enable_tools: bool = Field(False, alias="RAG_ENABLE_TOOLS")
@@ -57,8 +73,6 @@ class Settings(BaseSettings):
     rag_tool_timeout_ms: int = Field(8000, alias="RAG_TOOL_TIMEOUT_MS")
     rag_default_llm_provider: str = Field("chat-default-llm", alias="RAG_DEFAULT_LLM_PROVIDER")
     rag_primary_llm_provider: str = Field("ark", alias="RAG_PRIMARY_LLM_PROVIDER")
-    rag_llm_fallback_providers_raw: str = Field("openai,anthropic", alias="RAG_LLM_FALLBACK_PROVIDERS")
-    rag_disable_gate: bool = Field(False, alias="RAG_DISABLE_GATE")
 
     # OpenAI / Anthropic
     openai_api_key: str = Field("", alias="OPENAI_API_KEY")
@@ -66,6 +80,7 @@ class Settings(BaseSettings):
     openai_model: str = Field("gpt-4o-mini", alias="OPENAI_MODEL")
 
     anthropic_api_key: str = Field("", alias="ANTHROPIC_API_KEY")
+    anthropic_base_url: str = Field("", alias="ANTHROPIC_BASE_URL")
     anthropic_model: str = Field("claude-sonnet-4-6", alias="ANTHROPIC_MODEL")
 
     @staticmethod
@@ -104,12 +119,8 @@ class Settings(BaseSettings):
     def milvus_uri_normalized(self) -> str:
         return self._normalize_optional_text(self.milvus_uri)
 
-    @property
-    def rag_llm_fallback_providers(self) -> list[str]:
-        parts = [item.strip() for item in self.rag_llm_fallback_providers_raw.split(",")]
-        return [item for item in parts if item]
-
-
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    # pyright cannot model pydantic-settings' env-driven construction; the
+    # class is a BaseSettings with defaults for every field.
+    return Settings()  # type: ignore[call-arg]
