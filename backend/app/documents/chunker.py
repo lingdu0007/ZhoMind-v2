@@ -140,6 +140,8 @@ def _agent_chunk_metadata(parsed_document: ParsedDocument, *, section: _Markdown
         "source_authority": primary_source.get("authority"),
         "source_url": primary_source.get("url"),
         "source_version": primary_source.get("version"),
+        "source_availability": primary_source.get("availability"),
+        "evidence_conflict": metadata.get("evidence_conflict"),
     }
 
 

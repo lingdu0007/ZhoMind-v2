@@ -70,7 +70,34 @@
           </div>
           <button ref="excerptCloseRef" type="button" class="evidence-excerpt__close" aria-label="关闭来源摘录" @click="closeSourceExcerpt">关闭</button>
         </header>
-        <p class="evidence-excerpt__id">{{ selectedSource.source_id }}</p>
+        <p v-if="selectedSource.citation_id || selectedSource.source_id" class="evidence-excerpt__id">
+          {{ selectedSource.citation_id || selectedSource.source_id }}
+        </p>
+        <dl v-if="selectedSource.citation_id" class="evidence-excerpt__metadata">
+          <div v-if="selectedSource.source_authority">
+            <dt>来源机构</dt>
+            <dd>{{ selectedSource.source_authority }}</dd>
+          </div>
+          <div v-if="selectedSource.source_version">
+            <dt>适用版本</dt>
+            <dd>{{ selectedSource.source_version }}</dd>
+          </div>
+          <div v-if="selectedSource.publication_version">
+            <dt>知识版本</dt>
+            <dd>{{ selectedSource.publication_version }}</dd>
+          </div>
+          <div v-if="selectedSource.review_date">
+            <dt>复核日期</dt>
+            <dd>{{ selectedSource.review_date }}</dd>
+          </div>
+        </dl>
+        <a
+          v-if="sourceUrl"
+          class="evidence-excerpt__link"
+          :href="sourceUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+        >打开公开来源</a>
         <div class="evidence-excerpt__content">{{ selectedSource.withdrawal_notice || selectedSource.excerpt || '未返回可展示的来源摘录。' }}</div>
       </aside>
     </div>
@@ -84,7 +111,7 @@ import ChatMessageList from '../components/ChatMessageList.vue';
 import SessionDrawer from '../components/SessionDrawer.vue';
 import { useChatStore } from '../store/chat';
 import { useAuthStore } from '../store/auth';
-import { getEvidenceSourceLabel } from '../app/evidence-summary';
+import { getEvidenceSourceLabel, getEvidenceSourceUrl } from '../app/evidence-summary';
 
 const chatStore = useChatStore();
 const authStore = useAuthStore();
@@ -98,6 +125,7 @@ const sourceTrigger = ref(null);
 const excerptCloseRef = ref(null);
 
 const sourceLabel = computed(() => getEvidenceSourceLabel(selectedSource.value));
+const sourceUrl = computed(() => getEvidenceSourceUrl(selectedSource.value));
 
 const streamSubtitle = computed(() => {
   if (chatStore.loading) return '流式生成中…';
@@ -312,8 +340,46 @@ onMounted(loadSessions);
 .evidence-excerpt__header p,
 .evidence-excerpt__header h2,
 .evidence-excerpt__id,
+.evidence-excerpt__metadata,
 .evidence-excerpt__content {
   margin: 0;
+}
+
+.evidence-excerpt__metadata {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--color-rule);
+  border-bottom: 1px solid var(--color-rule);
+}
+
+.evidence-excerpt__metadata div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.evidence-excerpt__metadata dt,
+.evidence-excerpt__metadata dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.evidence-excerpt__metadata dt {
+  color: var(--color-ink-soft);
+}
+
+.evidence-excerpt__link {
+  display: inline-flex;
+  margin-top: 16px;
+  color: var(--color-copper-strong);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .evidence-excerpt__header p {

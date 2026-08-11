@@ -205,6 +205,29 @@ test('a Knowledge User can inspect Evidence Summary source excerpts without expo
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')), '查看来源 browser-evidence.md');
 });
 
+test('a Knowledge User can open a Public Source Citation without internal retrieval identifiers', { timeout: 30000 }, async (t) => {
+  const { page, baseUrl } = await startAsKnowledgeUser(t, { viewport: { width: 1440, height: 900 } });
+  await page.goto(`${baseUrl}chat`);
+  await sendQuestion(page, '什么时候使用 deterministic workflow？');
+
+  const summary = page.getByLabel('证据摘要');
+  const sourceButton = summary.getByRole('button', { name: '查看来源 Building effective agents' });
+  await sourceButton.click();
+  const drawer = page.getByRole('complementary', { name: '来源摘录' });
+  assert.equal(await drawer.getByText('Anthropic', { exact: true }).isVisible(), true);
+  assert.equal(await drawer.getByText('2024-12-19', { exact: true }).isVisible(), true);
+  assert.equal(await drawer.getByText('v1', { exact: true }).isVisible(), true);
+  assert.equal(await drawer.getByText('2026-08-12', { exact: true }).isVisible(), true);
+  assert.equal(await drawer.getByText('已知路径应由 deterministic workflow 控制。', { exact: true }).isVisible(), true);
+  const publicLink = drawer.getByRole('link', { name: '打开公开来源' });
+  assert.equal(await publicLink.getAttribute('href'), 'https://www.anthropic.com/engineering/building-effective-agents');
+  assert.equal(await publicLink.getAttribute('target'), '_blank');
+  assert.equal(await drawer.getByText(/internal-chunk|internal-document/).count(), 0);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+});
+
 test('historical Evidence Summaries retain source identity and show unavailable or insufficient coverage honestly', { timeout: 30000 }, async (t) => {
   const { page, baseUrl } = await startAsKnowledgeUser(t, {});
   await page.goto(`${baseUrl}chat`);

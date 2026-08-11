@@ -29,7 +29,7 @@
         </div>
         <p class="evidence-summary__count">{{ msg.evidence_summary.source_count || 0 }} 个来源</p>
         <ul v-if="msg.evidence_summary.sources?.length" class="evidence-summary__sources">
-          <li v-for="source in msg.evidence_summary.sources" :key="source.source_id">
+          <li v-for="source in msg.evidence_summary.sources" :key="source.citation_id || source.source_id">
             <p v-if="source.withdrawal_notice" class="evidence-summary__withdrawn">
               {{ getEvidenceSourceLabel(source) }}：{{ source.withdrawal_notice }}
             </p>

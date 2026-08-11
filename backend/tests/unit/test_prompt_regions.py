@@ -5,6 +5,7 @@ import pytest
 from app.rag.answer_evidence import AnswerEvidence
 from app.rag.prompt_regions import (
     EVIDENCE_SOURCES_REGION,
+    RESPONSE_CONTRACT_REGION,
     SYSTEM_POLICY,
     USER_QUESTION_REGION,
     build_generation_prompt,
@@ -25,6 +26,34 @@ def _evidence(index: int, *, content: str = "已发布证据内容") -> AnswerEv
         metadata_items=(
             ("title", f"已发布资料 {index}.md"),
             ("publication_version", f"v{index}"),
+        ),
+    )
+
+
+def _agent_evidence() -> AnswerEvidence:
+    return AnswerEvidence(
+        source_id="internal-chunk-1",
+        document_id="internal-document-1",
+        generation=2,
+        chunk_index=0,
+        title="Prefer deterministic workflows",
+        publication_version="v2",
+        excerpt="已知路径应由 deterministic workflow 控制。",
+        retrieval_source="lexical",
+        score=9.5,
+        metadata_items=(
+            ("title", "Prefer deterministic workflows"),
+            ("publication_version", "v2"),
+            ("entry_id", "pae-workflow-001"),
+            ("entry_title", "Prefer deterministic workflows"),
+            ("domain", "workflow-vs-agent"),
+            ("section_id", "stable-principle"),
+            ("source_title", "Building effective agents"),
+            ("source_authority", "Anthropic"),
+            ("source_url", "https://www.anthropic.com/engineering/building-effective-agents"),
+            ("source_version", "2024-12-19"),
+            ("review_date", "2026-08-12"),
+            ("source_availability", "verified"),
         ),
     )
 
@@ -94,6 +123,46 @@ def test_generation_prompt_is_immutable() -> None:
     prompt = build_generation_prompt("问题", (_evidence(1),))
     with pytest.raises(AttributeError):
         prompt.user_prompt = "replacement"  # type: ignore[misc]
+
+
+def test_agent_prompt_exposes_public_citations_and_decision_summary_contract() -> None:
+    prompt = build_generation_prompt("Should I use a workflow or an Agent?", (_agent_evidence(),))
+    envelope = json.loads(prompt.user_prompt)
+
+    assert envelope[RESPONSE_CONTRACT_REGION] == {
+        "answer_kind": "decision_summary",
+        "language": "en",
+        "required_sections": ["Recommendation", "Applicability Limits", "Alternatives", "Minimal Implementation or Acceptance Check"],
+        "citation_markers": ["S1"],
+    }
+    assert envelope[EVIDENCE_SOURCES_REGION][0] == {
+        "citation_id": "S1",
+        "entry_id": "pae-workflow-001",
+        "entry_title": "Prefer deterministic workflows",
+        "domain": "workflow-vs-agent",
+        "section_id": "stable-principle",
+        "source_title": "Building effective agents",
+        "source_authority": "Anthropic",
+        "source_url": "https://www.anthropic.com/engineering/building-effective-agents",
+        "source_version": "2024-12-19",
+        "publication_version": "v2",
+        "review_date": "2026-08-12",
+        "excerpt": "已知路径应由 deterministic workflow 控制。",
+    }
+    serialized = json.dumps(envelope, ensure_ascii=False)
+    assert "internal-chunk-1" not in serialized
+    assert "internal-document-1" not in serialized
+    assert "9.5" not in serialized
+
+
+def test_agent_implementation_request_uses_evidence_bounded_aid_contract() -> None:
+    prompt = build_generation_prompt("请给我一个 implementation checklist", (_agent_evidence(),))
+    contract = json.loads(prompt.user_prompt)[RESPONSE_CONTRACT_REGION]
+
+    assert contract["answer_kind"] == "evidence_bounded_implementation_aid"
+    assert contract["language"] == "zh"
+    assert contract["required_label"] == "Evidence-Bounded Implementation Aid"
+    assert contract["required_sections"][-1] == "缺失条件与版本范围"
 
 
 def test_forged_region_text_inside_snapshot_cannot_redefine_the_json_envelope() -> None:

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import tempfile
 import time
@@ -50,7 +51,17 @@ class _RecordingLlmProvider:
 
     async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
         self.prompts.append(prompt)
-        return "建议在执行路径已知时优先使用 deterministic workflow。"
+        return """## 建议
+在执行路径已知时优先使用 deterministic workflow。[S1]
+
+## 适用边界
+仅适用于步骤和正常分支可预先定义的任务。[S1]
+
+## 备选方案
+必须依据运行时 tool observation 选择下一步时，使用 bounded Agent。[S1]
+
+## 最小实现或验收检查
+固定输入可重放，并为动态 loop 设置 step 与 tool budget。[S1]"""
 
 
 _PILOT_ENTRY = """---
@@ -186,9 +197,8 @@ def test_agent_entry_is_retrievable_through_authenticated_chat_only_after_publis
             answer = _extract_data(published_chat.json())
             assert answer["outcome"] == "evidence_gated_answer"
             source = answer["message"]["evidence_summary"]["sources"][0]
-            assert source["metadata"] == {
-                "title": "Prefer deterministic workflows when the path is known",
-                "publication_version": "v1",
+            assert source == {
+                "citation_id": "S1",
                 "entry_id": "pae-workflow-001",
                 "entry_title": "Prefer deterministic workflows when the path is known",
                 "domain": "workflow-vs-agent",
@@ -197,12 +207,38 @@ def test_agent_entry_is_retrievable_through_authenticated_chat_only_after_publis
                 "source_authority": "Anthropic",
                 "source_url": "https://www.anthropic.com/research/building-effective-agents",
                 "source_version": "2024-12-19",
+                "publication_version": "v1",
                 "review_date": "2026-08-12",
+                "excerpt": "# Decision Question 什么时候应该优先使用 deterministic workflow 而不是 Agent？",
             }
             assert "score" not in source
             assert "retrieval_source" not in source
+            assert "source_id" not in source
             assert "retrieval_diagnostics" not in answer
             assert llm.prompts
+            prompt_source = json.loads(llm.prompts[-1])["evidence_sources"][0]
+            assert prompt_source["excerpt"] == source["excerpt"]
+
+            streamed_chat = client.post(
+                "/api/v1/chat/stream",
+                headers=user_headers,
+                json={"message": "什么时候使用 deterministic workflow？", "session_id": "published-stream"},
+            )
+            assert streamed_chat.status_code == 200
+            stream_summary = None
+            current_event = None
+            for line in streamed_chat.text.splitlines():
+                if line.startswith("event: "):
+                    current_event = line.removeprefix("event: ")
+                elif line.startswith("data: ") and current_event == "evidence_summary":
+                    stream_summary = json.loads(line.removeprefix("data: "))["evidence_summary"]
+            assert stream_summary == answer["message"]["evidence_summary"]
+
+            history = client.get("/api/v1/sessions/published-stream", headers=user_headers)
+            assert history.status_code == 200
+            history_messages = _extract_data(history.json())["messages"]
+            history_assistant = next(item for item in history_messages if item["type"] == "assistant")
+            assert history_assistant["evidence_summary"] == stream_summary
 
             invalid_upload = client.post(
                 "/api/v1/documents/upload",

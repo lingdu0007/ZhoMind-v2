@@ -3,7 +3,9 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 
 _CITATION_METADATA_KEYS = (
     "title",
@@ -17,12 +19,71 @@ _CITATION_METADATA_KEYS = (
     "source_url",
     "source_version",
     "review_date",
+    "review_status",
+    "source_availability",
     "filename",
     "source_file",
     "source",
     "document_name",
     "path",
 )
+_AGENT_CITATION_KEYS = (
+    "entry_id",
+    "entry_title",
+    "domain",
+    "section_id",
+    "source_title",
+    "source_authority",
+    "source_url",
+    "source_version",
+    "review_date",
+)
+_UNSAFE_URL_QUERY_PARTS = ("credential", "password", "redirect", "secret", "signature", "token")
+
+
+def _safe_public_url(value: str) -> bool:
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return False
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if (
+        parsed.scheme != "https"
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+        or hostname == "localhost"
+        or hostname.endswith((".local", ".internal"))
+        or "." not in hostname
+    ):
+        return False
+    return not any(
+        any(part in key.lower() for part in _UNSAFE_URL_QUERY_PARTS)
+        for key, _value in parse_qsl(parsed.query, keep_blank_values=True)
+    )
+
+
+def _agent_metadata_is_eligible(metadata: Mapping[str, object]) -> bool:
+    if not isinstance(metadata.get("entry_id"), str):
+        return True
+    if metadata.get("review_status") != "approved" or metadata.get("source_availability") != "verified":
+        return False
+    if metadata.get("evidence_conflict") == "unresolved":
+        return False
+    if any(not isinstance(metadata.get(key), str) or not str(metadata[key]).strip() for key in _AGENT_CITATION_KEYS):
+        return False
+    if not _safe_public_url(str(metadata["source_url"])):
+        return False
+    if metadata.get("section_id") == "version-mapping":
+        try:
+            reviewed = date.fromisoformat(str(metadata["review_date"]))
+        except ValueError:
+            return False
+        if datetime.now(UTC).date() - reviewed > timedelta(days=90):
+            return False
+    return True
 
 
 def _normalize_excerpt(value: str, *, max_chars: int) -> str:
@@ -63,6 +124,8 @@ class AnswerEvidence:
         ):
             return None
         if not isinstance(metadata, Mapping):
+            return None
+        if not _agent_metadata_is_eligible(metadata):
             return None
 
         raw_title = metadata.get("title")
@@ -138,6 +201,18 @@ class AnswerEvidence:
             "excerpt": self.excerpt,
         }
 
+    def is_agent_entry(self) -> bool:
+        return isinstance(dict(self.metadata_items).get("entry_id"), str)
+
+    def to_public_citation(self, citation_id: str) -> dict[str, str]:
+        metadata = dict(self.metadata_items)
+        return {
+            "citation_id": citation_id,
+            **{key: metadata[key] for key in _AGENT_CITATION_KEYS if key in metadata},
+            "publication_version": self.publication_version,
+            "excerpt": self.excerpt,
+        }
+
 
 def select_answer_evidence(
     candidates: list[dict],
@@ -179,6 +254,21 @@ def evidence_summary_from_trace(rag_trace: object) -> dict[str, Any]:
             if isinstance(metadata, Mapping)
             else {}
         )
+        if isinstance(source_metadata.get("entry_id"), str):
+            citation: dict[str, Any] = {
+                "citation_id": f"S{len(sources) + 1}",
+                **{key: source_metadata[key] for key in _AGENT_CITATION_KEYS if key in source_metadata},
+                "publication_version": source_metadata.get("publication_version") or f"v{item.get('generation', 1)}",
+            }
+            if item.get("withdrawn") is True:
+                citation["withdrawal_notice"] = "This source has been withdrawn."
+            else:
+                excerpt = str(item.get("content_preview") or item.get("content") or "")
+                if not excerpt:
+                    continue
+                citation["excerpt"] = excerpt
+            sources.append(citation)
+            continue
         if item.get("withdrawn") is True:
             sources.append(
                 {

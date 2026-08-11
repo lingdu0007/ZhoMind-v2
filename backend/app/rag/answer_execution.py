@@ -10,7 +10,7 @@ from typing import Any
 from app.extensions.provider_router import ProviderRouter
 from app.rag.answer_evidence import AnswerEvidence, evidence_summary_from_trace
 from app.rag.interfaces import RelevanceJudge, Reranker, Retriever
-from app.rag.prompt_regions import build_generation_prompt
+from app.rag.prompt_regions import build_generation_prompt, validate_agent_response
 from app.rag.runtime.graph_runner import RagGraphRunner
 
 
@@ -265,6 +265,7 @@ class EvidenceGatedAnswerExecutor:
             "provider_attempts": [],
             "fallback_hops": 0,
         }
+        generation_provider_ms = 0
         if not gate_passed:
             kind = AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
             text = self._INSUFFICIENT_REPLY
@@ -281,15 +282,12 @@ class EvidenceGatedAnswerExecutor:
             )
             generation_provider_ms = round((perf_counter() - generation_started) * 1000)
             completion = str(provider_result.get("text") or "").strip()
-            if completion:
+            if completion and validate_agent_response(completion, question=normalized_question, evidence=evidence):
                 kind = AnswerOutcomeKind.EVIDENCE_GATED_ANSWER
                 text = completion
             else:
                 kind = AnswerOutcomeKind.GENERATION_UNAVAILABLE
                 text = self._GENERATION_UNAVAILABLE_REPLY
-
-        if not gate_passed:
-            generation_provider_ms = 0
 
         runtime_result["gate"] = {"passed": gate_passed, "reason": gate_reason}
         runtime_result["timing_ms"] = {

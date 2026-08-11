@@ -25,6 +25,40 @@ def _candidate(index: int, *, content: str | None = None) -> dict:
     }
 
 
+def _agent_candidate(
+    *,
+    availability: str = "verified",
+    section_id: str = "stable-principle",
+    review_date: str = "2026-08-12",
+    evidence_conflict: str | None = None,
+) -> dict:
+    return {
+        "chunk_id": "internal-chunk-1",
+        "document_id": "internal-document-1",
+        "generation": 2,
+        "chunk_index": 0,
+        "score": 9.5,
+        "content_preview": "已知路径应由 deterministic workflow 控制。",
+        "metadata": {
+            "title": "Prefer deterministic workflows",
+            "publication_version": "v2",
+            "entry_id": "pae-workflow-001",
+            "entry_title": "Prefer deterministic workflows",
+            "domain": "workflow-vs-agent",
+            "section_id": section_id,
+            "source_title": "Building effective agents",
+            "source_authority": "Anthropic",
+            "source_url": "https://www.anthropic.com/engineering/building-effective-agents",
+            "source_version": "2024-12-19",
+            "review_date": review_date,
+            "review_status": "approved",
+            "source_availability": availability,
+            "evidence_conflict": evidence_conflict,
+        },
+        "retrieval_source": "lexical",
+    }
+
+
 class _RecordingRetriever:
     def __init__(self, items: list[dict]) -> None:
         self.items = items
@@ -194,3 +228,106 @@ def test_generation_unavailable_preserves_the_exact_answer_evidence_set() -> Non
     assert [item.source_id for item in outcome.evidence] == ["chunk-1", "chunk-2"]
     assert outcome.evidence_summary()["coverage"] == "sufficient"
     assert outcome.to_rag_trace()["runtime"]["provider_attempts"][0]["error_code"] == "TimeoutError"
+
+
+def test_agent_answer_requires_decision_summary_and_projects_public_source_citation() -> None:
+    answer = """## 建议
+使用 deterministic workflow。[S1]
+
+## 适用边界
+仅适用于执行路径已知的任务。[S1]
+
+## 备选方案
+运行时路径未知时使用 bounded Agent。[S1]
+
+## 最小实现或验收检查
+固定输入应可重放并有 step budget。[S1]"""
+    outcome = _execute(
+        _executor(retriever=_RecordingRetriever([_agent_candidate()]), provider=_RecordingProvider(answer=answer)),
+        question="什么时候使用 deterministic workflow？",
+    )
+
+    assert outcome.kind is AnswerOutcomeKind.EVIDENCE_GATED_ANSWER
+    assert outcome.text == answer
+    source = outcome.evidence_summary()["sources"][0]
+    assert source == {
+        "citation_id": "S1",
+        "entry_id": "pae-workflow-001",
+        "entry_title": "Prefer deterministic workflows",
+        "domain": "workflow-vs-agent",
+        "section_id": "stable-principle",
+        "source_title": "Building effective agents",
+        "source_authority": "Anthropic",
+        "source_url": "https://www.anthropic.com/engineering/building-effective-agents",
+        "source_version": "2024-12-19",
+        "publication_version": "v2",
+        "review_date": "2026-08-12",
+        "excerpt": "已知路径应由 deterministic workflow 控制。",
+    }
+    assert "source_id" not in source
+    assert "score" not in source
+
+
+def test_agent_answer_fails_closed_for_invalid_summary_or_unavailable_source() -> None:
+    invalid_summary = _execute(
+        _executor(
+            retriever=_RecordingRetriever([_agent_candidate()]),
+            provider=_RecordingProvider(answer="没有结构或 citation marker 的回答"),
+        )
+    )
+    unavailable = _execute(
+        _executor(
+            retriever=_RecordingRetriever([_agent_candidate(availability="unavailable")]),
+            provider=_RecordingProvider(),
+        )
+    )
+
+    assert invalid_summary.kind is AnswerOutcomeKind.GENERATION_UNAVAILABLE
+    assert unavailable.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
+
+
+def test_agent_answer_rejects_stale_version_mapping_and_unresolved_evidence_conflict() -> None:
+    stale = _execute(
+        _executor(
+            retriever=_RecordingRetriever([_agent_candidate(section_id="version-mapping", review_date="2020-01-01")]),
+            provider=_RecordingProvider(),
+        )
+    )
+    conflict = _execute(
+        _executor(
+            retriever=_RecordingRetriever([_agent_candidate(evidence_conflict="unresolved")]),
+            provider=_RecordingProvider(),
+        )
+    )
+
+    assert stale.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
+    assert conflict.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
+
+
+def test_agent_implementation_request_requires_labeled_evidence_bounded_aid() -> None:
+    answer = """【Evidence-Bounded Implementation Aid】
+
+## 建议
+使用显式 workflow boundary。[S1]
+
+## 适用边界
+只覆盖证据中的已知执行路径。[S1]
+
+## 备选方案
+动态路径可改用 bounded Agent。[S1]
+
+## 最小实现或验收检查
+```python
+mode = "workflow"
+```
+[S1]
+
+## 缺失条件与版本范围
+缺少实际 workload 与 provider version，不能视为 production-ready。[S1]"""
+    outcome = _execute(
+        _executor(retriever=_RecordingRetriever([_agent_candidate()]), provider=_RecordingProvider(answer=answer)),
+        question="请给我 implementation checklist 和 Python 代码",
+    )
+
+    assert outcome.kind is AnswerOutcomeKind.EVIDENCE_GATED_ANSWER
+    assert outcome.text.startswith("【Evidence-Bounded Implementation Aid】")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 from datetime import UTC, datetime
 
@@ -68,12 +69,22 @@ class _DeterministicLlm:
         self._calls = 0
 
     async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
-        del prompt, system_prompt
+        del system_prompt
         self._calls += 1
         if self._fail_first and self._calls == 1:
             raise RuntimeError("browser acceptance first-call failure")
         if self._delay_ms > 0:
             await asyncio.sleep(self._delay_ms / 1000)
+        envelope = json.loads(prompt)
+        contract = envelope.get("response_contract")
+        if isinstance(contract, dict):
+            marker = f"[{contract['citation_markers'][0]}]"
+            label = contract.get("required_label")
+            heading = f"【{label}】\n\n" if label else ""
+            return heading + "\n\n".join(
+                f"## {section}\n已知路径应由 deterministic workflow 控制。{marker}"
+                for section in contract["required_sections"]
+            )
         return "部署前需要完成变更审批。"
 
 
@@ -225,6 +236,58 @@ async def _seed_test_data() -> None:
                     )
                 )
 
+            session.add(
+                Document(
+                    id="browser-agent-entry",
+                    filename="synthetic-agent-entry.md",
+                    file_type="md",
+                    file_size=len("已知路径应由 deterministic workflow 控制。".encode()),
+                    source_content=b"synthetic browser acceptance entry",
+                    status="ready",
+                    chunk_strategy="agent",
+                    chunk_count=1,
+                    published_generation=1,
+                    next_generation=2,
+                    latest_requested_generation=1,
+                )
+            )
+            session.add(
+                DocumentChunk(
+                    id="chunk-browser-agent-entry",
+                    document_id="browser-agent-entry",
+                    generation=1,
+                    chunk_index=0,
+                    content="已知路径应由 deterministic workflow 控制。",
+                    keywords=["deterministic", "workflow"],
+                    generated_questions=[],
+                    chunk_metadata={
+                        "strategy": "agent",
+                        "entry_id": "synthetic-workflow-001",
+                        "entry_title": "Prefer deterministic workflows",
+                        "domain": "workflow-vs-agent",
+                        "section_id": "stable-principle",
+                        "review_status": "approved",
+                        "review_date": "2026-08-12",
+                        "source_title": "Building effective agents",
+                        "source_authority": "Anthropic",
+                        "source_url": "https://www.anthropic.com/engineering/building-effective-agents",
+                        "source_version": "2024-12-19",
+                        "source_availability": "verified",
+                    },
+                )
+            )
+            session.add(
+                DocumentJob(
+                    id="job-browser-agent-entry",
+                    document_id="browser-agent-entry",
+                    build_generation=1,
+                    requested_chunk_strategy="agent",
+                    status="succeeded",
+                    stage="completed",
+                    progress=100,
+                    message="synthetic Agent entry published",
+                )
+            )
             session.add(
                 Document(
                     id="browser-cancelable",
