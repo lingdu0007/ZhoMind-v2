@@ -112,9 +112,11 @@ import SessionDrawer from '../components/SessionDrawer.vue';
 import { useChatStore } from '../store/chat';
 import { useAuthStore } from '../store/auth';
 import { getEvidenceSourceLabel, getEvidenceSourceUrl } from '../app/evidence-summary';
+import { useRoute } from 'vue-router';
 
 const chatStore = useChatStore();
 const authStore = useAuthStore();
+const route = useRoute();
 const input = ref('');
 const chatSectionRef = ref(null);
 const sessionVisible = ref(false);
@@ -245,7 +247,12 @@ watch(
   }
 );
 
-onMounted(loadSessions);
+onMounted(() => {
+  if (typeof route.query.q === 'string' && route.query.q.trim()) {
+    input.value = route.query.q.trim();
+  }
+  loadSessions();
+});
 </script>
 
 <style scoped>

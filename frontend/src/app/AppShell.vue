@@ -11,6 +11,10 @@
           <MessageCircle :size="20" aria-hidden="true" />
           <span>对话工作区</span>
         </RouterLink>
+        <RouterLink class="workbench-shell__nav-item" to="/knowledge" title="知识地图" aria-label="知识地图">
+          <BookOpen :size="20" aria-hidden="true" />
+          <span>知识地图</span>
+        </RouterLink>
         <RouterLink
           v-if="authStore.isAdmin"
           class="workbench-shell__nav-item"
@@ -62,7 +66,7 @@
 <script setup>
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ClipboardList, LibraryBig, LogOut, MessageCircle, Settings2 } from 'lucide-vue-next';
+import { BookOpen, ClipboardList, LibraryBig, LogOut, MessageCircle, Settings2 } from 'lucide-vue-next';
 import { clearProtectedSession } from './protected-session';
 import { useAuthStore } from '../store/auth';
 
@@ -222,7 +226,8 @@ const signOut = async () => {
     height: auto;
     flex-direction: row;
     justify-content: space-between;
-    padding: 10px 16px;
+    gap: 8px;
+    padding: 10px 8px;
     border-right: 0;
     border-bottom: 1px solid var(--color-rule);
   }
@@ -230,6 +235,7 @@ const signOut = async () => {
   .workbench-shell__nav {
     margin-left: auto;
     flex-direction: row;
+    gap: 4px;
   }
 
   .workbench-shell__identity {

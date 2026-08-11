@@ -35,6 +35,14 @@ export const apiAdapter = {
     const { data } = await http.delete(`/sessions/${encodeURIComponent(sessionId)}`);
     return unwrapData(data);
   },
+  async getKnowledgeMap() {
+    const { data } = await http.get('/knowledge-map');
+    return unwrapData(data);
+  },
+  async getKnowledgeMapEntry(entryId) {
+    const { data } = await http.get(`/knowledge-map/${encodeURIComponent(entryId)}`);
+    return unwrapData(data);
+  },
 
   // Documents (admin)
   async listDocuments(params) {

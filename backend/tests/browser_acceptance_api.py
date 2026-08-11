@@ -268,6 +268,18 @@ async def _seed_test_data() -> None:
                         "section_id": "stable-principle",
                         "review_status": "approved",
                         "review_date": "2026-08-12",
+                        "applicable_versions": ["framework-neutral", "Anthropic 2024-12-19"],
+                        "approved_summary": "已知路径应由 deterministic workflow 控制。",
+                        "suggested_query": "什么时候使用 deterministic workflow？",
+                        "sources": [
+                            {
+                                "title": "Building effective agents",
+                                "authority": "Anthropic",
+                                "url": "https://www.anthropic.com/engineering/building-effective-agents",
+                                "version": "2024-12-19",
+                                "availability": "verified",
+                            }
+                        ],
                         "source_title": "Building effective agents",
                         "source_authority": "Anthropic",
                         "source_url": "https://www.anthropic.com/engineering/building-effective-agents",
