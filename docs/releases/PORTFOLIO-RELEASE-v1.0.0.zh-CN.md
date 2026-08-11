@@ -4,7 +4,7 @@
 
 ## Release Scope
 
-本次 Portfolio Release 发布经审阅的 project narrative，以及 source candidate `91753f1c1ff6fc07bc262dfa50fb719a63210e0b` 的 accepted、non-sensitive evidence subset。release record 与 tag 标识精确的 merged revision；source candidate 保持 accepted runtime observations 的 provenance identity，因为 generated bundle 不能 self-reference 添加它的 commit。
+本次 Portfolio Release 发布经审阅的 project narrative，以及 runtime source candidate `91753f1c1ff6fc07bc262dfa50fb719a63210e0b` 的 accepted、non-sensitive evidence subset。release artifact revision 是包含 bundle 与这些双语 materials 的精确 merged commit；release record 与 tag 标识该 revision。source candidate 保持 accepted runtime observations 的 provenance identity，因为 generated bundle 不能 self-reference 添加它的 commit。
 
 ## Meaningful Development History
 

@@ -93,7 +93,41 @@ def verify_pair(english: Path, chinese: Path, errors: list[str]) -> tuple[str, s
     return english_text, chinese_text
 
 
-def verify_bundle(errors: list[str]) -> str:
+def git_revision(revision: str, errors: list[str], label: str) -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{revision}^{{commit}}"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode:
+        fail(errors, f"{label} is not a resolvable commit")
+        return ""
+    return result.stdout.strip()
+
+
+def verify_release_artifact(revision: str, errors: list[str]) -> str:
+    resolved_revision = git_revision(revision, errors, "release artifact revision")
+    head_revision = git_revision("HEAD", errors, "checkout HEAD")
+    if resolved_revision and head_revision and resolved_revision != head_revision:
+        fail(errors, "release artifact revision must equal the checked-out release candidate")
+
+    bundle_root = ROOT / "public-evidence/releases/portfolio-release-candidate-01"
+    for artifact in sorted(path for path in bundle_root.rglob("*") if path.is_file()):
+        relative_path = artifact.relative_to(ROOT).as_posix()
+        result = subprocess.run(
+            ["git", "show", f"{resolved_revision}:{relative_path}"],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode or result.stdout != artifact.read_bytes():
+            fail(errors, f"release artifact revision does not contain the checked bundle artifact: {relative_path}")
+    return resolved_revision
+
+
+def verify_bundle(errors: list[str], release_artifact_revision: str) -> str:
     manifest_path = ROOT / "public-evidence/releases/portfolio-release-candidate-01/manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -108,24 +142,16 @@ def verify_bundle(errors: list[str]) -> str:
         fail(errors, "Public Evidence Bundle candidate revision differs from source revision")
     if source_revision not in manifest.get("provenance", {}).get("revisions", []):
         fail(errors, "Public Evidence Bundle source revision is missing from provenance")
+    resolved_source_revision = git_revision(source_revision, errors, "Public Evidence Bundle source revision")
     result = subprocess.run(
-        ["git", "cat-file", "-e", f"{source_revision}^{{commit}}"],
+        ["git", "merge-base", "--is-ancestor", resolved_source_revision, release_artifact_revision],
         cwd=ROOT,
         capture_output=True,
         text=True,
         check=False,
     )
     if result.returncode:
-        fail(errors, "Public Evidence Bundle source revision is not resolvable locally")
-    result = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", source_revision, "HEAD"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode:
-        fail(errors, "Public Evidence Bundle source revision is not an ancestor of the release candidate")
+        fail(errors, "Public Evidence Bundle source revision is not an ancestor of the release artifact revision")
     return source_revision
 
 
@@ -141,6 +167,7 @@ def verify_claims(documents: tuple[Path, ...], errors: list[str]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expected-source-revision")
+    parser.add_argument("--expected-release-revision", default="HEAD")
     args = parser.parse_args()
     errors: list[str] = []
 
@@ -152,7 +179,8 @@ def main() -> int:
         r"^#{1,3} ", release_zh, flags=re.MULTILINE
     ):
         fail(errors, "heading-level drift between release-note mirrors")
-    source_revision = verify_bundle(errors)
+    release_artifact_revision = verify_release_artifact(args.expected_release_revision, errors)
+    source_revision = verify_bundle(errors, release_artifact_revision)
     if args.expected_source_revision and source_revision != args.expected_source_revision:
         fail(errors, "accepted Public Evidence Bundle does not match --expected-source-revision")
     if not (ROOT / "docs/assets/portfolio-release-chinese-entry.png").is_file():
@@ -167,7 +195,10 @@ def main() -> int:
         for error in errors:
             print(f"FAIL: {error}")
         return 1
-    print(f"PASS: Portfolio Release documents and accepted source revision {source_revision} are coherent")
+    print(
+        "PASS: Portfolio Release documents, accepted source revision "
+        f"{source_revision}, and release artifact revision {release_artifact_revision} are coherent"
+    )
     return 0
 
 

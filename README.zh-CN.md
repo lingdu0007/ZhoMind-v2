@@ -10,7 +10,7 @@ ZhoMind-v2 是一个首发版本的 Team-Shared Knowledge Base 应用，处理�
 
 ## Portfolio Release
 
-已接受的代码 candidate 为 `91753f1c1ff6fc07bc262dfa50fb719a63210e0b`。其经过审阅、非敏感的 [Public Evidence Bundle](public-evidence/releases/portfolio-release-candidate-01/REPORT.zh-CN.md) 名为 `portfolio-release-candidate-01`；[manifest](public-evidence/releases/portfolio-release-candidate-01/manifest.json) 将 run identities、冻结的 corpus/query hashes、artifact hashes 与 declared limits 绑定到该 revision。
+已接受的 runtime source candidate 为 `91753f1c1ff6fc07bc262dfa50fb719a63210e0b`。其经过审阅、非敏感的 [Public Evidence Bundle](public-evidence/releases/portfolio-release-candidate-01/REPORT.zh-CN.md) 名为 `portfolio-release-candidate-01`；[manifest](public-evidence/releases/portfolio-release-candidate-01/manifest.json) 将 run identities、冻结的 corpus/query hashes、artifact hashes 与 declared limits 绑定到该 source revision。release artifact revision 是包含该已检查 bundle 和双语 release materials 的 Git commit；tag 前它必须等于本地 `main`、authoritative remote `main` 与 tag target。source revision 必须是该 artifact revision 的 ancestor，因为 generated bundle 不能 self-reference 添加它的 commit hash。
 
 [Interview Dossier](docs/portfolio/INTERVIEW-DOSSIER.zh-CN.md) 将每一条 portfolio claim 映射到 source file、已接受测试或 bundle artifact。[Release Notes](docs/releases/PORTFOLIO-RELEASE-v1.0.0.zh-CN.md) 汇总开发序列和发布边界，审阅者无需重建完整 commit history。
 
@@ -108,7 +108,7 @@ cd ..
 python3 scripts/check-docs-parity.py
 python3 scripts/validate-evidence-bundle.py --all
 python3 scripts/scan-secrets.py
-python3 scripts/verify-portfolio-release.py --expected-source-revision 91753f1c1ff6fc07bc262dfa50fb719a63210e0b
+python3 scripts/verify-portfolio-release.py --expected-source-revision 91753f1c1ff6fc07bc262dfa50fb719a63210e0b --expected-release-revision HEAD
 ```
 
 真实 embedding、Milvus、provider、Compose 与 persistent-stack acceptance 都是刻意分离的 remote-only checks。请通过 [Public Evidence Bundle](public-evidence/releases/portfolio-release-candidate-01/REPORT.zh-CN.md) 审阅其 recorded conditions 与 limits，不要把本地 deterministic run 当作 live-provider 或 production evidence。
