@@ -57,6 +57,24 @@ def test_parse_pdf_document_success(monkeypatch: pytest.MonkeyPatch) -> None:
     assert parsed.text == "page one\n\npage three"
 
 
+def test_parse_pdf_document_rejects_when_no_text_can_be_extracted(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakePage:
+        def extract_text(self) -> None:
+            return None
+
+    class _EmptyPdfReader:
+        def __init__(self, _: object) -> None:
+            self.pages = [_FakePage()]
+
+    monkeypatch.setattr("app.documents.parsers.PdfReader", _EmptyPdfReader)
+
+    with pytest.raises(AppError) as exc_info:
+        parse_document("scanned.pdf", b"%PDF-1.4\nstub")
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.code == "DOC_PDF_TEXT_NOT_EXTRACTABLE"
+
+
 def test_parse_pdf_document_rejects_invalid_or_corrupt_pdf(monkeypatch: pytest.MonkeyPatch) -> None:
     class _BrokenPdfReader:
         def __init__(self, _: object) -> None:

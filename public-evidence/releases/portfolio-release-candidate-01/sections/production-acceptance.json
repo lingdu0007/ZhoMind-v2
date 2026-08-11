@@ -1,0 +1,82 @@
+{
+  "path": "/api/v1/chat",
+  "results": [
+    {
+      "case_id": "production-normal-final-01",
+      "check": "normal_answer",
+      "limitations": [],
+      "outcome": "evidence_gated_answer",
+      "passed": true
+    },
+    {
+      "case_id": "production-sse-final-01",
+      "check": "sse_answer",
+      "limitations": [],
+      "outcome": "evidence_gated_answer",
+      "passed": true
+    },
+    {
+      "case_id": "production-history-final-01",
+      "check": "history_citations",
+      "limitations": [],
+      "outcome": "evidence_gated_answer",
+      "passed": true
+    },
+    {
+      "case_id": "production-insufficient-final-01",
+      "check": "insufficient_evidence",
+      "limitations": [],
+      "outcome": "insufficient_evidence_reply",
+      "passed": true
+    },
+    {
+      "case_id": "production-unavailable-final-01",
+      "check": "generation_unavailable",
+      "limitations": [
+        "The controlled provider route was restored after proving zero generation fallback hops."
+      ],
+      "outcome": "generation_unavailable",
+      "passed": true
+    },
+    {
+      "case_id": "production-withdrawal-final-01",
+      "check": "withdrawal",
+      "limitations": [],
+      "outcome": "evidence_gated_answer",
+      "passed": true
+    },
+    {
+      "case_id": "production-deactivation-final-01",
+      "check": "deactivation",
+      "limitations": [],
+      "outcome": "non_knowledge_base_reply",
+      "passed": true
+    },
+    {
+      "case_id": "production-health-final-01",
+      "check": "service_health",
+      "limitations": [],
+      "outcome": "non_knowledge_base_reply",
+      "passed": true
+    },
+    {
+      "case_id": "production-roles-final-01",
+      "check": "role_boundaries",
+      "limitations": [],
+      "outcome": "non_knowledge_base_reply",
+      "passed": true
+    }
+  ],
+  "run_ids": [
+    "production-20260810T142508Z-2384065-31253",
+    "production-20260810T142508Z-2384065-31253-generation",
+    "production-insufficient-20260810T142700Z",
+    "generation-unavailable-20260810T142800Z",
+    "production-lifecycle-20260810T145200Z",
+    "deployment-20260810T124000Z",
+    "production-browser-roles-20260810T145000Z",
+    "browser-gate-20260810T130400Z"
+  ],
+  "schema_version": "1.0.0",
+  "section": "production-acceptance"
+}

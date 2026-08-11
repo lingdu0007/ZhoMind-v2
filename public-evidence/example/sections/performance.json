@@ -1,0 +1,32 @@
+{
+  "section": "performance",
+  "schema_version": "1.0.0",
+  "run_ids": [
+    "example-run-20260805"
+  ],
+  "load": {
+    "concurrency": 1,
+    "requests": 20
+  },
+  "metrics": {
+    "ttft_ms": {
+      "p50": 1200.0,
+      "p95": 3100.0,
+      "p99": 5200.0
+    },
+    "total_ms": {
+      "p50": 3400.0,
+      "p95": 8600.0,
+      "p99": 12900.0
+    },
+    "error_rate": 0.0,
+    "retrieval_ms": 180.0,
+    "provider_ms": 2400.0,
+    "persistence_ms": 60.0
+  },
+  "target": {
+    "p95_seconds_target": 12,
+    "met": true,
+    "note": "Example-only placeholder values; not a production claim."
+  }
+}

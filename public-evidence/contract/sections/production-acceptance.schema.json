@@ -1,0 +1,72 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://zhomind.invalid/public-evidence/sections/production-acceptance.schema.json",
+  "title": "Public Evidence Bundle section: production acceptance",
+  "description": "Sanitized Production Answer Acceptance over the authenticated /api/v1/chat path. Records bounded results and limitations only; no questions, answers, excerpts, or operational detail.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["section", "schema_version", "run_ids", "path", "results"],
+  "properties": {
+    "section": {
+      "const": "production-acceptance"
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "run_ids": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "path": {
+      "const": "/api/v1/chat",
+      "description": "Production Answer Acceptance must pass through the authenticated product path."
+    },
+    "results": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["case_id", "check", "outcome", "passed", "limitations"],
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "check": {
+            "enum": [
+              "normal_answer",
+              "sse_answer",
+              "history_citations",
+              "insufficient_evidence",
+              "generation_unavailable",
+              "withdrawal",
+              "deactivation",
+              "service_health",
+              "role_boundaries"
+            ]
+          },
+          "outcome": {
+            "enum": ["evidence_gated_answer", "insufficient_evidence_reply", "non_knowledge_base_reply", "generation_unavailable"]
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "limitations": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 2000
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,11 +1,15 @@
-from pydantic import BaseModel, Field
+from datetime import datetime
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=128)
-    role: str = "user"
-    admin_code: str | None = None
+    invitation_code: str = Field(min_length=1, max_length=512)
 
 
 class LoginRequest(BaseModel):
@@ -20,6 +24,34 @@ class AuthTokenData(BaseModel):
     role: str
 
 
+class WorkspaceCapabilities(BaseModel):
+    system_settings: bool
+
+
 class MeData(BaseModel):
     username: str
     role: str
+    capabilities: WorkspaceCapabilities
+
+
+class CreateTeamInvitationRequest(BaseModel):
+    expires_at: datetime | None = None
+
+
+class TeamInvitationData(BaseModel):
+    id: UUID
+    expires_at: datetime
+    revoked_at: datetime | None
+    created_at: datetime
+
+
+class CreatedTeamInvitationData(TeamInvitationData):
+    invitation_code: str
+
+
+class MemberData(BaseModel):
+    username: str
+    role: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime

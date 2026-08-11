@@ -1,0 +1,24 @@
+{
+  "admin": {
+    "conversation_workspace": "passed",
+    "document_library": "passed",
+    "indexing_jobs": "passed",
+    "login": "passed",
+    "system_settings": "passed"
+  },
+  "cleanup": {
+    "deactivation_status": 200,
+    "revoked_token_status": 401
+  },
+  "knowledge_user": {
+    "admin_api_status": 403,
+    "admin_navigation_hidden": "passed",
+    "admin_route_guard": "passed",
+    "conversation_workspace": "passed",
+    "registration": "passed"
+  },
+  "outcome": "passed",
+  "public_health_status": 200,
+  "run_id": "production-browser-roles-20260810T145000Z",
+  "source_revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b"
+}

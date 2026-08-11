@@ -1,0 +1,21 @@
+{
+  "section": "answer",
+  "schema_version": "1.0.0",
+  "run_ids": [
+    "example-run-20260805"
+  ],
+  "cases": [
+    {
+      "case_id": "answer-evidence-gated-01",
+      "outcome": "evidence_gated_answer",
+      "citations_count": 2,
+      "contract": "passed"
+    },
+    {
+      "case_id": "answer-insufficient-01",
+      "outcome": "insufficient_evidence_reply",
+      "citations_count": 0,
+      "contract": "passed"
+    }
+  ]
+}

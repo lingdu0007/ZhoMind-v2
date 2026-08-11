@@ -1,0 +1,8 @@
+{
+  "publication_note": "Public identity and integrity metadata only; query prompt text is excluded.",
+  "query_count": 16,
+  "query_set_id": "evaluation-query-set",
+  "schema_version": 1,
+  "sha256": "a468a1af9fc0c7b979ec1c5dfa8874a5ad27e25bcc79de1e0142564db992df20",
+  "version": "1.0.0"
+}

@@ -1,11 +1,11 @@
 import asyncio
-from collections.abc import Generator
-from datetime import datetime, timezone
 import hashlib
 import os
 import tempfile
 import threading
 import time
+from collections.abc import Generator
+from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -15,7 +15,9 @@ from app.infra.db import get_db_session
 from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
+from app.model.chat import ChatMessage, ChatSession
 from app.model.document import Document, DocumentChunk, DocumentJob
+from tests.support.auth import create_authenticated_test_token
 
 
 class _InMemoryRedis:
@@ -48,17 +50,12 @@ class _InMemoryRedis:
 
 
 async def _create_admin_token(client: TestClient, username: str = "admin") -> str:
-    response = client.post(
-        "/api/v1/auth/register",
-        json={
-            "username": username,
-            "password": "secret-123",
-            "role": "admin",
-            "admin_code": "test-admin-code",
-        },
+    return await create_authenticated_test_token(
+        client.app.state.test_auth_session_factory,
+        client.app.state.test_auth_redis,
+        username=username,
+        role="admin",
     )
-    assert response.status_code == 200
-    return response.json()["data"]["access_token"]
 
 
 def _admin_headers(token: str) -> dict[str, str]:
@@ -120,7 +117,7 @@ async def _tombstone_document_record(session_factory, *, document_id: str) -> No
     async with session_factory() as session:
         document = await session.get(Document, document_id)
         assert document is not None
-        document.deleted_at = datetime.now(timezone.utc)
+        document.deleted_at = datetime.now(UTC)
         document.status = "pending"
         document.latest_requested_generation = document.published_generation
         await session.commit()
@@ -148,6 +145,20 @@ class _FakeDenseDocumentIndex:
         if self._error is not None:
             raise self._error
         return self._rows[:limit]
+
+    async def search_batches(
+        self,
+        *,
+        collection_name: str,
+        vector: list[float],
+        batch_size: int,
+        filter: str = "",
+        output_fields: list[str] | None = None,
+    ):
+        if self._error is not None:
+            raise self._error
+        for offset in range(0, len(self._rows), batch_size):
+            yield self._rows[offset : offset + batch_size]
 
 
 class _DenseMaintenanceIndexResult:
@@ -362,7 +373,7 @@ async def _seed_mixed_mode_retrieval_documents(
                     dense_ready_fingerprint=None,
                     next_generation=2,
                     latest_requested_generation=1,
-                    deleted_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                    deleted_at=datetime(2026, 1, 1, tzinfo=UTC),
                 ),
                 dense_chunk,
                 lexical_chunk,
@@ -374,6 +385,235 @@ async def _seed_mixed_mode_retrieval_documents(
             ]
         )
         await session.commit()
+
+
+def test_successful_build_requires_explicit_publication(monkeypatch) -> None:
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-publication-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_init_db())
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    fake_redis = _InMemoryRedis()
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_session_factory = session_factory
+    app.state.test_auth_redis = fake_redis
+
+    try:
+        with TestClient(app) as client:
+            headers = _admin_headers(asyncio.run(_create_admin_token(client)))
+            invalid_text = client.post(
+                "/api/v1/documents/upload",
+                headers=headers,
+                files={"file": ("invalid.txt", b"not-utf8\xff", "text/plain")},
+            )
+            assert invalid_text.status_code == 400
+            assert invalid_text.json()["code"] == "DOC_TEXT_ENCODING_INVALID"
+
+            oversized = client.post(
+                "/api/v1/documents/upload",
+                headers=headers,
+                files={"file": ("oversized.txt", b"x" * (25 * 1024 * 1024 + 1), "text/plain")},
+            )
+            assert oversized.status_code == 413
+            assert oversized.json()["code"] == "DOC_FILE_TOO_LARGE"
+
+            upload = client.post(
+                "/api/v1/documents/upload",
+                headers=headers,
+                files={"file": ("candidate.md", b"# Candidate\nOnly publish me after review.", "text/markdown")},
+            )
+            assert upload.status_code == 200
+            upload_data = _extract_data(upload.json())
+            document_id = upload_data["document_id"]
+
+            job = _poll_job_until_terminal(client, headers=headers, job_id=upload_data["job_id"])
+            assert job["status"] == "succeeded"
+
+            candidate = _get_document_item(client, headers=headers, document_id=document_id)
+            assert candidate["status"] == "candidate"
+            assert candidate["published_generation"] == 0
+            assert candidate["candidate_generation"] == 1
+
+            preview = client.get(f"/api/v1/documents/{document_id}/chunks", headers=headers)
+            assert preview.status_code == 200
+            assert _extract_data(preview.json())["generation"] == 1
+
+            published = client.post(f"/api/v1/documents/{document_id}/publish", headers=headers)
+            assert published.status_code == 200
+            published_data = _extract_data(published.json())
+            assert published_data["status"] == "ready"
+            assert published_data["published_generation"] == 1
+            assert published_data["candidate_generation"] is None
+    finally:
+        app.dependency_overrides.clear()
+        asyncio.run(db_engine.dispose())
+        os.remove(db_path)
+
+
+def test_replacement_keeps_published_generation_until_candidate_is_published() -> None:
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-replacement-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_init_db())
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    fake_redis = _InMemoryRedis()
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_session_factory = session_factory
+    app.state.test_auth_redis = fake_redis
+
+    try:
+        with TestClient(app) as client:
+            headers = _admin_headers(asyncio.run(_create_admin_token(client)))
+            initial = client.post(
+                "/api/v1/documents/upload",
+                headers=headers,
+                files={"file": ("runbook.txt", b"published v1 evidence", "text/plain")},
+            )
+            assert initial.status_code == 200
+            initial_data = _extract_data(initial.json())
+            _poll_job_until_terminal(client, headers=headers, job_id=initial_data["job_id"])
+            assert client.post(f"/api/v1/documents/{initial_data['document_id']}/publish", headers=headers).status_code == 200
+
+            replacement = client.post(
+                "/api/v1/documents/upload",
+                headers=headers,
+                files={"file": ("runbook.txt", b"candidate v2 evidence", "text/plain")},
+            )
+            assert replacement.status_code == 200
+            replacement_data = _extract_data(replacement.json())
+            assert replacement_data["document_id"] == initial_data["document_id"]
+            _poll_job_until_terminal(client, headers=headers, job_id=replacement_data["job_id"])
+
+            awaiting_review = _get_document_item(client, headers=headers, document_id=initial_data["document_id"])
+            assert awaiting_review["status"] == "candidate"
+            assert awaiting_review["published_generation"] == 1
+            assert awaiting_review["candidate_generation"] == 2
+
+            preview = client.get(f"/api/v1/documents/{initial_data['document_id']}/chunks", headers=headers)
+            assert preview.status_code == 200
+            assert "candidate v2 evidence" in _extract_data(preview.json())["items"][0]["content"]
+
+            published = client.post(f"/api/v1/documents/{initial_data['document_id']}/publish", headers=headers)
+            assert published.status_code == 200
+            current = _extract_data(published.json())
+            assert current["published_generation"] == 2
+            assert current["candidate_generation"] is None
+    finally:
+        app.dependency_overrides.clear()
+        asyncio.run(db_engine.dispose())
+        os.remove(db_path)
+
+
+def test_withdrawal_removes_future_source_and_redacts_historical_excerpt() -> None:
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-withdrawal-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    async def _seed_history() -> None:
+        async with session_factory() as session:
+            session.add_all(
+                [
+                    Document(
+                        id="withdrawn-document",
+                        filename="withdrawn.md",
+                        file_type="md",
+                        file_size=42,
+                        status="ready",
+                        published_generation=1,
+                        chunk_count=1,
+                    ),
+                    ChatSession(id="withdrawal-history", user_id="knowledge-user"),
+                    ChatMessage(
+                        session_id="withdrawal-history",
+                        user_id="knowledge-user",
+                        type="assistant",
+                        content="A previously cited answer.",
+                        rag_trace={
+                            "gate": {"passed": True},
+                            "evidence": [
+                                {
+                                    "chunk_id": "withdrawn-chunk",
+                                    "document_id": "withdrawn-document",
+                                    "content_preview": "This excerpt must not remain visible.",
+                                    "metadata": {"title": "withdrawn.md", "publication_version": "v1"},
+                                }
+                            ],
+                        },
+                    ),
+                ]
+            )
+            await session.commit()
+
+    asyncio.run(_init_db())
+    asyncio.run(_seed_history())
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    fake_redis = _InMemoryRedis()
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_session_factory = session_factory
+    app.state.test_auth_redis = fake_redis
+
+    try:
+        with TestClient(app) as client:
+            admin_headers = _admin_headers(asyncio.run(_create_admin_token(client)))
+            user_token = asyncio.run(
+                create_authenticated_test_token(
+                    session_factory,
+                    fake_redis,
+                    username="knowledge-user",
+                    role="user",
+                )
+            )
+
+            withdrawal = client.delete("/api/v1/documents/withdrawn.md", headers=admin_headers)
+            assert withdrawal.status_code == 200
+
+            history = client.get(
+                "/api/v1/sessions/withdrawal-history",
+                headers={"Authorization": f"Bearer {user_token}"},
+            )
+            assert history.status_code == 200
+            source = _extract_data(history.json())["messages"][0]["evidence_summary"]["sources"][0]
+            assert source == {
+                "source_id": "withdrawn-chunk",
+                "metadata": {"title": "withdrawn.md", "publication_version": "v1"},
+                "withdrawal_notice": "This source has been withdrawn.",
+            }
+    finally:
+        app.dependency_overrides.clear()
+        asyncio.run(db_engine.dispose())
+        os.remove(db_path)
 
 
 def test_documents_and_jobs_flow(monkeypatch) -> None:
@@ -394,10 +634,9 @@ def test_documents_and_jobs_flow(monkeypatch) -> None:
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
-
-    previous_admin_code = app.state.__dict__.get("_test_admin_invite_code", None)
-
+    app.state.test_auth_redis = fake_redis
     from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
 
@@ -419,9 +658,7 @@ def test_documents_and_jobs_flow(monkeypatch) -> None:
 
     monkeypatch.setattr(documents_api, "_build_document_runner", _build_document_runner_with_gate)
 
-    settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
+    _ = get_settings()
 
     try:
         with TestClient(app) as client:
@@ -463,10 +700,11 @@ def test_documents_and_jobs_flow(monkeypatch) -> None:
             assert docs_data["items"]
             first_doc = docs_data["items"][0]
             assert first_doc["document_id"] == document_id
-            assert first_doc["status"] == "ready"
+            assert first_doc["status"] == "candidate"
             assert first_doc["chunk_strategy"] == "general"
-            assert first_doc["chunk_count"] > 0
-            upload_chunk_count = first_doc["chunk_count"]
+            assert first_doc["candidate_chunk_count"] > 0
+            assert first_doc["published_generation"] == 0
+            assert first_doc["candidate_generation"] == 1
 
             get_job_response = client.get(f"/api/v1/documents/jobs/{job_id}", headers=headers)
             assert get_job_response.status_code == 200
@@ -490,6 +728,13 @@ def test_documents_and_jobs_flow(monkeypatch) -> None:
             upload_chunks = _get_chunk_snapshot(client, headers=headers, document_id=document_id)
             assert any("line 1" in content and "line 3" in content for _, content, _ in upload_chunks)
 
+            publish_response = client.post(f"/api/v1/documents/{document_id}/publish", headers=headers)
+            assert publish_response.status_code == 200
+            published_doc = _extract_data(publish_response.json())
+            assert published_doc["status"] == "ready"
+            assert published_doc["published_generation"] == 1
+            upload_chunk_count = published_doc["chunk_count"]
+
             delay_next_build["enabled"] = True
             build_response = client.post(
                 f"/api/v1/documents/{document_id}/build",
@@ -509,13 +754,14 @@ def test_documents_and_jobs_flow(monkeypatch) -> None:
                 assert rebuilt_doc_during_pending["status"] == "pending"
                 assert rebuilt_doc_during_pending["chunk_strategy"] == "general"
                 assert rebuilt_doc_during_pending["chunk_count"] == upload_chunk_count
+                assert rebuilt_doc_during_pending["published_generation"] == 1
 
-                not_ready_chunk_response = client.get(
+                published_chunk_response = client.get(
                     f"/api/v1/documents/{document_id}/chunks?page=1&page_size=5",
                     headers=headers,
                 )
-                assert not_ready_chunk_response.status_code == 409
-                assert not_ready_chunk_response.json()["code"] == "DOC_CHUNK_RESULT_NOT_READY"
+                assert published_chunk_response.status_code == 200
+                assert _extract_data(published_chunk_response.json())["generation"] == 1
             except AssertionError as exc:
                 pending_summary_error = exc
             finally:
@@ -531,6 +777,11 @@ def test_documents_and_jobs_flow(monkeypatch) -> None:
             assert rebuilt_job_data["stage"] == "completed"
             assert rebuilt_job_data["progress"] == 100
 
+            candidate_doc = _get_document_item(client, headers=headers, document_id=document_id)
+            assert candidate_doc["status"] == "candidate"
+            assert candidate_doc["published_generation"] == 1
+            assert candidate_doc["candidate_generation"] == 2
+
             chunk_response = client.get(
                 f"/api/v1/documents/{document_id}/chunks?page=1&page_size=5",
                 headers=headers,
@@ -542,6 +793,8 @@ def test_documents_and_jobs_flow(monkeypatch) -> None:
             rebuilt_chunks = _get_chunk_snapshot(client, headers=headers, document_id=document_id)
             assert any("line 1" in content and "line 3" in content for _, content, _ in rebuilt_chunks)
             assert all("demo.txt\npaper" not in content for _, content, _ in rebuilt_chunks)
+
+            assert client.post(f"/api/v1/documents/{document_id}/publish", headers=headers).status_code == 200
 
             batch_build_response = client.post(
                 "/api/v1/documents/batch-build",
@@ -556,6 +809,7 @@ def test_documents_and_jobs_flow(monkeypatch) -> None:
 
             batch_job_poll_data = _poll_job_until_terminal(client, headers=headers, job_id=batch_job_id)
             assert batch_job_poll_data["status"] == "succeeded"
+            assert client.post(f"/api/v1/documents/{document_id}/publish", headers=headers).status_code == 200
             batch_chunks = _get_chunk_snapshot(client, headers=headers, document_id=document_id)
             assert any("line 1" in content and "line 3" in content for _, content, _ in batch_chunks)
             assert all("demo.txt\nqa" not in content for _, content, _ in batch_chunks)
@@ -597,14 +851,13 @@ def test_documents_and_jobs_flow(monkeypatch) -> None:
             assert canceled_docs_response.status_code == 200
             canceled_docs_data = _extract_data(canceled_docs_response.json())
             canceled_doc = next(item for item in canceled_docs_data["items"] if item["document_id"] == document_id)
-            assert canceled_doc["status"] == "pending"
+            assert canceled_doc["status"] == "ready"
 
             canceled_chunk_response = client.get(
                 f"/api/v1/documents/{document_id}/chunks?page=1&page_size=5",
                 headers=headers,
             )
-            assert canceled_chunk_response.status_code == 409
-            assert canceled_chunk_response.json()["code"] == "DOC_CHUNK_RESULT_NOT_READY"
+            assert canceled_chunk_response.status_code == 200
 
             list_jobs_response = client.get("/api/v1/documents/jobs?page=1&page_size=20", headers=headers)
             assert list_jobs_response.status_code == 200
@@ -662,7 +915,6 @@ def test_documents_and_jobs_flow(monkeypatch) -> None:
             post_delete_data = _extract_data(post_delete_docs.json())
             assert post_delete_data["items"] == []
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -686,13 +938,13 @@ def test_documents_and_jobs_flow_tombstone_visibility_after_delete() -> None:
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     from app.common.config import get_settings
 
-    settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
+    _ = get_settings()
 
     try:
         with TestClient(app) as client:
@@ -733,7 +985,6 @@ def test_documents_and_jobs_flow_tombstone_visibility_after_delete() -> None:
             assert tombstoned_document is not None
             assert tombstoned_document.deleted_at is not None
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -757,14 +1008,14 @@ def test_documents_migration_drain_status_and_resume(monkeypatch) -> None:
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
 
-    settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
+    _ = get_settings()
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 1)
 
     try:
@@ -805,7 +1056,6 @@ def test_documents_migration_drain_status_and_resume(monkeypatch) -> None:
             )
             assert unblocked_upload.status_code == 200
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -829,14 +1079,14 @@ def test_documents_migration_drain_blocks_cancel_job(monkeypatch) -> None:
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
 
-    settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
+    _ = get_settings()
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
 
     async def _seed_cancel_target() -> None:
@@ -890,7 +1140,6 @@ def test_documents_migration_drain_blocks_cancel_job(monkeypatch) -> None:
             assert persisted_job is not None
             assert persisted_job.status == "queued"
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -914,20 +1163,20 @@ def test_documents_migration_reconcile_only_cancels_queued_jobs(monkeypatch) -> 
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     from app.common.config import get_settings
 
-    settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
+    _ = get_settings()
     from app.api.v1 import documents as documents_api
 
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
-    claimed_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    first_updated_at = datetime(2026, 1, 2, 0, 0, tzinfo=timezone.utc)
-    second_updated_at = datetime(2026, 1, 2, 0, 1, tzinfo=timezone.utc)
-    running_updated_at = datetime(2026, 1, 2, 0, 2, tzinfo=timezone.utc)
+    claimed_at = datetime(2026, 1, 1, tzinfo=UTC)
+    first_updated_at = datetime(2026, 1, 2, 0, 0, tzinfo=UTC)
+    second_updated_at = datetime(2026, 1, 2, 0, 1, tzinfo=UTC)
+    running_updated_at = datetime(2026, 1, 2, 0, 2, tzinfo=UTC)
 
     async def _seed_reconcile_state() -> None:
         async with session_factory() as session:
@@ -959,7 +1208,7 @@ def test_documents_migration_reconcile_only_cancels_queued_jobs(monkeypatch) -> 
                         published_generation=1,
                         next_generation=3,
                         latest_requested_generation=2,
-                        deleted_at=datetime.now(timezone.utc),
+                        deleted_at=datetime.now(UTC),
                     ),
                 ]
             )
@@ -1086,7 +1335,6 @@ def test_documents_migration_reconcile_only_cancels_queued_jobs(monkeypatch) -> 
             assert persisted_running_job.progress == 60
             assert persisted_running_job.message == "running"
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -1110,13 +1358,13 @@ def test_documents_migration_reconcile_requires_active_drain() -> None:
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     from app.common.config import get_settings
 
-    settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
+    _ = get_settings()
 
     try:
         with TestClient(app) as client:
@@ -1127,7 +1375,6 @@ def test_documents_migration_reconcile_requires_active_drain() -> None:
             assert reconcile_response.status_code == 409
             assert reconcile_response.json()["code"] == "DOC_MIGRATION_DRAIN_INACTIVE"
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -1202,7 +1449,7 @@ def test_documents_dense_status_merges_operator_and_dense_counts(monkeypatch) ->
                         published_generation=4,
                         dense_ready_generation=4,
                         dense_ready_fingerprint=current_fingerprint,
-                        deleted_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
+                        deleted_at=datetime(2026, 4, 2, tzinfo=UTC),
                     ),
                     Document(
                         id="doc-ready-other",
@@ -1253,11 +1500,11 @@ def test_documents_dense_status_merges_operator_and_dense_counts(monkeypatch) ->
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
-    settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
+    _ = get_settings()
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 2)
     monkeypatch.setattr(
         documents_api,
@@ -1288,7 +1535,6 @@ def test_documents_dense_status_merges_operator_and_dense_counts(monkeypatch) ->
             assert data["published_live_stale_generation_documents"] == 1
             assert data["tombstoned_current_fingerprint_documents"] == 1
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -1312,14 +1558,14 @@ def test_documents_dense_backfill_and_dense_reconcile_require_active_drain(monke
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
 
-    settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
+    _ = get_settings()
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
 
     try:
@@ -1335,7 +1581,6 @@ def test_documents_dense_backfill_and_dense_reconcile_require_active_drain(monke
             assert reconcile_response.status_code == 409
             assert reconcile_response.json()["code"] == "DOC_MIGRATION_DRAIN_INACTIVE"
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -1359,7 +1604,9 @@ def test_documents_dense_backfill_returns_dense_mode_inactive_when_drain_ready(m
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
@@ -1376,9 +1623,7 @@ def test_documents_dense_backfill_returns_dense_mode_inactive_when_drain_ready(m
     get_extension_registry.cache_clear()
     get_milvus_provider.cache_clear()
 
-    settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
+    _ = get_settings()
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
 
     try:
@@ -1397,7 +1642,6 @@ def test_documents_dense_backfill_returns_dense_mode_inactive_when_drain_ready(m
             assert reconcile_response.status_code == 409
             assert reconcile_response.json()["code"] == "DOC_DENSE_MODE_INACTIVE"
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         get_milvus_provider.cache_clear()
         get_extension_registry.cache_clear()
@@ -1441,7 +1685,7 @@ def test_documents_dense_backfill_indexes_eligible_published_docs(monkeypatch) -
                         dense_ready_fingerprint=None,
                         next_generation=3,
                         latest_requested_generation=2,
-                        uploaded_at=datetime(2026, 4, 1, 0, 0, tzinfo=timezone.utc),
+                        uploaded_at=datetime(2026, 4, 1, 0, 0, tzinfo=UTC),
                     ),
                     Document(
                         id="doc-backfill-b",
@@ -1456,7 +1700,7 @@ def test_documents_dense_backfill_indexes_eligible_published_docs(monkeypatch) -
                         dense_ready_fingerprint=None,
                         next_generation=2,
                         latest_requested_generation=1,
-                        uploaded_at=datetime(2026, 4, 1, 0, 1, tzinfo=timezone.utc),
+                        uploaded_at=datetime(2026, 4, 1, 0, 1, tzinfo=UTC),
                     ),
                     Document(
                         id="doc-backfill-stale",
@@ -1471,7 +1715,7 @@ def test_documents_dense_backfill_indexes_eligible_published_docs(monkeypatch) -
                         dense_ready_fingerprint=current_fingerprint,
                         next_generation=4,
                         latest_requested_generation=3,
-                        uploaded_at=datetime(2026, 4, 1, 0, 2, tzinfo=timezone.utc),
+                        uploaded_at=datetime(2026, 4, 1, 0, 2, tzinfo=UTC),
                     ),
                     Document(
                         id="doc-backfill-active",
@@ -1487,7 +1731,7 @@ def test_documents_dense_backfill_indexes_eligible_published_docs(monkeypatch) -
                         next_generation=5,
                         latest_requested_generation=4,
                         active_build_generation=5,
-                        uploaded_at=datetime(2026, 4, 1, 0, 3, tzinfo=timezone.utc),
+                        uploaded_at=datetime(2026, 4, 1, 0, 3, tzinfo=UTC),
                     ),
                 ]
             )
@@ -1546,11 +1790,11 @@ def test_documents_dense_backfill_indexes_eligible_published_docs(monkeypatch) -
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
-    settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
+    _ = get_settings()
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
     monkeypatch.setattr(
         documents_api,
@@ -1603,7 +1847,6 @@ def test_documents_dense_backfill_indexes_eligible_published_docs(monkeypatch) -
             assert persisted_active.dense_ready_generation == 0
             assert persisted_active.dense_ready_fingerprint is None
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -1644,7 +1887,7 @@ def test_documents_dense_reconcile_clears_tombstoned_and_stale_current_fingerpri
                         dense_ready_fingerprint=current_fingerprint,
                         next_generation=4,
                         latest_requested_generation=3,
-                        uploaded_at=datetime(2026, 4, 1, 0, 0, tzinfo=timezone.utc),
+                        uploaded_at=datetime(2026, 4, 1, 0, 0, tzinfo=UTC),
                     ),
                     Document(
                         id="doc-reconcile-tombstoned",
@@ -1659,8 +1902,8 @@ def test_documents_dense_reconcile_clears_tombstoned_and_stale_current_fingerpri
                         dense_ready_fingerprint=current_fingerprint,
                         next_generation=3,
                         latest_requested_generation=2,
-                        deleted_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
-                        uploaded_at=datetime(2026, 4, 1, 0, 1, tzinfo=timezone.utc),
+                        deleted_at=datetime(2026, 4, 2, tzinfo=UTC),
+                        uploaded_at=datetime(2026, 4, 1, 0, 1, tzinfo=UTC),
                     ),
                     Document(
                         id="doc-reconcile-keep",
@@ -1675,7 +1918,7 @@ def test_documents_dense_reconcile_clears_tombstoned_and_stale_current_fingerpri
                         dense_ready_fingerprint=current_fingerprint,
                         next_generation=2,
                         latest_requested_generation=1,
-                        uploaded_at=datetime(2026, 4, 1, 0, 2, tzinfo=timezone.utc),
+                        uploaded_at=datetime(2026, 4, 1, 0, 2, tzinfo=UTC),
                     ),
                 ]
             )
@@ -1690,11 +1933,11 @@ def test_documents_dense_reconcile_clears_tombstoned_and_stale_current_fingerpri
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
-    settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
+    _ = get_settings()
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
     monkeypatch.setattr(
         documents_api,
@@ -1739,7 +1982,6 @@ def test_documents_dense_reconcile_clears_tombstoned_and_stale_current_fingerpri
             assert persisted_keep.dense_ready_generation == 1
             assert persisted_keep.dense_ready_fingerprint == current_fingerprint
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -1796,14 +2038,14 @@ def test_documents_dense_status_reports_queued_only_drain_as_not_ready_for_dense
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
 
-    settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
+    _ = get_settings()
     monkeypatch.setattr(documents_api, "_get_active_dispatcher_tasks", lambda: 0)
 
     try:
@@ -1836,7 +2078,6 @@ def test_documents_dense_status_reports_queued_only_drain_as_not_ready_for_dense
             assert reconcile_response.status_code == 409
             assert reconcile_response.json()["code"] == "DOC_MIGRATION_NOT_READY"
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -1891,7 +2132,7 @@ def test_chat_lexical_retrieval_reads_only_published_generation_on_live_document
                         published_generation=1,
                         next_generation=2,
                         latest_requested_generation=1,
-                        deleted_at=datetime.now(timezone.utc),
+                        deleted_at=datetime.now(UTC),
                     ),
                 ]
             )
@@ -1974,7 +2215,9 @@ def test_documents_enqueue_failure_compensation(monkeypatch) -> None:
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
@@ -1989,9 +2232,7 @@ def test_documents_enqueue_failure_compensation(monkeypatch) -> None:
 
     monkeypatch.setattr(documents_api, "_enqueue_document_task", _maybe_fail_enqueue_task)
 
-    settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
+    _ = get_settings()
 
     try:
         with TestClient(app) as client:
@@ -2021,8 +2262,20 @@ def test_documents_enqueue_failure_compensation(monkeypatch) -> None:
             document_id = upload_data["document_id"]
             upload_job_id = upload_data["job_id"]
             assert _poll_job_until_terminal(client, headers=headers, job_id=upload_job_id)["status"] == "succeeded"
+            assert client.post(f"/api/v1/documents/{document_id}/publish", headers=headers).status_code == 200
 
             fail_mode["enabled"] = True
+            failed_replacement = client.post(
+                "/api/v1/documents/upload",
+                headers=headers,
+                files={"file": ("retry.txt", b"replacement that must not displace published evidence", "text/plain")},
+            )
+            assert failed_replacement.status_code == 500
+            preserved_document = _get_document_item(client, headers=headers, document_id=document_id)
+            assert preserved_document["status"] == "ready"
+            assert preserved_document["published_generation"] == 1
+            assert any("content" in content for _, content, _ in _get_chunk_snapshot(client, headers=headers, document_id=document_id))
+
             failed_build = client.post(
                 f"/api/v1/documents/{document_id}/build",
                 headers=headers,
@@ -2094,7 +2347,6 @@ def test_documents_enqueue_failure_compensation(monkeypatch) -> None:
             )
             assert reupload_after_tombstone.status_code == 200
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -2118,16 +2370,16 @@ def test_documents_batch_enqueue_failure_compensates_all_items(monkeypatch) -> N
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     from app.api.v1 import documents as documents_api
     from app.common.config import get_settings
 
     original_enqueue_task = documents_api._enqueue_document_task
     original_enqueue_runner = documents_api._enqueue_document_runner
-    settings = get_settings()
-    original_code = settings.admin_invite_code
-    settings.admin_invite_code = "test-admin-code"
+    _ = get_settings()
 
     try:
         with TestClient(app) as client:
@@ -2216,7 +2468,6 @@ def test_documents_batch_enqueue_failure_compensates_all_items(monkeypatch) -> N
                 for item in created_batch_jobs
             )
     finally:
-        settings.admin_invite_code = original_code
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
@@ -2240,16 +2491,15 @@ def test_documents_requires_admin_role() -> None:
 
     fake_redis = _InMemoryRedis()
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
 
     try:
         with TestClient(app) as client:
-            register_response = client.post(
-                "/api/v1/auth/register",
-                json={"username": "user1", "password": "secret-123", "role": "user"},
+            token = asyncio.run(
+                create_authenticated_test_token(session_factory, fake_redis, username="user1")
             )
-            assert register_response.status_code == 200
-            token = register_response.json()["data"]["access_token"]
             headers = _admin_headers(token)
 
             response = client.get("/api/v1/documents", headers=headers)
@@ -2292,7 +2542,7 @@ def test_documents_dense_and_lexical_retrieval_respects_published_generation_vis
         "document_id": "doc-dense-published",
         "generation": 1,
         "chunk_index": 0,
-        "content_sha256": hashlib.sha256("alpha dense published evidence".encode("utf-8")).hexdigest(),
+        "content_sha256": hashlib.sha256(b"alpha dense published evidence").hexdigest(),
         "distance": 0.98,
     }
     stale_dense_row = {
@@ -2300,7 +2550,7 @@ def test_documents_dense_and_lexical_retrieval_respects_published_generation_vis
         "generation": 2,
         "chunk_index": 0,
         "content_sha256": hashlib.sha256(
-            "alpha superseded dense candidate should stay hidden".encode("utf-8")
+            b"alpha superseded dense candidate should stay hidden"
         ).hexdigest(),
         "distance": 0.97,
     }
@@ -2402,6 +2652,80 @@ def test_documents_dense_query_failure_falls_back_to_full_published_lexical_corp
         "doc-dense-published",
         "doc-lexical-published",
     }
+    assert {item["retrieval_source"] for item in result["items"]} == {"lexical"}
+
+    asyncio.run(db_engine.dispose())
+    os.remove(db_path)
+
+
+def test_documents_migration_retrieval_fallback_records_normalized_failure_and_fallback_trace() -> None:
+    """Acceptance of the Migration Retrieval fallback contract for the Stable Experimental Baseline.
+
+    The production Lexical Heuristic is verified as an availability fallback over the full
+    published corpus; it is never relabeled as Sparse BM25 or Hybrid Retrieval.
+    """
+    from app.rag.dense_contract import build_embedding_contract_fingerprint
+    from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
+
+    db_fd, db_path = tempfile.mkstemp(prefix="documents-migration-fallback-", suffix=".db")
+    os.close(db_fd)
+    db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    settings = Settings(
+        EMBEDDING_API_KEY="emb-key",
+        EMBEDDING_BASE_URL="https://emb.example.com/v1",
+        EMBEDDING_MODEL="emb-model",
+        DENSE_EMBEDDING_DIM=2,
+        MILVUS_URI="http://milvus.example.com:19530",
+    )
+    fingerprint = build_embedding_contract_fingerprint(settings)
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_init_db())
+    asyncio.run(_seed_mixed_mode_retrieval_documents(session_factory, fingerprint=fingerprint))
+
+    async def _run() -> dict:
+        async with session_factory() as session:
+            service = MixedModeDocumentRetrieverService(
+                session,
+                settings=settings,
+                embedding_provider=_StubEmbeddingProvider(),
+                document_index=_FakeDenseDocumentIndex(error=RuntimeError("milvus unavailable")),
+            )
+            result = await service.retrieve("beta lexical", top_k=5)
+            return {
+                "items": result.items,
+                "strategy": result.strategy,
+                "dense_candidate_count": result.dense_candidate_count,
+                "dense_hydrated_count": result.dense_hydrated_count,
+                "lexical_candidate_count": result.lexical_candidate_count,
+                "merged_count": result.merged_count,
+                "dense_query_failed": result.dense_query_failed,
+                "lexical_scope": result.lexical_scope,
+                "fallback_used": result.fallback_used,
+                "provider_error": result.provider_error,
+            }
+
+    result = asyncio.run(_run())
+
+    assert result["strategy"] == "dense_plus_lexical_migration"
+    assert result["dense_query_failed"] is True
+    assert result["fallback_used"] is True
+    assert result["lexical_scope"] == "full_published_live"
+    assert result["provider_error"] == {
+        "code": "PROVIDER_EXEC_FAILED",
+        "message": "milvus unavailable",
+        "type": "RuntimeError",
+    }
+    assert result["dense_candidate_count"] == 0
+    assert result["dense_hydrated_count"] == 0
+    assert result["lexical_candidate_count"] == 2
+    assert result["merged_count"] == 2
+    assert {item["document_id"] for item in result["items"]} == {"doc-lexical-published", "doc-dense-published"}
     assert {item["retrieval_source"] for item in result["items"]} == {"lexical"}
 
     asyncio.run(db_engine.dispose())
@@ -2631,7 +2955,7 @@ def test_documents_dense_success_keeps_lexical_fallback_scoped_to_not_dense_read
         "document_id": "doc-dense-hit",
         "generation": 1,
         "chunk_index": 0,
-        "content_sha256": hashlib.sha256("anchor dense hit".encode("utf-8")).hexdigest(),
+        "content_sha256": hashlib.sha256(b"anchor dense hit").hexdigest(),
         "distance": 0.99,
     }
 

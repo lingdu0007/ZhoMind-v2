@@ -1,0 +1,126 @@
+{
+  "schema_version": "1.1.0",
+  "bundle_id": "dense-hybrid-rrf-01",
+  "kind": "public-evidence-bundle",
+  "canonical_language": "en",
+  "mirror_language": "zh-CN",
+  "source_revision": "5f46c5d9f1fb5039c4b88dfbc616e165e1d4fedb",
+  "release_candidate": {
+    "identity": "portfolio-release-candidate-01",
+    "revision": "5f46c5d9f1fb5039c4b88dfbc616e165e1d4fedb",
+    "status": "candidate",
+    "created_at": "2026-08-06T16:28:34.393351+00:00"
+  },
+  "provenance": {
+    "runs": [
+      {
+        "run_id": "20260806T162649Z-288094-29504-sparse_bm25",
+        "kind": "retrieval-evaluation",
+        "source_revision": "5f46c5d9f1fb5039c4b88dfbc616e165e1d4fedb",
+        "started_at": "2026-08-06T16:27:23.699176+00:00",
+        "finished_at": "2026-08-06T16:28:34.375629+00:00",
+        "outcome": "passed"
+      },
+      {
+        "run_id": "20260806T162649Z-288094-29504-dense",
+        "kind": "retrieval-evaluation",
+        "source_revision": "5f46c5d9f1fb5039c4b88dfbc616e165e1d4fedb",
+        "started_at": "2026-08-06T16:27:23.699176+00:00",
+        "finished_at": "2026-08-06T16:28:34.375629+00:00",
+        "outcome": "passed"
+      },
+      {
+        "run_id": "20260806T162649Z-288094-29504-hybrid_rrf",
+        "kind": "retrieval-evaluation",
+        "source_revision": "5f46c5d9f1fb5039c4b88dfbc616e165e1d4fedb",
+        "started_at": "2026-08-06T16:27:23.699176+00:00",
+        "finished_at": "2026-08-06T16:28:34.375629+00:00",
+        "outcome": "passed"
+      }
+    ],
+    "corpora": [
+      {
+        "corpus_id": "project-derived-corpus",
+        "version": "1.0.0",
+        "sha256": "894d10004f25a2a6462870c1a869586ca83dfc28f0407f75f8cc33d9757ac39d"
+      }
+    ],
+    "query_sets": [
+      {
+        "query_set_id": "evaluation-query-set",
+        "version": "1.0.0",
+        "sha256": "a468a1af9fc0c7b979ec1c5dfa8874a5ad27e25bcc79de1e0142564db992df20",
+        "query_count": 16
+      }
+    ],
+    "revisions": [
+      "5f46c5d9f1fb5039c4b88dfbc616e165e1d4fedb"
+    ]
+  },
+  "artifacts": [
+    {
+      "path": "manifest.json",
+      "kind": "manifest",
+      "role": "manifest",
+      "sha256": "1b3b4aae63a3441a144efc6de36aeecff1ece630a3221ed7a878722af04049c6"
+    },
+    {
+      "path": "sections/retrieval.json",
+      "kind": "retrieval",
+      "role": "section",
+      "sha256": "d686eec676b8f98b7115634f4b562a5d136188d9e5ca61cffec071717c389f8c"
+    },
+    {
+      "path": "annotations.json",
+      "kind": "annotation",
+      "role": "data",
+      "sha256": "bdfa9959e3ba0d90703f5b2c2e0015f9488e414eaedcc40c807a5f2619075f12"
+    },
+    {
+      "path": "candidates.json",
+      "kind": "trace",
+      "role": "data",
+      "sha256": "84f003fce1e589dd0ce95751d1839c3557c1b3c92081efac6c7139455a162cd1"
+    },
+    {
+      "path": "run-conditions.json",
+      "kind": "retrieval",
+      "role": "data",
+      "sha256": "0defeb799ead5b6a3873046b2783e30cfdb52abfd3617596118d5d6f2c40a6ab"
+    },
+    {
+      "path": "REPORT.md",
+      "kind": "report",
+      "role": "report-en",
+      "sha256": "b9fbc511840d9142381b169b6ff18467a5922c1a7ca4a139b7617ae01dc23f54"
+    },
+    {
+      "path": "REPORT.zh-CN.md",
+      "kind": "report",
+      "role": "report-zh",
+      "sha256": "0336407fe2c98ee1c72bf17bbc5d2fb4d66b75aa7161e7d417415c88254cbd83"
+    }
+  ],
+  "limits": [
+    {
+      "name": "no_generalization",
+      "kind": "qualification",
+      "statement": "Metrics describe only this controlled three-mode run over the frozen Project-Derived Corpus and Evaluation Query Set; they do not generalize to other corpora, models, chunking policies, or languages."
+    },
+    {
+      "name": "no_universal_winner",
+      "kind": "exclusion",
+      "statement": "The comparison records per-metric results without declaring Dense or Hybrid RRF a universal winner or replacing production Migration Retrieval."
+    },
+    {
+      "name": "rrf_contract",
+      "kind": "qualification",
+      "statement": "Hybrid RRF fuses fixed top-20 Sparse BM25 and Dense candidates by chunk_id with k=60, without a reranker or score averaging."
+    },
+    {
+      "name": "duration_scope",
+      "kind": "qualification",
+      "statement": "retrieval_duration_ms is a mean per-query evaluation retrieval duration and excludes corpus chunking and corpus vector construction."
+    }
+  ]
+}

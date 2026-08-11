@@ -1,0 +1,29 @@
+{
+  "cases": [
+    {
+      "case_id": "answer-evidence-gated-final-01",
+      "citations_count": 3,
+      "contract": "passed",
+      "outcome": "evidence_gated_answer"
+    },
+    {
+      "case_id": "answer-insufficient-final-01",
+      "citations_count": 0,
+      "contract": "passed",
+      "outcome": "insufficient_evidence_reply"
+    },
+    {
+      "case_id": "answer-generation-unavailable-final-01",
+      "citations_count": 1,
+      "contract": "passed",
+      "outcome": "generation_unavailable"
+    }
+  ],
+  "run_ids": [
+    "production-20260810T142508Z-2384065-31253-generation",
+    "production-insufficient-20260810T142700Z",
+    "generation-unavailable-20260810T142800Z"
+  ],
+  "schema_version": "1.0.0",
+  "section": "answer"
+}

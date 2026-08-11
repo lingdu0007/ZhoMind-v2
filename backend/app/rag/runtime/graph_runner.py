@@ -1,6 +1,5 @@
 from typing import Any
 
-from app.common.config import get_settings
 from app.rag.interfaces import RelevanceJudge, Reranker, Retriever
 from app.rag.memory.inmemory_store import InMemorySessionStore, InMemoryUserStore
 from app.rag.memory.policies import ConservativeMemoryWritePolicy
@@ -21,6 +20,7 @@ from app.rag.runtime.default_nodes import (
 from app.rag.runtime.provider_adapters import JudgeAdapter, RerankerAdapter, RetrieverAdapter
 from app.rag.runtime.state import RagState, RagStateDict
 from app.rag.tools.runtime import ToolExecutionRuntime
+from app.settings.runtime import get_runtime_settings
 
 try:
     from langgraph.graph import END, START, StateGraph
@@ -37,12 +37,15 @@ class RagGraphRunner:
         retriever: Retriever | None = None,
         reranker: Reranker | None = None,
         judge: RelevanceJudge | None = None,
+        retrieval_top_k: int | None = None,
+        evidence_top_k: int = 3,
+        evidence_excerpt_chars: int = 160,
         enable_tools: bool | None = None,
         tool_max_calls: int | None = None,
         tool_max_parallel: int | None = None,
         tool_timeout_ms: int | None = None,
     ) -> None:
-        settings = get_settings()
+        settings = get_runtime_settings()
 
         self.retriever = retriever
         self.reranker = reranker
@@ -75,12 +78,17 @@ class RagGraphRunner:
 
         self._normalize_node = NormalizeNode()
         self._query_understand_node = QueryUnderstandNode()
-        self._retrieval_plan_node = RetrievalPlanNode(default_top_k=3)
+        self._retrieval_plan_node = RetrievalPlanNode(
+            default_top_k=settings.runtime_retrieval_top_k if retrieval_top_k is None else retrieval_top_k
+        )
         self._retrieve_node = RetrieveNode(self._retriever_adapter)
         self._fusion_node = FusionNode()
         self._rerank_node = RerankNode(self._reranker_adapter)
         self._verify_node = VerifyNode(self._judge_adapter)
-        self._context_pack_node = ContextPackNode(top_k=3)
+        self._context_pack_node = ContextPackNode(
+            top_k=evidence_top_k,
+            max_excerpt_chars=evidence_excerpt_chars,
+        )
         self._generate_node = GenerateNode()
         self._memory_write_node = MemoryWriteNode()
         self._finalize_node = FinalizeNode()
@@ -114,9 +122,9 @@ class RagGraphRunner:
         graph.add_edge("tools", "retrieve")
         graph.add_edge("retrieve", "fusion")
         graph.add_edge("fusion", "rerank")
-        graph.add_edge("rerank", "verify")
-        graph.add_edge("verify", "context_pack")
-        graph.add_edge("context_pack", "generate")
+        graph.add_edge("rerank", "context_pack")
+        graph.add_edge("context_pack", "verify")
+        graph.add_edge("verify", "generate")
         graph.add_edge("generate", "memory_write")
         graph.add_edge("memory_write", "finalize")
         graph.add_edge("finalize", END)
@@ -214,8 +222,8 @@ class RagGraphRunner:
         state = await self._run_retrieve(state)
         state = await self._run_fusion(state)
         state = await self._run_rerank(state)
-        state = await self._run_verify(state)
         state = await self._run_context_pack(state)
+        state = await self._run_verify(state)
         state = await self._run_generate(state)
         state = await self._run_memory_write(state)
         state = await self._run_finalize(state)
@@ -228,7 +236,8 @@ class RagGraphRunner:
             "answer": state["answer"],
             "steps": state["trace_steps"],
             "gate": state["gate_result"],
-            "evidence": state["candidates_reranked"],
+            "answer_evidence": state["evidence_pack"],
+            "candidates_reranked": state["candidates_reranked"],
             "retrieved": state["candidates_fused"],
             "graph_alias": self.graph_alias,
             "tool_budget": state.get("tool_budget") or {},

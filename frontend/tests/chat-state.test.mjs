@@ -24,12 +24,13 @@ test('extractRejectReason ignores non-reject steps', () => {
 test('formatStreamError formats known auth errors first', () => {
   assert.equal(formatStreamError({ code: 'AUTH_FORBIDDEN', message: 'Forbidden' }), '无权限执行当前问答');
   assert.equal(formatStreamError({ status: 401, message: 'Unauthorized' }), '登录状态已失效，请重新登录');
+  assert.equal(formatStreamError('upstream unavailable'), 'upstream unavailable');
   assert.equal(formatStreamError({ message: 'boom' }), 'boom');
 });
 
-test('getDoneStatus returns reject state label when rejected', () => {
-  assert.equal(getDoneStatus({ rejected: true }), '已拒答（证据不足）');
-  assert.equal(getDoneStatus({ rejected: false }), '');
+test('getDoneStatus returns distinct completed and insufficient-evidence state labels', () => {
+  assert.equal(getDoneStatus({ rejected: true }), '证据不足');
+  assert.equal(getDoneStatus({ rejected: false }), '已完成');
 });
 
 test('getProviderStatus returns direct provider label', () => {
@@ -46,4 +47,3 @@ test('getProviderStatus returns empty when provider missing', () => {
   assert.equal(getProviderStatus({ runtime: {} }), '');
   assert.equal(getProviderStatus(null), '');
 });
-

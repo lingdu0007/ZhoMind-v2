@@ -1,0 +1,115 @@
+{
+  "schema_version": "1.0.0",
+  "bundle_id": "sparse-bm25-01",
+  "kind": "public-evidence-bundle",
+  "canonical_language": "en",
+  "mirror_language": "zh-CN",
+  "source_revision": "ece8f00f8d3aba65332aeb780a665820063a8710",
+  "release_candidate": {
+    "identity": "portfolio-release-candidate-01",
+    "revision": "ece8f00f8d3aba65332aeb780a665820063a8710",
+    "status": "candidate",
+    "created_at": "2026-08-06T14:09:43.822536+00:00"
+  },
+  "provenance": {
+    "runs": [
+      {
+        "run_id": "0434b82787cf4173ba567a2c884906ba",
+        "kind": "retrieval-evaluation",
+        "source_revision": "ece8f00f8d3aba65332aeb780a665820063a8710",
+        "started_at": "2026-08-06T14:09:42.420860+00:00",
+        "finished_at": "2026-08-06T14:09:43.817946+00:00",
+        "outcome": "passed"
+      }
+    ],
+    "corpora": [
+      {
+        "corpus_id": "project-derived-corpus",
+        "version": "1.0.0",
+        "sha256": "894d10004f25a2a6462870c1a869586ca83dfc28f0407f75f8cc33d9757ac39d"
+      }
+    ],
+    "query_sets": [
+      {
+        "query_set_id": "evaluation-query-set",
+        "version": "1.0.0",
+        "sha256": "a468a1af9fc0c7b979ec1c5dfa8874a5ad27e25bcc79de1e0142564db992df20",
+        "query_count": 16
+      }
+    ],
+    "revisions": [
+      "ece8f00f8d3aba65332aeb780a665820063a8710"
+    ]
+  },
+  "artifacts": [
+    {
+      "path": "manifest.json",
+      "kind": "manifest",
+      "role": "manifest",
+      "sha256": "762090423a0bf3c7bd74a8c22bca44387d3b2cb3d36b1fdabceecbdbcc37e995"
+    },
+    {
+      "path": "sections/retrieval.json",
+      "kind": "retrieval",
+      "role": "section",
+      "sha256": "dd94e59faf6b99c2d7d7a4248ef4fe535f3ad5967fde5cf17aa49af881db9ad7"
+    },
+    {
+      "path": "annotations.json",
+      "kind": "annotation",
+      "role": "data",
+      "sha256": "57282d8f443b3ec43d0e9ae4dbe9e412d56f79ff9b59c1700f320ca14cac8a62"
+    },
+    {
+      "path": "candidates.json",
+      "kind": "trace",
+      "role": "data",
+      "sha256": "301ebf0b3b4154b36b1e7702612578f610d052608361c98c1b66547b3e00b081"
+    },
+    {
+      "path": "run-conditions.json",
+      "kind": "retrieval",
+      "role": "data",
+      "sha256": "6ab35b0f12a39b8606f56dcc338b382d522078caf143f0da179b84e6a6db426a"
+    },
+    {
+      "path": "REPORT.md",
+      "kind": "report",
+      "role": "report-en",
+      "sha256": "ae42b1ac1db8b7fd773b1290e38e0676753448d5c844f32b4474c1b557eef552"
+    },
+    {
+      "path": "REPORT.zh-CN.md",
+      "kind": "report",
+      "role": "report-zh",
+      "sha256": "26ff5d235586f3281f88c1ef7f2f7a7da745e23de6260fbcb647df7516a28bdb"
+    }
+  ],
+  "limits": [
+    {
+      "name": "no_generalization",
+      "kind": "qualification",
+      "statement": "Metrics describe only the recorded Sparse BM25 run over the frozen Project-Derived Corpus and Evaluation Query Set; they do not generalize to other corpora, models, chunking policies, or languages."
+    },
+    {
+      "name": "sparse_bm25_only",
+      "kind": "exclusion",
+      "statement": "This bundle contains Sparse BM25 evidence only; Dense, Hybrid RRF, answer-quality, and universal-improvement claims are not made."
+    },
+    {
+      "name": "unmatched_rank_convention",
+      "kind": "qualification",
+      "statement": "first_gold_rank counts an answerable query with no gold-covered candidate inside the top 10 as rank 11 (max output depth + 1)."
+    },
+    {
+      "name": "gold_coverage_ratio",
+      "kind": "qualification",
+      "statement": "A candidate covers a Gold Evidence passage when its character span overlaps at least 50% of the passage span, accommodating passages that straddle QA Chunking boundaries."
+    },
+    {
+      "name": "duration_scope",
+      "kind": "qualification",
+      "statement": "retrieval_duration_ms is the mean per-query in-process Sparse BM25 search time over the 12 answerable queries; it excludes corpus chunking and index construction."
+    }
+  ]
+}

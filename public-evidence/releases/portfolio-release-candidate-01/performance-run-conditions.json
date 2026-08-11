@@ -1,0 +1,59 @@
+{
+  "corpus_identity": {
+    "fixture_run_id": "production-20260810T142508Z-2384065-31253",
+    "kind": "controlled_published_production_fixture",
+    "prompt_text_published": false
+  },
+  "finished_at": "2026-08-10T14:35:37.852648+00:00",
+  "host_envelope": {
+    "class": "designated persistent production Compose stack",
+    "identity_disclosed": false,
+    "note": "Host-identifying details are intentionally excluded by the publication boundary."
+  },
+  "latency_boundaries": {
+    "external_provider": [
+      "provider_ms",
+      "embedding_provider_ms"
+    ],
+    "project_controlled": [
+      "application_controlled_ms",
+      "persistence_ms"
+    ],
+    "retrieval_composite": "retrieval_ms includes embedding-provider latency and is not wholly project-controlled."
+  },
+  "model_identity": {
+    "embedding_dimension": 4096,
+    "embedding_model": "Qwen/Qwen3-Embedding-8B",
+    "generation_model": "deepseek-ai/DeepSeek-V4-Flash",
+    "generation_provider": "ark"
+  },
+  "observation_window": "single bounded final-revision run",
+  "request_contract": {
+    "authenticated_role": "admin",
+    "request_path": "/api/v1/chat/stream",
+    "timeout_seconds": 90.0,
+    "ttft_definition": "first body byte received from the authenticated SSE response"
+  },
+  "run_id": "performance-20260810T143000Z",
+  "schema_version": "1.0.0",
+  "source_revision": "91753f1c1ff6fc07bc262dfa50fb719a63210e0b",
+  "started_at": "2026-08-10T14:30:00Z",
+  "workload": [
+    {
+      "concurrency": 1,
+      "profile": "c1",
+      "requests": 20,
+      "run_ids": [
+        "performance-20260810T143000Z-c1"
+      ]
+    },
+    {
+      "concurrency": 5,
+      "profile": "c5",
+      "requests": 20,
+      "run_ids": [
+        "performance-20260810T143000Z-c5"
+      ]
+    }
+  ]
+}

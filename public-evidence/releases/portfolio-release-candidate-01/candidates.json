@@ -1,0 +1,3616 @@
+{
+  "schema_version": "1.1.0",
+  "modes": [
+    "sparse_bm25",
+    "dense",
+    "hybrid_rrf"
+  ],
+  "run_ids": [
+    "quality-20260810T145500Z-sparse_bm25",
+    "quality-20260810T145500Z-dense",
+    "quality-20260810T145500Z-hybrid_rrf"
+  ],
+  "output_depths": [
+    3,
+    5,
+    10
+  ],
+  "mode_runs": [
+    {
+      "mode": "sparse_bm25",
+      "run_id": "quality-20260810T145500Z-sparse_bm25",
+      "queries": [
+        {
+          "query_id": "exact-qa-chunking-size",
+          "category": "exact_constraint",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 18.2343
+            },
+            {
+              "rank": 2,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 5.7518
+            },
+            {
+              "rank": 3,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 4.9683
+            },
+            {
+              "rank": 4,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 3.0745
+            },
+            {
+              "rank": 5,
+              "chunk_id": "05-auth-and-membership.md#0",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 0,
+              "score": 2.8008
+            },
+            {
+              "rank": 6,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 2.2831
+            },
+            {
+              "rank": 7,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 1.9618
+            },
+            {
+              "rank": 8,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 1.4971
+            },
+            {
+              "rank": 9,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 0.4678
+            },
+            {
+              "rank": 10,
+              "chunk_id": "02-retrieval-and-chunking.md#4",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 4,
+              "score": 0.4668
+            }
+          ]
+        },
+        {
+          "query_id": "exact-dense-dim-default",
+          "category": "exact_constraint",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 4.9344
+            },
+            {
+              "rank": 2,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 4.3613
+            },
+            {
+              "rank": 3,
+              "chunk_id": "05-auth-and-membership.md#0",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 0,
+              "score": 2.8008
+            },
+            {
+              "rank": 4,
+              "chunk_id": "03-embedding-and-dense-index.md#2",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 2,
+              "score": 2.5121
+            },
+            {
+              "rank": 5,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 2.5022
+            },
+            {
+              "rank": 6,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 1.9618
+            },
+            {
+              "rank": 7,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 1.5729
+            },
+            {
+              "rank": 8,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 1.5231
+            },
+            {
+              "rank": 9,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 1.4971
+            },
+            {
+              "rank": 10,
+              "chunk_id": "02-retrieval-and-chunking.md#4",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 4,
+              "score": 0.4668
+            }
+          ]
+        },
+        {
+          "query_id": "exact-milvus-collection-prefix",
+          "category": "exact_constraint",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 8.7608
+            },
+            {
+              "rank": 2,
+              "chunk_id": "03-embedding-and-dense-index.md#2",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 2,
+              "score": 6.1941
+            },
+            {
+              "rank": 3,
+              "chunk_id": "03-embedding-and-dense-index.md#3",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 3,
+              "score": 5.2495
+            },
+            {
+              "rank": 4,
+              "chunk_id": "05-auth-and-membership.md#0",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 0,
+              "score": 2.8008
+            },
+            {
+              "rank": 5,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 2.5022
+            },
+            {
+              "rank": 6,
+              "chunk_id": "06-configuration-and-deployment.md#1",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 1,
+              "score": 2.2207
+            },
+            {
+              "rank": 7,
+              "chunk_id": "06-configuration-and-deployment.md#0",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 0,
+              "score": 2.0217
+            },
+            {
+              "rank": 8,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 1.9618
+            },
+            {
+              "rank": 9,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 1.8247
+            },
+            {
+              "rank": 10,
+              "chunk_id": "06-configuration-and-deployment.md#2",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 2,
+              "score": 1.5894
+            }
+          ]
+        },
+        {
+          "query_id": "exact-rrf-fusion-k",
+          "category": "exact_constraint",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 12.055
+            },
+            {
+              "rank": 2,
+              "chunk_id": "02-retrieval-and-chunking.md#4",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 4,
+              "score": 7.6173
+            },
+            {
+              "rank": 3,
+              "chunk_id": "02-retrieval-and-chunking.md#5",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 5,
+              "score": 5.2038
+            },
+            {
+              "rank": 4,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 4.0832
+            },
+            {
+              "rank": 5,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 3.3655
+            },
+            {
+              "rank": 6,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 3.2815
+            },
+            {
+              "rank": 7,
+              "chunk_id": "05-auth-and-membership.md#0",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 0,
+              "score": 3.2778
+            },
+            {
+              "rank": 8,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 2.9057
+            },
+            {
+              "rank": 9,
+              "chunk_id": "03-embedding-and-dense-index.md#2",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 2,
+              "score": 2.4137
+            },
+            {
+              "rank": 10,
+              "chunk_id": "05-auth-and-membership.md#1",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 1,
+              "score": 2.3908
+            }
+          ]
+        },
+        {
+          "query_id": "semantic-fallback-availability",
+          "category": "semantic_paraphrase",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 8.8043
+            },
+            {
+              "rank": 2,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 7.6747
+            },
+            {
+              "rank": 3,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 5.8849
+            },
+            {
+              "rank": 4,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 5.7365
+            },
+            {
+              "rank": 5,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 5.0722
+            },
+            {
+              "rank": 6,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 4.5056
+            },
+            {
+              "rank": 7,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 4.2655
+            },
+            {
+              "rank": 8,
+              "chunk_id": "03-embedding-and-dense-index.md#2",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 2,
+              "score": 4.2419
+            },
+            {
+              "rank": 9,
+              "chunk_id": "06-configuration-and-deployment.md#2",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 2,
+              "score": 3.8452
+            },
+            {
+              "rank": 10,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 3.0351
+            }
+          ]
+        },
+        {
+          "query_id": "semantic-insufficient-evidence",
+          "category": "semantic_paraphrase",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 12.6495
+            },
+            {
+              "rank": 2,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 9.951
+            },
+            {
+              "rank": 3,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 6.907
+            },
+            {
+              "rank": 4,
+              "chunk_id": "05-auth-and-membership.md#1",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 1,
+              "score": 4.9031
+            },
+            {
+              "rank": 5,
+              "chunk_id": "04-publication-lifecycle.md#1",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 1,
+              "score": 3.9001
+            },
+            {
+              "rank": 6,
+              "chunk_id": "05-auth-and-membership.md#0",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 0,
+              "score": 3.3775
+            },
+            {
+              "rank": 7,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 3.2773
+            },
+            {
+              "rank": 8,
+              "chunk_id": "06-configuration-and-deployment.md#0",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 0,
+              "score": 2.6191
+            },
+            {
+              "rank": 9,
+              "chunk_id": "04-publication-lifecycle.md#0",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 0,
+              "score": 2.588
+            },
+            {
+              "rank": 10,
+              "chunk_id": "06-configuration-and-deployment.md#1",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 1,
+              "score": 1.7715
+            }
+          ]
+        },
+        {
+          "query_id": "semantic-withdrawal-effect",
+          "category": "semantic_paraphrase",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "04-publication-lifecycle.md#1",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 1,
+              "score": 20.5075
+            },
+            {
+              "rank": 2,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 11.0889
+            },
+            {
+              "rank": 3,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 9.2968
+            },
+            {
+              "rank": 4,
+              "chunk_id": "05-auth-and-membership.md#0",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 0,
+              "score": 8.5187
+            },
+            {
+              "rank": 5,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 7.4868
+            },
+            {
+              "rank": 6,
+              "chunk_id": "04-publication-lifecycle.md#0",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 0,
+              "score": 6.6742
+            },
+            {
+              "rank": 7,
+              "chunk_id": "06-configuration-and-deployment.md#2",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 2,
+              "score": 6.2361
+            },
+            {
+              "rank": 8,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 5.2968
+            },
+            {
+              "rank": 9,
+              "chunk_id": "05-auth-and-membership.md#1",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 1,
+              "score": 5.1423
+            },
+            {
+              "rank": 10,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 5.0442
+            }
+          ]
+        },
+        {
+          "query_id": "semantic-publication-required",
+          "category": "semantic_paraphrase",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "04-publication-lifecycle.md#1",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 1,
+              "score": 7.4545
+            },
+            {
+              "rank": 2,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 6.2089
+            },
+            {
+              "rank": 3,
+              "chunk_id": "05-auth-and-membership.md#1",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 1,
+              "score": 4.9031
+            },
+            {
+              "rank": 4,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 4.8452
+            },
+            {
+              "rank": 5,
+              "chunk_id": "04-publication-lifecycle.md#0",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 0,
+              "score": 4.5042
+            },
+            {
+              "rank": 6,
+              "chunk_id": "06-configuration-and-deployment.md#2",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 2,
+              "score": 4.3222
+            },
+            {
+              "rank": 7,
+              "chunk_id": "05-auth-and-membership.md#0",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 0,
+              "score": 4.2766
+            },
+            {
+              "rank": 8,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 3.8116
+            },
+            {
+              "rank": 9,
+              "chunk_id": "06-configuration-and-deployment.md#1",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 1,
+              "score": 3.7281
+            },
+            {
+              "rank": 10,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 3.2412
+            }
+          ]
+        },
+        {
+          "query_id": "combined-contract-active",
+          "category": "combined_condition",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 20.0644
+            },
+            {
+              "rank": 2,
+              "chunk_id": "03-embedding-and-dense-index.md#2",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 2,
+              "score": 9.3376
+            },
+            {
+              "rank": 3,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 8.4724
+            },
+            {
+              "rank": 4,
+              "chunk_id": "06-configuration-and-deployment.md#2",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 2,
+              "score": 7.8103
+            },
+            {
+              "rank": 5,
+              "chunk_id": "04-publication-lifecycle.md#1",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 1,
+              "score": 6.6518
+            },
+            {
+              "rank": 6,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 6.4268
+            },
+            {
+              "rank": 7,
+              "chunk_id": "05-auth-and-membership.md#0",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 0,
+              "score": 5.7613
+            },
+            {
+              "rank": 8,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 4.9844
+            },
+            {
+              "rank": 9,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 4.6635
+            },
+            {
+              "rank": 10,
+              "chunk_id": "06-configuration-and-deployment.md#0",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 0,
+              "score": 3.0099
+            }
+          ]
+        },
+        {
+          "query_id": "combined-fallback-trace",
+          "category": "combined_condition",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 24.3854
+            },
+            {
+              "rank": 2,
+              "chunk_id": "06-configuration-and-deployment.md#2",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 2,
+              "score": 13.6128
+            },
+            {
+              "rank": 3,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 9.5362
+            },
+            {
+              "rank": 4,
+              "chunk_id": "02-retrieval-and-chunking.md#4",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 4,
+              "score": 8.598
+            },
+            {
+              "rank": 5,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 8.42
+            },
+            {
+              "rank": 6,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 7.5048
+            },
+            {
+              "rank": 7,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 7.1303
+            },
+            {
+              "rank": 8,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 6.783
+            },
+            {
+              "rank": 9,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 5.5964
+            },
+            {
+              "rank": 10,
+              "chunk_id": "04-publication-lifecycle.md#1",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 1,
+              "score": 5.4545
+            }
+          ]
+        },
+        {
+          "query_id": "combined-knowledge-user-admission",
+          "category": "combined_condition",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "05-auth-and-membership.md#0",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 0,
+              "score": 27.5716
+            },
+            {
+              "rank": 2,
+              "chunk_id": "05-auth-and-membership.md#1",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 1,
+              "score": 8.3433
+            },
+            {
+              "rank": 3,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 5.8487
+            },
+            {
+              "rank": 4,
+              "chunk_id": "04-publication-lifecycle.md#1",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 1,
+              "score": 5.0495
+            },
+            {
+              "rank": 5,
+              "chunk_id": "04-publication-lifecycle.md#0",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 0,
+              "score": 3.6913
+            },
+            {
+              "rank": 6,
+              "chunk_id": "03-embedding-and-dense-index.md#2",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 2,
+              "score": 2.3444
+            },
+            {
+              "rank": 7,
+              "chunk_id": "04-publication-lifecycle.md#2",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 2,
+              "score": 2.0468
+            },
+            {
+              "rank": 8,
+              "chunk_id": "01-product-overview.md#3",
+              "document": "01-product-overview.md",
+              "chunk_index": 3,
+              "score": 1.8982
+            },
+            {
+              "rank": 9,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 1.7525
+            },
+            {
+              "rank": 10,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 1.1544
+            }
+          ]
+        },
+        {
+          "query_id": "combined-answer-evidence-set",
+          "category": "combined_condition",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 26.9938
+            },
+            {
+              "rank": 2,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 17.532
+            },
+            {
+              "rank": 3,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 14.6949
+            },
+            {
+              "rank": 4,
+              "chunk_id": "01-product-overview.md#3",
+              "document": "01-product-overview.md",
+              "chunk_index": 3,
+              "score": 9.6478
+            },
+            {
+              "rank": 5,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 5.7445
+            },
+            {
+              "rank": 6,
+              "chunk_id": "05-auth-and-membership.md#0",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 0,
+              "score": 5.4484
+            },
+            {
+              "rank": 7,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 4.3065
+            },
+            {
+              "rank": 8,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 3.3796
+            },
+            {
+              "rank": 9,
+              "chunk_id": "06-configuration-and-deployment.md#2",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 2,
+              "score": 3.3625
+            },
+            {
+              "rank": 10,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 2.4145
+            }
+          ]
+        },
+        {
+          "query_id": "boundary-lexical-is-bm25",
+          "category": "boundary",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 8.4842
+            },
+            {
+              "rank": 2,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 5.6922
+            },
+            {
+              "rank": 3,
+              "chunk_id": "02-retrieval-and-chunking.md#5",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 5,
+              "score": 3.2124
+            },
+            {
+              "rank": 4,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 1.8652
+            }
+          ]
+        },
+        {
+          "query_id": "boundary-chunking-300",
+          "category": "boundary",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 11.9667
+            },
+            {
+              "rank": 2,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 7.3768
+            },
+            {
+              "rank": 3,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 6.8082
+            },
+            {
+              "rank": 4,
+              "chunk_id": "04-publication-lifecycle.md#1",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 1,
+              "score": 5.2171
+            },
+            {
+              "rank": 5,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 4.9088
+            },
+            {
+              "rank": 6,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 3.0142
+            },
+            {
+              "rank": 7,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 2.9537
+            },
+            {
+              "rank": 8,
+              "chunk_id": "04-publication-lifecycle.md#0",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 0,
+              "score": 2.588
+            },
+            {
+              "rank": 9,
+              "chunk_id": "05-auth-and-membership.md#0",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 0,
+              "score": 2.1706
+            },
+            {
+              "rank": 10,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 1.5005
+            }
+          ]
+        },
+        {
+          "query_id": "boundary-hybrid-winner",
+          "category": "boundary",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 20.4821
+            },
+            {
+              "rank": 2,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 5.3451
+            },
+            {
+              "rank": 3,
+              "chunk_id": "03-embedding-and-dense-index.md#3",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 3,
+              "score": 3.3273
+            },
+            {
+              "rank": 4,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 2.1924
+            },
+            {
+              "rank": 5,
+              "chunk_id": "05-auth-and-membership.md#0",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 0,
+              "score": 2.1467
+            },
+            {
+              "rank": 6,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 2.0788
+            },
+            {
+              "rank": 7,
+              "chunk_id": "03-embedding-and-dense-index.md#2",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 2,
+              "score": 1.7454
+            },
+            {
+              "rank": 8,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 1.5775
+            },
+            {
+              "rank": 9,
+              "chunk_id": "06-configuration-and-deployment.md#1",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 1,
+              "score": 1.4624
+            },
+            {
+              "rank": 10,
+              "chunk_id": "05-auth-and-membership.md#1",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 1,
+              "score": 1.1252
+            }
+          ]
+        },
+        {
+          "query_id": "boundary-production-ports",
+          "category": "boundary",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "06-configuration-and-deployment.md#1",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 1,
+              "score": 6.0636
+            },
+            {
+              "rank": 2,
+              "chunk_id": "03-embedding-and-dense-index.md#2",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 2,
+              "score": 2.6803
+            },
+            {
+              "rank": 3,
+              "chunk_id": "04-publication-lifecycle.md#1",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 1,
+              "score": 2.505
+            },
+            {
+              "rank": 4,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 1.9306
+            },
+            {
+              "rank": 5,
+              "chunk_id": "06-configuration-and-deployment.md#0",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 0,
+              "score": 1.8653
+            },
+            {
+              "rank": 6,
+              "chunk_id": "06-configuration-and-deployment.md#2",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 2,
+              "score": 1.838
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "mode": "dense",
+      "run_id": "quality-20260810T145500Z-dense",
+      "queries": [
+        {
+          "query_id": "exact-qa-chunking-size",
+          "category": "exact_constraint",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 0.71121845
+            },
+            {
+              "rank": 2,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.59943798
+            },
+            {
+              "rank": 3,
+              "chunk_id": "02-retrieval-and-chunking.md#4",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 4,
+              "score": 0.54671423
+            },
+            {
+              "rank": 4,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 0.48410061
+            },
+            {
+              "rank": 5,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 0.47931095
+            },
+            {
+              "rank": 6,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.46883704
+            },
+            {
+              "rank": 7,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 0.46816092
+            },
+            {
+              "rank": 8,
+              "chunk_id": "03-embedding-and-dense-index.md#2",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 2,
+              "score": 0.4507369
+            },
+            {
+              "rank": 9,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.42729912
+            },
+            {
+              "rank": 10,
+              "chunk_id": "03-embedding-and-dense-index.md#3",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 3,
+              "score": 0.41388273
+            }
+          ]
+        },
+        {
+          "query_id": "exact-dense-dim-default",
+          "category": "exact_constraint",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 0.62485168
+            },
+            {
+              "rank": 2,
+              "chunk_id": "03-embedding-and-dense-index.md#2",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 2,
+              "score": 0.59693269
+            },
+            {
+              "rank": 3,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 0.57022538
+            },
+            {
+              "rank": 4,
+              "chunk_id": "03-embedding-and-dense-index.md#3",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 3,
+              "score": 0.54056962
+            },
+            {
+              "rank": 5,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.45425449
+            },
+            {
+              "rank": 6,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.45100979
+            },
+            {
+              "rank": 7,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 0.4092015
+            },
+            {
+              "rank": 8,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 0.37875135
+            },
+            {
+              "rank": 9,
+              "chunk_id": "02-retrieval-and-chunking.md#5",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 5,
+              "score": 0.35902297
+            },
+            {
+              "rank": 10,
+              "chunk_id": "02-retrieval-and-chunking.md#4",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 4,
+              "score": 0.35510769
+            }
+          ]
+        },
+        {
+          "query_id": "exact-milvus-collection-prefix",
+          "category": "exact_constraint",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 0.5423067
+            },
+            {
+              "rank": 2,
+              "chunk_id": "03-embedding-and-dense-index.md#3",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 3,
+              "score": 0.45962677
+            },
+            {
+              "rank": 3,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 0.42878889
+            },
+            {
+              "rank": 4,
+              "chunk_id": "06-configuration-and-deployment.md#0",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 0,
+              "score": 0.41816075
+            },
+            {
+              "rank": 5,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 0.39013248
+            },
+            {
+              "rank": 6,
+              "chunk_id": "06-configuration-and-deployment.md#1",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 1,
+              "score": 0.38478412
+            },
+            {
+              "rank": 7,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.38202443
+            },
+            {
+              "rank": 8,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 0.37615111
+            },
+            {
+              "rank": 9,
+              "chunk_id": "03-embedding-and-dense-index.md#2",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 2,
+              "score": 0.37462115
+            },
+            {
+              "rank": 10,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 0.34076316
+            }
+          ]
+        },
+        {
+          "query_id": "exact-rrf-fusion-k",
+          "category": "exact_constraint",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 0.5664038
+            },
+            {
+              "rank": 2,
+              "chunk_id": "02-retrieval-and-chunking.md#5",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 5,
+              "score": 0.55045668
+            },
+            {
+              "rank": 3,
+              "chunk_id": "02-retrieval-and-chunking.md#4",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 4,
+              "score": 0.50105842
+            },
+            {
+              "rank": 4,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.46026756
+            },
+            {
+              "rank": 5,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 0.45506188
+            },
+            {
+              "rank": 6,
+              "chunk_id": "06-configuration-and-deployment.md#1",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 1,
+              "score": 0.43294479
+            },
+            {
+              "rank": 7,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.41653441
+            },
+            {
+              "rank": 8,
+              "chunk_id": "03-embedding-and-dense-index.md#3",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 3,
+              "score": 0.40122222
+            },
+            {
+              "rank": 9,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 0.39348232
+            },
+            {
+              "rank": 10,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.3931319
+            }
+          ]
+        },
+        {
+          "query_id": "semantic-fallback-availability",
+          "category": "semantic_paraphrase",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "01-product-overview.md#4",
+              "document": "01-product-overview.md",
+              "chunk_index": 4,
+              "score": 0.60087051
+            },
+            {
+              "rank": 2,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.56433241
+            },
+            {
+              "rank": 3,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.55018052
+            },
+            {
+              "rank": 4,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 0.53298589
+            },
+            {
+              "rank": 5,
+              "chunk_id": "03-embedding-and-dense-index.md#3",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 3,
+              "score": 0.52288742
+            },
+            {
+              "rank": 6,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 0.5197963
+            },
+            {
+              "rank": 7,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 0.5110102
+            },
+            {
+              "rank": 8,
+              "chunk_id": "06-configuration-and-deployment.md#1",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 1,
+              "score": 0.50992243
+            },
+            {
+              "rank": 9,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 0.50809127
+            },
+            {
+              "rank": 10,
+              "chunk_id": "01-product-overview.md#3",
+              "document": "01-product-overview.md",
+              "chunk_index": 3,
+              "score": 0.50156461
+            }
+          ]
+        },
+        {
+          "query_id": "semantic-insufficient-evidence",
+          "category": "semantic_paraphrase",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 0.69999403
+            },
+            {
+              "rank": 2,
+              "chunk_id": "01-product-overview.md#3",
+              "document": "01-product-overview.md",
+              "chunk_index": 3,
+              "score": 0.66784165
+            },
+            {
+              "rank": 3,
+              "chunk_id": "01-product-overview.md#4",
+              "document": "01-product-overview.md",
+              "chunk_index": 4,
+              "score": 0.65562667
+            },
+            {
+              "rank": 4,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.63021509
+            },
+            {
+              "rank": 5,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 0.58534103
+            },
+            {
+              "rank": 6,
+              "chunk_id": "05-auth-and-membership.md#1",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 1,
+              "score": 0.54236239
+            },
+            {
+              "rank": 7,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.47930389
+            },
+            {
+              "rank": 8,
+              "chunk_id": "05-auth-and-membership.md#0",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 0,
+              "score": 0.46821873
+            },
+            {
+              "rank": 9,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 0.46536765
+            },
+            {
+              "rank": 10,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.45942659
+            }
+          ]
+        },
+        {
+          "query_id": "semantic-withdrawal-effect",
+          "category": "semantic_paraphrase",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "04-publication-lifecycle.md#1",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 1,
+              "score": 0.70522309
+            },
+            {
+              "rank": 2,
+              "chunk_id": "01-product-overview.md#3",
+              "document": "01-product-overview.md",
+              "chunk_index": 3,
+              "score": 0.49359599
+            },
+            {
+              "rank": 3,
+              "chunk_id": "04-publication-lifecycle.md#2",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 2,
+              "score": 0.47714165
+            },
+            {
+              "rank": 4,
+              "chunk_id": "01-product-overview.md#4",
+              "document": "01-product-overview.md",
+              "chunk_index": 4,
+              "score": 0.47682241
+            },
+            {
+              "rank": 5,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.47201497
+            },
+            {
+              "rank": 6,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.45687974
+            },
+            {
+              "rank": 7,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 0.45067895
+            },
+            {
+              "rank": 8,
+              "chunk_id": "05-auth-and-membership.md#2",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 2,
+              "score": 0.44287657
+            },
+            {
+              "rank": 9,
+              "chunk_id": "04-publication-lifecycle.md#0",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 0,
+              "score": 0.44071724
+            },
+            {
+              "rank": 10,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 0.43054465
+            }
+          ]
+        },
+        {
+          "query_id": "semantic-publication-required",
+          "category": "semantic_paraphrase",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "04-publication-lifecycle.md#1",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 1,
+              "score": 0.59693087
+            },
+            {
+              "rank": 2,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 0.54679399
+            },
+            {
+              "rank": 3,
+              "chunk_id": "04-publication-lifecycle.md#0",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 0,
+              "score": 0.54155961
+            },
+            {
+              "rank": 4,
+              "chunk_id": "04-publication-lifecycle.md#2",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 2,
+              "score": 0.50595735
+            },
+            {
+              "rank": 5,
+              "chunk_id": "06-configuration-and-deployment.md#2",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 2,
+              "score": 0.49957391
+            },
+            {
+              "rank": 6,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.49703161
+            },
+            {
+              "rank": 7,
+              "chunk_id": "05-auth-and-membership.md#1",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 1,
+              "score": 0.49472857
+            },
+            {
+              "rank": 8,
+              "chunk_id": "01-product-overview.md#3",
+              "document": "01-product-overview.md",
+              "chunk_index": 3,
+              "score": 0.48752995
+            },
+            {
+              "rank": 9,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 0.48106958
+            },
+            {
+              "rank": 10,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.47937396
+            }
+          ]
+        },
+        {
+          "query_id": "combined-contract-active",
+          "category": "combined_condition",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 0.78446026
+            },
+            {
+              "rank": 2,
+              "chunk_id": "03-embedding-and-dense-index.md#2",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 2,
+              "score": 0.65075327
+            },
+            {
+              "rank": 3,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 0.63476194
+            },
+            {
+              "rank": 4,
+              "chunk_id": "03-embedding-and-dense-index.md#3",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 3,
+              "score": 0.60429119
+            },
+            {
+              "rank": 5,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.53197138
+            },
+            {
+              "rank": 6,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.53135721
+            },
+            {
+              "rank": 7,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 0.51004974
+            },
+            {
+              "rank": 8,
+              "chunk_id": "06-configuration-and-deployment.md#2",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 2,
+              "score": 0.50117457
+            },
+            {
+              "rank": 9,
+              "chunk_id": "02-retrieval-and-chunking.md#5",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 5,
+              "score": 0.48059797
+            },
+            {
+              "rank": 10,
+              "chunk_id": "06-configuration-and-deployment.md#1",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 1,
+              "score": 0.45763542
+            }
+          ]
+        },
+        {
+          "query_id": "combined-fallback-trace",
+          "category": "combined_condition",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.69976942
+            },
+            {
+              "rank": 2,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.61869679
+            },
+            {
+              "rank": 3,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 0.59970764
+            },
+            {
+              "rank": 4,
+              "chunk_id": "03-embedding-and-dense-index.md#3",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 3,
+              "score": 0.51886861
+            },
+            {
+              "rank": 5,
+              "chunk_id": "02-retrieval-and-chunking.md#4",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 4,
+              "score": 0.5038316
+            },
+            {
+              "rank": 6,
+              "chunk_id": "02-retrieval-and-chunking.md#5",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 5,
+              "score": 0.49901348
+            },
+            {
+              "rank": 7,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 0.49409669
+            },
+            {
+              "rank": 8,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 0.48596488
+            },
+            {
+              "rank": 9,
+              "chunk_id": "01-product-overview.md#3",
+              "document": "01-product-overview.md",
+              "chunk_index": 3,
+              "score": 0.47817576
+            },
+            {
+              "rank": 10,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.47787275
+            }
+          ]
+        },
+        {
+          "query_id": "combined-knowledge-user-admission",
+          "category": "combined_condition",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "05-auth-and-membership.md#0",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 0,
+              "score": 0.73648741
+            },
+            {
+              "rank": 2,
+              "chunk_id": "05-auth-and-membership.md#1",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 1,
+              "score": 0.68925271
+            },
+            {
+              "rank": 3,
+              "chunk_id": "05-auth-and-membership.md#2",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 2,
+              "score": 0.52346855
+            },
+            {
+              "rank": 4,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 0.51911088
+            },
+            {
+              "rank": 5,
+              "chunk_id": "01-product-overview.md#4",
+              "document": "01-product-overview.md",
+              "chunk_index": 4,
+              "score": 0.47962086
+            },
+            {
+              "rank": 6,
+              "chunk_id": "01-product-overview.md#3",
+              "document": "01-product-overview.md",
+              "chunk_index": 3,
+              "score": 0.45830205
+            },
+            {
+              "rank": 7,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.4499923
+            },
+            {
+              "rank": 8,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 0.44639605
+            },
+            {
+              "rank": 9,
+              "chunk_id": "06-configuration-and-deployment.md#1",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 1,
+              "score": 0.44190443
+            },
+            {
+              "rank": 10,
+              "chunk_id": "06-configuration-and-deployment.md#2",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 2,
+              "score": 0.4295767
+            }
+          ]
+        },
+        {
+          "query_id": "combined-answer-evidence-set",
+          "category": "combined_condition",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.7706293
+            },
+            {
+              "rank": 2,
+              "chunk_id": "01-product-overview.md#3",
+              "document": "01-product-overview.md",
+              "chunk_index": 3,
+              "score": 0.70406877
+            },
+            {
+              "rank": 3,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 0.68873859
+            },
+            {
+              "rank": 4,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 0.60105881
+            },
+            {
+              "rank": 5,
+              "chunk_id": "06-configuration-and-deployment.md#1",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 1,
+              "score": 0.49203992
+            },
+            {
+              "rank": 6,
+              "chunk_id": "02-retrieval-and-chunking.md#5",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 5,
+              "score": 0.47488125
+            },
+            {
+              "rank": 7,
+              "chunk_id": "06-configuration-and-deployment.md#2",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 2,
+              "score": 0.47200622
+            },
+            {
+              "rank": 8,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.46334282
+            },
+            {
+              "rank": 9,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.45862628
+            },
+            {
+              "rank": 10,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 0.45564799
+            }
+          ]
+        },
+        {
+          "query_id": "boundary-lexical-is-bm25",
+          "category": "boundary",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.60903815
+            },
+            {
+              "rank": 2,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 0.59724527
+            },
+            {
+              "rank": 3,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.52790472
+            },
+            {
+              "rank": 4,
+              "chunk_id": "02-retrieval-and-chunking.md#5",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 5,
+              "score": 0.50478186
+            },
+            {
+              "rank": 5,
+              "chunk_id": "01-product-overview.md#3",
+              "document": "01-product-overview.md",
+              "chunk_index": 3,
+              "score": 0.45597785
+            },
+            {
+              "rank": 6,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 0.45385004
+            },
+            {
+              "rank": 7,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 0.43089754
+            },
+            {
+              "rank": 8,
+              "chunk_id": "06-configuration-and-deployment.md#1",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 1,
+              "score": 0.41902053
+            },
+            {
+              "rank": 9,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.4102615
+            },
+            {
+              "rank": 10,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 0.4082808
+            }
+          ]
+        },
+        {
+          "query_id": "boundary-chunking-300",
+          "category": "boundary",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 0.69194845
+            },
+            {
+              "rank": 2,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.64083863
+            },
+            {
+              "rank": 3,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 0.59246971
+            },
+            {
+              "rank": 4,
+              "chunk_id": "02-retrieval-and-chunking.md#4",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 4,
+              "score": 0.58949521
+            },
+            {
+              "rank": 5,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.53830303
+            },
+            {
+              "rank": 6,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 0.5156438
+            },
+            {
+              "rank": 7,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.50071156
+            },
+            {
+              "rank": 8,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 0.48581896
+            },
+            {
+              "rank": 9,
+              "chunk_id": "02-retrieval-and-chunking.md#5",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 5,
+              "score": 0.46662204
+            },
+            {
+              "rank": 10,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 0.46164274
+            }
+          ]
+        },
+        {
+          "query_id": "boundary-hybrid-winner",
+          "category": "boundary",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 0.63797355
+            },
+            {
+              "rank": 2,
+              "chunk_id": "02-retrieval-and-chunking.md#5",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 5,
+              "score": 0.5283169
+            },
+            {
+              "rank": 3,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.48864757
+            },
+            {
+              "rank": 4,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.4824302
+            },
+            {
+              "rank": 5,
+              "chunk_id": "02-retrieval-and-chunking.md#4",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 4,
+              "score": 0.44004099
+            },
+            {
+              "rank": 6,
+              "chunk_id": "03-embedding-and-dense-index.md#3",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 3,
+              "score": 0.42956215
+            },
+            {
+              "rank": 7,
+              "chunk_id": "06-configuration-and-deployment.md#1",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 1,
+              "score": 0.42126922
+            },
+            {
+              "rank": 8,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 0.40905473
+            },
+            {
+              "rank": 9,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 0.3860589
+            },
+            {
+              "rank": 10,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.38572404
+            }
+          ]
+        },
+        {
+          "query_id": "boundary-production-ports",
+          "category": "boundary",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "01-product-overview.md#4",
+              "document": "01-product-overview.md",
+              "chunk_index": 4,
+              "score": 0.58584705
+            },
+            {
+              "rank": 2,
+              "chunk_id": "06-configuration-and-deployment.md#1",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 1,
+              "score": 0.51463121
+            },
+            {
+              "rank": 3,
+              "chunk_id": "06-configuration-and-deployment.md#0",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 0,
+              "score": 0.48579296
+            },
+            {
+              "rank": 4,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.45402337
+            },
+            {
+              "rank": 5,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 0.44757064
+            },
+            {
+              "rank": 6,
+              "chunk_id": "06-configuration-and-deployment.md#3",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 3,
+              "score": 0.44473738
+            },
+            {
+              "rank": 7,
+              "chunk_id": "06-configuration-and-deployment.md#2",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 2,
+              "score": 0.43176741
+            },
+            {
+              "rank": 8,
+              "chunk_id": "01-product-overview.md#3",
+              "document": "01-product-overview.md",
+              "chunk_index": 3,
+              "score": 0.43155278
+            },
+            {
+              "rank": 9,
+              "chunk_id": "05-auth-and-membership.md#1",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 1,
+              "score": 0.42065198
+            },
+            {
+              "rank": 10,
+              "chunk_id": "05-auth-and-membership.md#0",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 0,
+              "score": 0.4155048
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "mode": "hybrid_rrf",
+      "run_id": "quality-20260810T145500Z-hybrid_rrf",
+      "queries": [
+        {
+          "query_id": "exact-qa-chunking-size",
+          "category": "exact_constraint",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 0.03278689
+            },
+            {
+              "rank": 2,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.03225806
+            },
+            {
+              "rank": 3,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 0.03125763
+            },
+            {
+              "rank": 4,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.03030303
+            },
+            {
+              "rank": 5,
+              "chunk_id": "02-retrieval-and-chunking.md#4",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 4,
+              "score": 0.03015873
+            },
+            {
+              "rank": 6,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 0.03011775
+            },
+            {
+              "rank": 7,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.02941813
+            },
+            {
+              "rank": 8,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 0.02895833
+            },
+            {
+              "rank": 9,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 0.02825871
+            },
+            {
+              "rank": 10,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 0.0282194
+            }
+          ]
+        },
+        {
+          "query_id": "exact-dense-dim-default",
+          "category": "exact_constraint",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 0.03252247
+            },
+            {
+              "rank": 2,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 0.03226646
+            },
+            {
+              "rank": 3,
+              "chunk_id": "03-embedding-and-dense-index.md#2",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 2,
+              "score": 0.03175403
+            },
+            {
+              "rank": 4,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.03053613
+            },
+            {
+              "rank": 5,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 0.02985075
+            },
+            {
+              "rank": 6,
+              "chunk_id": "03-embedding-and-dense-index.md#3",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 3,
+              "score": 0.02932363
+            },
+            {
+              "rank": 7,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.02871795
+            },
+            {
+              "rank": 8,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.02866503
+            },
+            {
+              "rank": 9,
+              "chunk_id": "02-retrieval-and-chunking.md#4",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 4,
+              "score": 0.02857143
+            },
+            {
+              "rank": 10,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 0.02786378
+            }
+          ]
+        },
+        {
+          "query_id": "exact-milvus-collection-prefix",
+          "category": "exact_constraint",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 0.03278689
+            },
+            {
+              "rank": 2,
+              "chunk_id": "03-embedding-and-dense-index.md#3",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 3,
+              "score": 0.03200205
+            },
+            {
+              "rank": 3,
+              "chunk_id": "03-embedding-and-dense-index.md#2",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 2,
+              "score": 0.03062179
+            },
+            {
+              "rank": 4,
+              "chunk_id": "06-configuration-and-deployment.md#0",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 0,
+              "score": 0.03055037
+            },
+            {
+              "rank": 5,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 0.03036577
+            },
+            {
+              "rank": 6,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.03030999
+            },
+            {
+              "rank": 7,
+              "chunk_id": "06-configuration-and-deployment.md#1",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 1,
+              "score": 0.03030303
+            },
+            {
+              "rank": 8,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.02879039
+            },
+            {
+              "rank": 9,
+              "chunk_id": "05-auth-and-membership.md#0",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 0,
+              "score": 0.02861201
+            },
+            {
+              "rank": 10,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 0.02859477
+            }
+          ]
+        },
+        {
+          "query_id": "exact-rrf-fusion-k",
+          "category": "exact_constraint",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 0.03278689
+            },
+            {
+              "rank": 2,
+              "chunk_id": "02-retrieval-and-chunking.md#4",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 4,
+              "score": 0.03200205
+            },
+            {
+              "rank": 3,
+              "chunk_id": "02-retrieval-and-chunking.md#5",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 5,
+              "score": 0.03200205
+            },
+            {
+              "rank": 4,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.03077652
+            },
+            {
+              "rank": 5,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.03055037
+            },
+            {
+              "rank": 6,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 0.0300905
+            },
+            {
+              "rank": 7,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.02967033
+            },
+            {
+              "rank": 8,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 0.02857726
+            },
+            {
+              "rank": 9,
+              "chunk_id": "03-embedding-and-dense-index.md#2",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 2,
+              "score": 0.02857726
+            },
+            {
+              "rank": 10,
+              "chunk_id": "06-configuration-and-deployment.md#1",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 1,
+              "score": 0.02813853
+            }
+          ]
+        },
+        {
+          "query_id": "semantic-fallback-availability",
+          "category": "semantic_paraphrase",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.03200205
+            },
+            {
+              "rank": 2,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.03200205
+            },
+            {
+              "rank": 3,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 0.03125
+            },
+            {
+              "rank": 4,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 0.0308862
+            },
+            {
+              "rank": 5,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 0.03007689
+            },
+            {
+              "rank": 6,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.0292735
+            },
+            {
+              "rank": 7,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 0.02921109
+            },
+            {
+              "rank": 8,
+              "chunk_id": "03-embedding-and-dense-index.md#2",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 2,
+              "score": 0.02879039
+            },
+            {
+              "rank": 9,
+              "chunk_id": "06-configuration-and-deployment.md#1",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 1,
+              "score": 0.02879039
+            },
+            {
+              "rank": 10,
+              "chunk_id": "03-embedding-and-dense-index.md#3",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 3,
+              "score": 0.02837163
+            }
+          ]
+        },
+        {
+          "query_id": "semantic-insufficient-evidence",
+          "category": "semantic_paraphrase",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 0.03278689
+            },
+            {
+              "rank": 2,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 0.03151365
+            },
+            {
+              "rank": 3,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.03149802
+            },
+            {
+              "rank": 4,
+              "chunk_id": "05-auth-and-membership.md#1",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 1,
+              "score": 0.03077652
+            },
+            {
+              "rank": 5,
+              "chunk_id": "05-auth-and-membership.md#0",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 0,
+              "score": 0.0298574
+            },
+            {
+              "rank": 6,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.02985075
+            },
+            {
+              "rank": 7,
+              "chunk_id": "04-publication-lifecycle.md#1",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 1,
+              "score": 0.0292735
+            },
+            {
+              "rank": 8,
+              "chunk_id": "01-product-overview.md#4",
+              "document": "01-product-overview.md",
+              "chunk_index": 4,
+              "score": 0.02853124
+            },
+            {
+              "rank": 9,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 0.02838164
+            },
+            {
+              "rank": 10,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.02837022
+            }
+          ]
+        },
+        {
+          "query_id": "semantic-withdrawal-effect",
+          "category": "semantic_paraphrase",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "04-publication-lifecycle.md#1",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 1,
+              "score": 0.03278689
+            },
+            {
+              "rank": 2,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.03125763
+            },
+            {
+              "rank": 3,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 0.03030999
+            },
+            {
+              "rank": 4,
+              "chunk_id": "04-publication-lifecycle.md#0",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 0,
+              "score": 0.02964427
+            },
+            {
+              "rank": 5,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.02943723
+            },
+            {
+              "rank": 6,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 0.0289916
+            },
+            {
+              "rank": 7,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 0.02894955
+            },
+            {
+              "rank": 8,
+              "chunk_id": "06-configuration-and-deployment.md#2",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 2,
+              "score": 0.028624
+            },
+            {
+              "rank": 9,
+              "chunk_id": "05-auth-and-membership.md#1",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 1,
+              "score": 0.02857726
+            },
+            {
+              "rank": 10,
+              "chunk_id": "01-product-overview.md#4",
+              "document": "01-product-overview.md",
+              "chunk_index": 4,
+              "score": 0.028125
+            }
+          ]
+        },
+        {
+          "query_id": "semantic-publication-required",
+          "category": "semantic_paraphrase",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "04-publication-lifecycle.md#1",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 1,
+              "score": 0.03278689
+            },
+            {
+              "rank": 2,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 0.03175403
+            },
+            {
+              "rank": 3,
+              "chunk_id": "04-publication-lifecycle.md#0",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 0,
+              "score": 0.03125763
+            },
+            {
+              "rank": 4,
+              "chunk_id": "05-auth-and-membership.md#1",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 1,
+              "score": 0.03079839
+            },
+            {
+              "rank": 5,
+              "chunk_id": "06-configuration-and-deployment.md#2",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 2,
+              "score": 0.03053613
+            },
+            {
+              "rank": 6,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.0298574
+            },
+            {
+              "rank": 7,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 0.02928693
+            },
+            {
+              "rank": 8,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 0.02877847
+            },
+            {
+              "rank": 9,
+              "chunk_id": "06-configuration-and-deployment.md#1",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 1,
+              "score": 0.02838164
+            },
+            {
+              "rank": 10,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.0281746
+            }
+          ]
+        },
+        {
+          "query_id": "combined-contract-active",
+          "category": "combined_condition",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 0.03278689
+            },
+            {
+              "rank": 2,
+              "chunk_id": "03-embedding-and-dense-index.md#2",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 2,
+              "score": 0.03225806
+            },
+            {
+              "rank": 3,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 0.03174603
+            },
+            {
+              "rank": 4,
+              "chunk_id": "06-configuration-and-deployment.md#2",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 2,
+              "score": 0.03033088
+            },
+            {
+              "rank": 5,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.03030303
+            },
+            {
+              "rank": 6,
+              "chunk_id": "03-embedding-and-dense-index.md#3",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 3,
+              "score": 0.02970951
+            },
+            {
+              "rank": 7,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 0.02963126
+            },
+            {
+              "rank": 8,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.02838164
+            },
+            {
+              "rank": 9,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.02837163
+            },
+            {
+              "rank": 10,
+              "chunk_id": "02-retrieval-and-chunking.md#5",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 5,
+              "score": 0.02819138
+            }
+          ]
+        },
+        {
+          "query_id": "combined-fallback-trace",
+          "category": "combined_condition",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.03278689
+            },
+            {
+              "rank": 2,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.03200205
+            },
+            {
+              "rank": 3,
+              "chunk_id": "02-retrieval-and-chunking.md#4",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 4,
+              "score": 0.03100962
+            },
+            {
+              "rank": 4,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 0.0300905
+            },
+            {
+              "rank": 5,
+              "chunk_id": "06-configuration-and-deployment.md#2",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 2,
+              "score": 0.02982766
+            },
+            {
+              "rank": 6,
+              "chunk_id": "03-embedding-and-dense-index.md#3",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 3,
+              "score": 0.02970951
+            },
+            {
+              "rank": 7,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 0.02923602
+            },
+            {
+              "rank": 8,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.0289916
+            },
+            {
+              "rank": 9,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 0.02853124
+            },
+            {
+              "rank": 10,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 0.02843889
+            }
+          ]
+        },
+        {
+          "query_id": "combined-knowledge-user-admission",
+          "category": "combined_condition",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "05-auth-and-membership.md#0",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 0,
+              "score": 0.03278689
+            },
+            {
+              "rank": 2,
+              "chunk_id": "05-auth-and-membership.md#1",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 1,
+              "score": 0.03225806
+            },
+            {
+              "rank": 3,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 0.03149802
+            },
+            {
+              "rank": 4,
+              "chunk_id": "01-product-overview.md#3",
+              "document": "01-product-overview.md",
+              "chunk_index": 3,
+              "score": 0.0298574
+            },
+            {
+              "rank": 5,
+              "chunk_id": "04-publication-lifecycle.md#1",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 1,
+              "score": 0.02970951
+            },
+            {
+              "rank": 6,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.02921109
+            },
+            {
+              "rank": 7,
+              "chunk_id": "04-publication-lifecycle.md#0",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 0,
+              "score": 0.02908325
+            },
+            {
+              "rank": 8,
+              "chunk_id": "04-publication-lifecycle.md#2",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 2,
+              "score": 0.02881426
+            },
+            {
+              "rank": 9,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 0.02782609
+            },
+            {
+              "rank": 10,
+              "chunk_id": "05-auth-and-membership.md#2",
+              "document": "05-auth-and-membership.md",
+              "chunk_index": 2,
+              "score": 0.01587302
+            }
+          ]
+        },
+        {
+          "query_id": "combined-answer-evidence-set",
+          "category": "combined_condition",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.03278689
+            },
+            {
+              "rank": 2,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 0.03175403
+            },
+            {
+              "rank": 3,
+              "chunk_id": "01-product-overview.md#3",
+              "document": "01-product-overview.md",
+              "chunk_index": 3,
+              "score": 0.03175403
+            },
+            {
+              "rank": 4,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 0.03174603
+            },
+            {
+              "rank": 5,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.02987737
+            },
+            {
+              "rank": 6,
+              "chunk_id": "06-configuration-and-deployment.md#2",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 2,
+              "score": 0.02941813
+            },
+            {
+              "rank": 7,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.02941176
+            },
+            {
+              "rank": 8,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 0.02921109
+            },
+            {
+              "rank": 9,
+              "chunk_id": "06-configuration-and-deployment.md#1",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 1,
+              "score": 0.02908325
+            },
+            {
+              "rank": 10,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 0.02816901
+            }
+          ]
+        },
+        {
+          "query_id": "boundary-lexical-is-bm25",
+          "category": "boundary",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.03252247
+            },
+            {
+              "rank": 2,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 0.03252247
+            },
+            {
+              "rank": 3,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.03149802
+            },
+            {
+              "rank": 4,
+              "chunk_id": "02-retrieval-and-chunking.md#5",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 5,
+              "score": 0.03149802
+            },
+            {
+              "rank": 5,
+              "chunk_id": "01-product-overview.md#3",
+              "document": "01-product-overview.md",
+              "chunk_index": 3,
+              "score": 0.01538462
+            },
+            {
+              "rank": 6,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 0.01515152
+            },
+            {
+              "rank": 7,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 0.01492537
+            },
+            {
+              "rank": 8,
+              "chunk_id": "06-configuration-and-deployment.md#1",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 1,
+              "score": 0.01470588
+            },
+            {
+              "rank": 9,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.01449275
+            },
+            {
+              "rank": 10,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 0.01428571
+            }
+          ]
+        },
+        {
+          "query_id": "boundary-chunking-300",
+          "category": "boundary",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 0.03278689
+            },
+            {
+              "rank": 2,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.03200205
+            },
+            {
+              "rank": 3,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 0.03200205
+            },
+            {
+              "rank": 4,
+              "chunk_id": "02-retrieval-and-chunking.md#2",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 2,
+              "score": 0.03076923
+            },
+            {
+              "rank": 5,
+              "chunk_id": "03-embedding-and-dense-index.md#0",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 0,
+              "score": 0.02963126
+            },
+            {
+              "rank": 6,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 0.02943723
+            },
+            {
+              "rank": 7,
+              "chunk_id": "03-embedding-and-dense-index.md#1",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 1,
+              "score": 0.02923602
+            },
+            {
+              "rank": 8,
+              "chunk_id": "02-retrieval-and-chunking.md#4",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 4,
+              "score": 0.02895833
+            },
+            {
+              "rank": 9,
+              "chunk_id": "04-publication-lifecycle.md#1",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 1,
+              "score": 0.02895833
+            },
+            {
+              "rank": 10,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.028624
+            }
+          ]
+        },
+        {
+          "query_id": "boundary-hybrid-winner",
+          "category": "boundary",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "02-retrieval-and-chunking.md#3",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 3,
+              "score": 0.03278689
+            },
+            {
+              "rank": 2,
+              "chunk_id": "02-retrieval-and-chunking.md#1",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 1,
+              "score": 0.03200205
+            },
+            {
+              "rank": 3,
+              "chunk_id": "03-embedding-and-dense-index.md#3",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 3,
+              "score": 0.03102453
+            },
+            {
+              "rank": 4,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.02991071
+            },
+            {
+              "rank": 5,
+              "chunk_id": "06-configuration-and-deployment.md#1",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 1,
+              "score": 0.02941813
+            },
+            {
+              "rank": 6,
+              "chunk_id": "03-embedding-and-dense-index.md#2",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 2,
+              "score": 0.028624
+            },
+            {
+              "rank": 7,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 0.02830941
+            },
+            {
+              "rank": 8,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 0.0282194
+            },
+            {
+              "rank": 9,
+              "chunk_id": "02-retrieval-and-chunking.md#0",
+              "document": "02-retrieval-and-chunking.md",
+              "chunk_index": 0,
+              "score": 0.02777778
+            },
+            {
+              "rank": 10,
+              "chunk_id": "06-configuration-and-deployment.md#0",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 0,
+              "score": 0.02668564
+            }
+          ]
+        },
+        {
+          "query_id": "boundary-production-ports",
+          "category": "boundary",
+          "candidates": [
+            {
+              "rank": 1,
+              "chunk_id": "06-configuration-and-deployment.md#1",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 1,
+              "score": 0.03252247
+            },
+            {
+              "rank": 2,
+              "chunk_id": "06-configuration-and-deployment.md#0",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 0,
+              "score": 0.03125763
+            },
+            {
+              "rank": 3,
+              "chunk_id": "06-configuration-and-deployment.md#2",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 2,
+              "score": 0.03007689
+            },
+            {
+              "rank": 4,
+              "chunk_id": "01-product-overview.md#2",
+              "document": "01-product-overview.md",
+              "chunk_index": 2,
+              "score": 0.02932363
+            },
+            {
+              "rank": 5,
+              "chunk_id": "04-publication-lifecycle.md#1",
+              "document": "04-publication-lifecycle.md",
+              "chunk_index": 1,
+              "score": 0.02869353
+            },
+            {
+              "rank": 6,
+              "chunk_id": "03-embedding-and-dense-index.md#2",
+              "document": "03-embedding-and-dense-index.md",
+              "chunk_index": 2,
+              "score": 0.02862903
+            },
+            {
+              "rank": 7,
+              "chunk_id": "01-product-overview.md#4",
+              "document": "01-product-overview.md",
+              "chunk_index": 4,
+              "score": 0.01639344
+            },
+            {
+              "rank": 8,
+              "chunk_id": "01-product-overview.md#1",
+              "document": "01-product-overview.md",
+              "chunk_index": 1,
+              "score": 0.015625
+            },
+            {
+              "rank": 9,
+              "chunk_id": "01-product-overview.md#0",
+              "document": "01-product-overview.md",
+              "chunk_index": 0,
+              "score": 0.01538462
+            },
+            {
+              "rank": 10,
+              "chunk_id": "06-configuration-and-deployment.md#3",
+              "document": "06-configuration-and-deployment.md",
+              "chunk_index": 3,
+              "score": 0.01515152
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

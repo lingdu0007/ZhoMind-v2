@@ -1,0 +1,23 @@
+{$DEPLOY_CADDY_SITE_ADDRESS} {
+    encode zstd gzip
+
+    header {
+        -Server
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    }
+
+    @api path_regexp api ^/api/(.*)$
+    handle @api {
+        rewrite @api /api/v1/{re.api.1}
+        reverse_proxy backend:8000
+    }
+
+    handle {
+        root * /srv
+        try_files {path} /index.html
+        file_server
+    }
+}

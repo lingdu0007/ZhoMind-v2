@@ -5,13 +5,17 @@ from typing import Protocol
 
 from pymilvus import MilvusClient
 
-from app.common.exceptions import AppError
 from app.common.config import Settings, get_settings
+from app.common.exceptions import AppError
 from app.extensions.langchain_embedding_providers import OpenAIEmbeddingProvider
 from app.extensions.registry import get_extension_registry
 from app.infra.milvus_document_index import MilvusDocumentIndex
 from app.model.document import DocumentChunk
-from app.rag.dense_contract import DenseEmbeddingContract, build_embedding_contract_fingerprint, build_milvus_collection_name
+from app.rag.dense_contract import (
+    DenseEmbeddingContract,
+    build_embedding_contract_fingerprint,
+    build_milvus_collection_name,
+)
 from app.rag.interfaces import EmbeddingProvider
 
 
@@ -140,10 +144,9 @@ class DenseIndexService:
 
     def _resolve_document_index(self) -> DocumentIndex | None:
         if self._document_index is None:
-            client_kwargs: dict[str, str] = {"uri": self._settings.milvus_uri}
-            if self._settings.milvus_token:
-                client_kwargs["token"] = self._settings.milvus_token
-            self._document_index = MilvusDocumentIndex(client=MilvusClient(**client_kwargs))
+            self._document_index = MilvusDocumentIndex(
+                client=MilvusClient(uri=self._settings.milvus_uri, token=self._settings.milvus_token or "")
+            )
         return self._document_index
 
     def _require_embedding_provider(self) -> EmbeddingProvider:

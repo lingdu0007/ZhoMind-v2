@@ -1,0 +1,167 @@
+{
+  "schema_version": "1.1.0",
+  "query_set_id": "evaluation-query-set",
+  "query_set_version": "1.0.0",
+  "queries": [
+    {
+      "query_id": "exact-qa-chunking-size",
+      "category": "exact_constraint",
+      "gold_count": 1,
+      "gold_matched_at": {
+        "3": 1,
+        "5": 1,
+        "10": 1
+      },
+      "first_gold_rank": 1
+    },
+    {
+      "query_id": "exact-dense-dim-default",
+      "category": "exact_constraint",
+      "gold_count": 1,
+      "gold_matched_at": {
+        "3": 1,
+        "5": 1,
+        "10": 1
+      },
+      "first_gold_rank": 1
+    },
+    {
+      "query_id": "exact-milvus-collection-prefix",
+      "category": "exact_constraint",
+      "gold_count": 1,
+      "gold_matched_at": {
+        "3": 1,
+        "5": 1,
+        "10": 1
+      },
+      "first_gold_rank": 1
+    },
+    {
+      "query_id": "exact-rrf-fusion-k",
+      "category": "exact_constraint",
+      "gold_count": 1,
+      "gold_matched_at": {
+        "3": 1,
+        "5": 1,
+        "10": 1
+      },
+      "first_gold_rank": 1
+    },
+    {
+      "query_id": "semantic-fallback-availability",
+      "category": "semantic_paraphrase",
+      "gold_count": 1,
+      "gold_matched_at": {
+        "3": 1,
+        "5": 1,
+        "10": 1
+      },
+      "first_gold_rank": 3
+    },
+    {
+      "query_id": "semantic-insufficient-evidence",
+      "category": "semantic_paraphrase",
+      "gold_count": 1,
+      "gold_matched_at": {
+        "3": 1,
+        "5": 1,
+        "10": 1
+      },
+      "first_gold_rank": 1
+    },
+    {
+      "query_id": "semantic-withdrawal-effect",
+      "category": "semantic_paraphrase",
+      "gold_count": 1,
+      "gold_matched_at": {
+        "3": 1,
+        "5": 1,
+        "10": 1
+      },
+      "first_gold_rank": 1
+    },
+    {
+      "query_id": "semantic-publication-required",
+      "category": "semantic_paraphrase",
+      "gold_count": 1,
+      "gold_matched_at": {
+        "3": 1,
+        "5": 1,
+        "10": 1
+      },
+      "first_gold_rank": 1
+    },
+    {
+      "query_id": "combined-contract-active",
+      "category": "combined_condition",
+      "gold_count": 2,
+      "gold_matched_at": {
+        "3": 2,
+        "5": 2,
+        "10": 2
+      },
+      "first_gold_rank": 1
+    },
+    {
+      "query_id": "combined-fallback-trace",
+      "category": "combined_condition",
+      "gold_count": 1,
+      "gold_matched_at": {
+        "3": 1,
+        "5": 1,
+        "10": 1
+      },
+      "first_gold_rank": 1
+    },
+    {
+      "query_id": "combined-knowledge-user-admission",
+      "category": "combined_condition",
+      "gold_count": 2,
+      "gold_matched_at": {
+        "3": 2,
+        "5": 2,
+        "10": 2
+      },
+      "first_gold_rank": 1
+    },
+    {
+      "query_id": "combined-answer-evidence-set",
+      "category": "combined_condition",
+      "gold_count": 2,
+      "gold_matched_at": {
+        "3": 2,
+        "5": 2,
+        "10": 2
+      },
+      "first_gold_rank": 1
+    },
+    {
+      "query_id": "boundary-lexical-is-bm25",
+      "category": "boundary",
+      "gold_count": 0,
+      "gold_matched_at": null,
+      "first_gold_rank": null
+    },
+    {
+      "query_id": "boundary-chunking-300",
+      "category": "boundary",
+      "gold_count": 0,
+      "gold_matched_at": null,
+      "first_gold_rank": null
+    },
+    {
+      "query_id": "boundary-hybrid-winner",
+      "category": "boundary",
+      "gold_count": 0,
+      "gold_matched_at": null,
+      "first_gold_rank": null
+    },
+    {
+      "query_id": "boundary-production-ports",
+      "category": "boundary",
+      "gold_count": 0,
+      "gold_matched_at": null,
+      "first_gold_rank": null
+    }
+  ]
+}

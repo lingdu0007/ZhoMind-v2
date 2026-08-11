@@ -193,8 +193,8 @@ def test_dense_retrieval_migration_backfills_legacy_rows() -> None:
     assert documents_row.dense_ready_generation == 0
     assert documents_row.dense_ready_fingerprint is None
     assert chunk_rows == [
-        ("chunk-1", hashlib.sha256("Alpha chunk".encode("utf-8")).hexdigest()),
-        ("chunk-2", hashlib.sha256("Beta chunk".encode("utf-8")).hexdigest()),
+        ("chunk-1", hashlib.sha256(b"Alpha chunk").hexdigest()),
+        ("chunk-2", hashlib.sha256(b"Beta chunk").hexdigest()),
     ]
 
 
@@ -255,4 +255,4 @@ def test_document_chunk_defaults_content_sha256_from_content() -> None:
         content="abc",
     )
 
-    assert chunk.content_sha256 == hashlib.sha256("abc".encode("utf-8")).hexdigest()
+    assert chunk.content_sha256 == hashlib.sha256(b"abc").hexdigest()

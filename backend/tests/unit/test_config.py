@@ -1,4 +1,3 @@
-import asyncio
 
 import pytest
 from pydantic import ValidationError
@@ -18,6 +17,9 @@ def test_settings_defaults() -> None:
     assert settings.api_v1_prefix == "/api/v1"
     assert settings.rag_graph_alias == "default_v1"
     assert settings.rag_default_llm_provider == "chat-default-llm"
+    assert settings.runtime_retrieval_top_k == 5
+    assert settings.runtime_answer_evidence_max_items == 3
+    assert settings.runtime_answer_evidence_max_chars_per_source == 160
 
 
 def test_ok_response_shape() -> None:
@@ -45,6 +47,8 @@ def test_settings_rag_fields_from_env_aliases() -> None:
         RAG_TOOL_MAX_PARALLEL=4,
         RAG_TOOL_TIMEOUT_MS=12000,
         RAG_DEFAULT_LLM_PROVIDER="provider-x",
+        RUNTIME_ANSWER_EVIDENCE_MAX_ITEMS=4,
+        RUNTIME_ANSWER_EVIDENCE_MAX_CHARS_PER_SOURCE=240,
     )
     assert settings.rag_graph_alias == "experimental_graph"
     assert settings.rag_enable_tools is True
@@ -52,6 +56,8 @@ def test_settings_rag_fields_from_env_aliases() -> None:
     assert settings.rag_tool_max_parallel == 4
     assert settings.rag_tool_timeout_ms == 12000
     assert settings.rag_default_llm_provider == "provider-x"
+    assert settings.runtime_answer_evidence_max_items == 4
+    assert settings.runtime_answer_evidence_max_chars_per_source == 240
 
 
 def test_document_pipeline_settings_aliases() -> None:
@@ -169,7 +175,6 @@ def test_settings_provider_fields_from_env_aliases() -> None:
         RERANK_BINDING_HOST="https://rerank.example.com/v1/rerank",
         RERANK_API_KEY="rerank-key",
         BM25_STATE_PATH="/tmp/bm25_state.json",
-        RAG_DISABLE_GATE=True,
     )
 
     assert settings.ark_api_key == "ark-key"
@@ -185,7 +190,7 @@ def test_settings_provider_fields_from_env_aliases() -> None:
     assert settings.rerank_binding_host == "https://rerank.example.com/v1/rerank"
     assert settings.rerank_api_key == "rerank-key"
     assert settings.bm25_state_path == "/tmp/bm25_state.json"
-    assert settings.rag_disable_gate is True
+    assert "rag_disable_gate" not in Settings.model_fields
 
 
 def test_registry_registers_ark_llm_from_env(monkeypatch) -> None:
@@ -203,13 +208,11 @@ def test_registry_registers_ark_llm_from_env(monkeypatch) -> None:
     get_extension_registry.cache_clear()
 
 
-def test_llm_provider_routing_settings(monkeypatch) -> None:
+def test_llm_provider_settings_exclude_fallback_routing(monkeypatch) -> None:
     get_settings.cache_clear()
     monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "ark")
-    monkeypatch.setenv("RAG_LLM_FALLBACK_PROVIDERS", "openai,anthropic")
-
     settings = get_settings()
 
     assert settings.rag_primary_llm_provider == "ark"
-    assert settings.rag_llm_fallback_providers == ["openai", "anthropic"]
+    assert "rag_llm_fallback_providers_raw" not in Settings.model_fields
     get_settings.cache_clear()
