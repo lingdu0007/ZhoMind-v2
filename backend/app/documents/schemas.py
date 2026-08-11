@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-ChunkStrategy = Literal["general", "paper", "qa"]
+ChunkStrategy = Literal["general", "paper", "qa", "agent"]
 
 
 class BuildDocumentRequest(BaseModel):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
@@ -13,7 +14,7 @@ from sqlalchemy.orm import undefer
 from app.common.exceptions import AppError
 from app.documents.chunker import chunk_document
 from app.documents.dense_index_service import DenseIndexResult, DenseIndexService
-from app.documents.parsers import parse_document
+from app.documents.parsers import parse_agent_entry, parse_document
 from app.documents.types import ChunkRecord, ParsedDocument
 from app.model.document import Document, DocumentChunk, DocumentJob
 
@@ -29,11 +30,13 @@ class DocumentBuildService:
         session: AsyncSession,
         *,
         parser: Callable[[str, bytes], ParsedDocument] = parse_document,
+        agent_parser: Callable[[str, bytes], ParsedDocument] = parse_agent_entry,
         chunker: Callable[[ParsedDocument], list[ChunkRecord]] | None = None,
         dense_index_service: DenseIndexService | None = None,
     ) -> None:
         self.session = session
         self._parser = parser
+        self._agent_parser = agent_parser
         self._chunker = chunker
         self._dense_index_service = dense_index_service or DenseIndexService()
         self._pending_dense_index_result: DenseIndexResult | None = None
@@ -60,7 +63,15 @@ class DocumentBuildService:
 
         try:
             self._pending_dense_index_result = None
-            parsed = self._parser(document.filename, self._resolve_content(document, content))
+            requested_strategy = job.requested_chunk_strategy or document.chunk_strategy
+            source_content = self._resolve_content(document, content)
+            parsed = (
+                self._agent_parser(document.filename, source_content)
+                if requested_strategy == "agent"
+                else self._parser(document.filename, source_content)
+            )
+            if requested_strategy == "agent":
+                await self._ensure_unique_entry_identity(document=document, parsed=parsed)
             if not await self._refresh_and_verify_owner(document=document, job=job):
                 await self._terminalize_non_owner(document=document, job=job)
                 return
@@ -72,7 +83,6 @@ class DocumentBuildService:
                 await self._terminalize_non_owner(document=document, job=job)
                 return
 
-            requested_strategy = job.requested_chunk_strategy or document.chunk_strategy
             chunker = self._chunker or (
                 lambda parsed_document: chunk_document(parsed_document, strategy=requested_strategy)
             )
@@ -121,6 +131,32 @@ class DocumentBuildService:
             raise
         finally:
             self._pending_dense_index_result = None
+
+    async def _ensure_unique_entry_identity(self, *, document: Document, parsed: ParsedDocument) -> None:
+        entry_id = parsed.metadata.get("entry_id")
+        if not isinstance(entry_id, str):
+            return
+        result = await self.session.execute(
+            select(DocumentChunk, Document)
+            .join(Document, DocumentChunk.document_id == Document.id)
+            .where(
+                Document.id != document.id,
+                Document.deleted_at.is_(None),
+                or_(
+                    DocumentChunk.generation == Document.published_generation,
+                    DocumentChunk.generation == Document.candidate_generation,
+                ),
+            )
+        )
+        for chunk, existing_document in result.all():
+            metadata = chunk.chunk_metadata if isinstance(chunk.chunk_metadata, dict) else {}
+            if metadata.get("entry_id") == entry_id:
+                raise AppError(
+                    status_code=409,
+                    code="AGENT_ENTRY_ID_CONFLICT",
+                    message="Stable Entry Identity is already used by another live document",
+                    detail={"entry_id": entry_id, "document_id": existing_document.id},
+                )
 
     async def _claim_generation(self, *, document: Document, job: DocumentJob) -> bool:
         generation = self._require_build_generation(job)
@@ -518,7 +554,10 @@ class DocumentBuildService:
     @staticmethod
     def _format_app_error(exc: AppError) -> str:
         if exc.code and exc.message:
-            return f"{exc.code}: {exc.message}"
+            message = f"{exc.code}: {exc.message}"
+            if exc.detail is not None:
+                message = f"{message} {json.dumps(exc.detail, ensure_ascii=False, sort_keys=True)}"
+            return message
         return exc.message or exc.code or "document build failed"
 
     @staticmethod

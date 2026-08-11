@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypeVar
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from redis.asyncio import Redis
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -24,7 +24,7 @@ from app.documents.dense_maintenance_service import DenseMaintenanceService
 from app.documents.job_dispatcher import DocumentJobDispatcher
 from app.documents.operator_service import DocumentsOperatorService
 from app.documents.parsers import parse_document
-from app.documents.schemas import BatchBuildRequest, BatchDeleteRequest, BuildDocumentRequest, DenseMaintenanceRequest
+from app.documents.schemas import BatchBuildRequest, BatchDeleteRequest, BuildDocumentRequest, ChunkStrategy, DenseMaintenanceRequest
 from app.extensions.registry import get_task_backend
 from app.infra.db import get_db_session
 from app.infra.redis import get_redis_client
@@ -213,6 +213,33 @@ async def _ensure_published_source_capacity(session: AsyncSession, *, document: 
             status_code=409,
             code="PUBLISHED_SOURCE_LIMIT_REACHED",
             message="the first-release published source limit has been reached",
+        )
+
+
+async def _ensure_agent_candidate_publishable(session: AsyncSession, *, document: Document, generation: int) -> None:
+    if document.candidate_chunk_strategy != "agent":
+        return
+    result = await session.execute(
+        select(DocumentChunk)
+        .where(DocumentChunk.document_id == document.id, DocumentChunk.generation == generation)
+        .order_by(DocumentChunk.chunk_index.asc())
+        .limit(1)
+    )
+    chunk = result.scalar_one_or_none()
+    metadata = chunk.chunk_metadata if chunk is not None and isinstance(chunk.chunk_metadata, dict) else {}
+    raw_sources = metadata.get("sources")
+    sources: list[object] = raw_sources if isinstance(raw_sources, list) else []
+    unavailable_sources = [
+        source.get("url")
+        for source in sources
+        if isinstance(source, dict) and source.get("availability") != "verified"
+    ]
+    if metadata.get("review_status") != "approved" or unavailable_sources:
+        raise AppError(
+            status_code=409,
+            code="AGENT_ENTRY_NOT_APPROVED",
+            message="Agent entry requires approved review status and verified sources before publication",
+            detail={"entry_id": metadata.get("entry_id")},
         )
 
 
@@ -590,6 +617,7 @@ async def migration_resume(
 @router.post("/upload")
 async def upload_document(
     file: UploadFile = File(...),
+    chunk_strategy: ChunkStrategy = Form("general"),
     _: object = Depends(require_admin),
     session: AsyncSession = Depends(get_db_session),
     redis: Redis = Depends(get_redis_client),
@@ -619,7 +647,7 @@ async def upload_document(
             file_size=len(content),
             source_content=content,
             status="pending",
-            chunk_strategy="general",
+            chunk_strategy=chunk_strategy,
         )
         session.add(document)
         await session.flush()
@@ -643,7 +671,7 @@ async def upload_document(
         session,
         document_id=document.id,
         build_generation=document.next_generation,
-        requested_chunk_strategy="general",
+        requested_chunk_strategy=chunk_strategy,
         status="queued",
         stage="queued",
         progress=0,
@@ -692,6 +720,7 @@ async def publish_document(
             detail={"document_id": document_id},
         )
     await _ensure_published_source_capacity(session, document=document)
+    await _ensure_agent_candidate_publishable(session, document=document, generation=generation)
 
     publish_result = await session.execute(
         Document.__table__.update()

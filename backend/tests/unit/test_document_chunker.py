@@ -60,3 +60,42 @@ def test_chunk_document_preserves_whitespace_at_boundaries(monkeypatch: pytest.M
     chunks = chunk_document(parsed, strategy=strategy)
 
     assert [chunk.content for chunk in chunks] == ["abc  ", "  def", "ef"]
+
+
+def test_agent_chunking_preserves_sections_code_blocks_and_entry_identity() -> None:
+    long_recommendation = "。".join([f"第 {index} 条建议包含可验证条件" for index in range(90)]) + "。"
+    code_block = "```python\ndef execute_once(key: str) -> None:\n    print(key)\n```"
+    parsed = ParsedDocument(
+        source_file="workflow.md",
+        file_type="md",
+        text=(
+            "# Decision Question\n\n什么时候使用 workflow？\n\n"
+            f"## Recommendation\n\n{long_recommendation}\n\n{code_block}\n\n"
+            "## Validation\n\n重复调用必须得到同一个结果。"
+        ),
+        metadata={
+            "entry_id": "pae-workflow-001",
+            "title": "Prefer deterministic workflows when the path is known",
+            "domain": "workflow-vs-agent",
+            "sources": [],
+        },
+    )
+
+    chunks = chunk_document(parsed, strategy="agent")
+
+    assert len(chunks) >= 4
+    assert all(chunk.metadata["strategy"] == "agent" for chunk in chunks)
+    assert all(chunk.metadata["entry_id"] == "pae-workflow-001" for chunk in chunks)
+    assert all(chunk.metadata["entry_title"] == parsed.metadata["title"] for chunk in chunks)
+    assert all(chunk.metadata["domain"] == "workflow-vs-agent" for chunk in chunks)
+    assert {chunk.metadata["section_id"] for chunk in chunks} == {
+        "decision-question",
+        "recommendation",
+        "validation",
+    }
+    assert all(
+        not ("# Decision Question" in chunk.content and "## Recommendation" in chunk.content)
+        for chunk in chunks
+    )
+    assert sum(code_block in chunk.content for chunk in chunks) == 1
+    assert all("```python" not in chunk.content or "```" in chunk.content.removeprefix("```python") for chunk in chunks)

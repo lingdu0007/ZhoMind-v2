@@ -8,6 +8,15 @@ from typing import Any
 _CITATION_METADATA_KEYS = (
     "title",
     "publication_version",
+    "entry_id",
+    "entry_title",
+    "domain",
+    "section_id",
+    "source_title",
+    "source_authority",
+    "source_url",
+    "source_version",
+    "review_date",
     "filename",
     "source_file",
     "source",
@@ -89,6 +98,9 @@ class AnswerEvidence:
             for key in _CITATION_METADATA_KEYS
             if isinstance(metadata.get(key), str) and str(metadata[key]).strip()
         }
+        if isinstance(metadata.get("entry_id"), str):
+            for legacy_location_key in ("filename", "source_file", "source", "document_name", "path"):
+                citation_metadata.pop(legacy_location_key, None)
         citation_metadata["title"] = title
         citation_metadata["publication_version"] = publication_version
         return cls(

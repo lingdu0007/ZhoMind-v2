@@ -374,7 +374,8 @@ class MixedModeDocumentRetrieverService:
         metadata = dict(chunk.chunk_metadata) if isinstance(chunk.chunk_metadata, dict) else {}
         if document is None:
             return metadata
-        metadata["title"] = document.filename
+        entry_title = metadata.get("entry_title")
+        metadata["title"] = entry_title if isinstance(entry_title, str) and entry_title.strip() else document.filename
         metadata["publication_version"] = f"v{document.published_generation}"
         return metadata
 
