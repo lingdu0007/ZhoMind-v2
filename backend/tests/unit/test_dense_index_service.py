@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from app.common.exceptions import AppError
 from app.common.config import Settings, get_settings
+from app.common.exceptions import AppError
 from app.documents.dense_index_service import DenseIndexResult, DenseIndexService
 from app.extensions.langchain_embedding_providers import OpenAIEmbeddingProvider
 from app.extensions.registry import get_extension_registry
@@ -57,6 +57,18 @@ class _FakeDocumentIndex:
         return []
 
 
+class _FakeSearchIterator:
+    def __init__(self, pages: list[list[dict[str, object]]]) -> None:
+        self._pages = list(pages)
+        self.closed = False
+
+    def next(self):
+        return self._pages.pop(0) if self._pages else None
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class _FakeMilvusClient:
     def __init__(self) -> None:
         self.has_collection_result = True
@@ -70,6 +82,13 @@ class _FakeMilvusClient:
         self.delete_error: Exception | None = None
         self.search_calls: list[tuple[str, list[list[float]], int, str, list[str] | None]] = []
         self.search_result: list[list[dict[str, object]]] = [[{"id": "row-1", "distance": 0.1}]]
+        self.search_iterator_calls: list[dict[str, object]] = []
+        self.search_iterator_result = _FakeSearchIterator(
+            [
+                [{"id": "row-1", "distance": 0.1}],
+                [{"id": "row-2", "distance": 0.2}],
+            ]
+        )
 
     def has_collection(self, collection_name: str) -> bool:
         self.has_collection_calls.append(collection_name)
@@ -99,6 +118,10 @@ class _FakeMilvusClient:
         assert isinstance(data, list)
         self.search_calls.append((collection_name, data, limit, filter, output_fields))
         return self.search_result
+
+    def search_iterator(self, **kwargs):
+        self.search_iterator_calls.append(kwargs)
+        return self.search_iterator_result
 
 
 def _dense_settings(**overrides: object) -> Settings:
@@ -448,6 +471,41 @@ def test_milvus_document_index_search_returns_first_result_page() -> None:
                 ["document_id", "generation"],
             )
         ]
+
+    asyncio.run(_run())
+
+
+def test_milvus_document_index_search_batches_exhausts_and_closes_iterator() -> None:
+    async def _run() -> None:
+        client = _FakeMilvusClient()
+        index = MilvusDocumentIndex(client=client)
+
+        pages = [
+            page
+            async for page in index.search_batches(
+                collection_name="document_chunks_fp",
+                vector=[0.1, 0.2, 0.3],
+                batch_size=20,
+                filter='document_id == "doc-1"',
+                output_fields=["document_id", "generation"],
+            )
+        ]
+
+        assert pages == [
+            [{"id": "row-1", "distance": 0.1}],
+            [{"id": "row-2", "distance": 0.2}],
+        ]
+        assert client.search_iterator_calls == [
+            {
+                "collection_name": "document_chunks_fp",
+                "data": [[0.1, 0.2, 0.3]],
+                "batch_size": 20,
+                "filter": 'document_id == "doc-1"',
+                "limit": -1,
+                "output_fields": ["document_id", "generation"],
+            }
+        ]
+        assert client.search_iterator_result.closed is True
 
     asyncio.run(_run())
 

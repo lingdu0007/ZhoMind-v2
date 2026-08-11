@@ -1,4 +1,4 @@
-import http, { resolveApiBaseURL } from './http';
+import http, { notifyAuthInvalid, resolveApiBaseURL } from './http';
 import { createSSEParser, normalizeSSEFrame } from './sse';
 
 const unwrapData = (payload) => payload?.data ?? payload;
@@ -51,6 +51,10 @@ export const apiAdapter = {
     const { data } = await http.post(`/documents/${encodeURIComponent(documentId)}/build`, payload);
     return unwrapData(data);
   },
+  async publishDocument(documentId) {
+    const { data } = await http.post(`/documents/${encodeURIComponent(documentId)}/publish`);
+    return unwrapData(data);
+  },
   async batchBuildDocuments(payload) {
     const { data } = await http.post('/documents/batch-build', payload);
     return unwrapData(data);
@@ -80,6 +84,20 @@ export const apiAdapter = {
   async cancelDocumentJob(jobId) {
     const { data } = await http.post(`/documents/jobs/${encodeURIComponent(jobId)}/cancel`);
     return unwrapData(data);
+  },
+
+  // System Settings (admin, application-gated)
+  async getSystemSettingsDraft() {
+    const { data } = await http.get('/settings/draft');
+    return unwrapData(data);
+  },
+  async saveSystemSettingsDraft(payload) {
+    const { data } = await http.put('/settings/draft', payload);
+    return unwrapData(data);
+  },
+  async applySystemSettingsVersion(version) {
+    const { data } = await http.post('/settings/apply', { version });
+    return unwrapData(data);
   }
 };
 
@@ -97,6 +115,7 @@ export const streamChat = async ({ message, session_id, signal, token }, handler
   });
 
   if (!response.ok || !response.body) {
+    if (response.status === 401) notifyAuthInvalid();
     let messageText = `流式请求失败: ${response.status}`;
     let code = '';
     let requestId = '';
@@ -138,6 +157,16 @@ export const streamChat = async ({ message, session_id, signal, token }, handler
 
     if (event.type === 'content') {
       handlers.onContent?.(event.content || event.delta || '');
+      return;
+    }
+
+    if (event.type === 'evidence_summary') {
+      handlers.onEvidenceSummary?.(event.evidence_summary);
+      return;
+    }
+
+    if (event.type === 'retrieval_diagnostics') {
+      handlers.onRetrievalDiagnostics?.(event.retrieval_diagnostics);
       return;
     }
 

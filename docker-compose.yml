@@ -2,14 +2,13 @@ version: '3.5'
 
 services:
   postgres:
-    container_name: zhomind-postgres
     image: postgres:15
     environment:
       POSTGRES_DB: zhomind_app
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/postgres:/var/lib/postgresql/data
     healthcheck:
@@ -19,11 +18,10 @@ services:
       retries: 10
 
   redis:
-    container_name: zhomind-redis
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
     ports:
-      - "6379:6379"
+      - "${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/redis:/data
     healthcheck:
@@ -33,7 +31,6 @@ services:
       retries: 10
 
   etcd:
-    container_name: zhomind-etcd
     image: quay.io/coreos/etcd:v3.5.18
     environment:
       - ETCD_AUTO_COMPACTION_MODE=revision
@@ -50,14 +47,13 @@ services:
       retries: 3
 
   minio:
-    container_name: zhomind-minio
     image: minio/minio:RELEASE.2024-05-28T17-19-04Z
     environment:
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
     ports:
-      - "9001:9001"
-      - "9000:9000"
+      - "${MINIO_CONSOLE_HOST_PORT:-9001}:9001"
+      - "${MINIO_API_HOST_PORT:-9000}:9000"
     volumes:
       - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/minio:/minio_data
     command: minio server /minio_data --console-address ":9001"
@@ -68,7 +64,6 @@ services:
       retries: 3
 
   milvus:
-    container_name: zhomind-milvus
     image: milvusdb/milvus:v2.5.14
     command: ["milvus", "run", "standalone"]
     security_opt:
@@ -86,20 +81,19 @@ services:
       timeout: 20s
       retries: 3
     ports:
-      - "19530:19530"
-      - "9091:9091"
+      - "${MILVUS_HOST_PORT:-19530}:19530"
+      - "${MILVUS_HEALTH_HOST_PORT:-9091}:9091"
     depends_on:
       - etcd
 
   backend:
-    container_name: zhomind-backend
     build:
       context: ./backend
     env_file:
       - ./backend/.env
     command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
     ports:
-      - "8000:8000"
+      - "${BACKEND_HOST_PORT:-8000}:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -109,18 +103,11 @@ services:
         condition: service_started
 
   attu:
-    container_name: zhomind-attu
     image: zilliz/attu:v2.5.11
     environment:
       - MILVUS_URL=milvus:19530
       - PORT=3000
     ports:
-      - "8080:3000"
+      - "${ATTU_HOST_PORT:-8080}:3000"
     depends_on:
       - milvus
-    networks:
-      - default
-
-networks:
-  default:
-    name: zhomind

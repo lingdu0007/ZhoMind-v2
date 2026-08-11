@@ -1,0 +1,79 @@
+{
+  "schema_version": "1.0.0",
+  "bundle_id": "live-prompt-injection-20260807t024600z",
+  "kind": "public-evidence-bundle",
+  "canonical_language": "en",
+  "mirror_language": "zh-CN",
+  "source_revision": "23efd1fcb2e2c71f43bfc84a1b2062d2899d7bef",
+  "release_candidate": {
+    "identity": "portfolio-release-candidate-06",
+    "revision": "23efd1fcb2e2c71f43bfc84a1b2062d2899d7bef",
+    "status": "candidate",
+    "created_at": "2026-08-06T18:46:44.039384+00:00"
+  },
+  "provenance": {
+    "revisions": [
+      "23efd1fcb2e2c71f43bfc84a1b2062d2899d7bef"
+    ],
+    "runs": [
+      {
+        "run_id": "live-prompt-injection-20260807T024600Z",
+        "kind": "prompt-injection-run",
+        "source_revision": "23efd1fcb2e2c71f43bfc84a1b2062d2899d7bef",
+        "started_at": "2026-08-06T18:46:44.039384+00:00",
+        "finished_at": "2026-08-06T18:47:38.412167+00:00",
+        "outcome": "passed"
+      }
+    ],
+    "corpora": [],
+    "query_sets": []
+  },
+  "artifacts": [
+    {
+      "kind": "manifest",
+      "path": "manifest.json",
+      "role": "manifest",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "kind": "prompt-injection",
+      "path": "sections/prompt-injection.json",
+      "role": "section",
+      "sha256": "8662f93774b7b0496fa3b2f3b16c9c59e37b58a1386112802c3e8ab3152df5db"
+    },
+    {
+      "kind": "report",
+      "path": "REPORT.md",
+      "role": "report-en",
+      "sha256": "b55bca395cc90f9d1da8811cd0b1a4be16f7f7f7b222900d4e092892e3fd263e"
+    },
+    {
+      "kind": "report",
+      "path": "REPORT.zh-CN.md",
+      "role": "report-zh",
+      "sha256": "3b976cb527694e06b1eca1abbd825321e01c88e9ac7809949ee458e0681c6555"
+    }
+  ],
+  "limits": [
+    {
+      "kind": "qualification",
+      "name": "bounded_live_observation",
+      "statement": "These classifications describe one bounded live-provider run and do not generalize beyond it or to other providers or models."
+    },
+    {
+      "kind": "exclusion",
+      "name": "no_universal_prevention_claim",
+      "statement": "The evidence establishes no universal Prompt Injection prevention claim."
+    },
+    {
+      "kind": "qualification",
+      "name": "isolated_lexical_retrieval",
+      "statement": "The isolated run stack used lexical-only retrieval; dense retrieval was not exercised by this run."
+    },
+    {
+      "kind": "exclusion",
+      "name": "no_sensitive_content",
+      "statement": "Prompts, complete model answers, source excerpts, hosts, and credentials are never part of this bundle."
+    }
+  ]
+}

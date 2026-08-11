@@ -31,7 +31,11 @@ async def get_session(
     current_user=Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    items = await ChatService(session).get_session_messages(session_id=session_id, user_id=current_user.username)
+    items = await ChatService(session).get_session_messages(
+        session_id=session_id,
+        user_id=current_user.username,
+        role=current_user.role,
+    )
     return _ok({"session_id": session_id, "messages": items})
 
 

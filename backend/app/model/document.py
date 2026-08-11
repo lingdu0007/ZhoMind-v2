@@ -1,6 +1,6 @@
-import uuid
-from datetime import datetime, timezone
 import hashlib
+import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import JSON, DateTime, Index, Integer, LargeBinary, String, Text, UniqueConstraint, event, text
 from sqlalchemy.orm import Mapped, mapped_column, validates
@@ -37,15 +37,20 @@ class Document(Base):
     chunk_strategy: Mapped[str] = mapped_column(String(32), nullable=False, default="general")
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     published_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    candidate_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    candidate_chunk_strategy: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    candidate_chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     dense_ready_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     dense_ready_fingerprint: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    candidate_dense_ready_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    candidate_dense_ready_fingerprint: Mapped[str | None] = mapped_column(String(128), nullable=True)
     next_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     latest_requested_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     active_build_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
     active_build_job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     active_build_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
 
 
 class DocumentJob(Base):
@@ -63,8 +68,8 @@ class DocumentJob(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
     )
 
 

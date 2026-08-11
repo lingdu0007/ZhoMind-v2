@@ -1,12 +1,13 @@
 from typing import TypedDict
 
-from app.rag.interfaces import LlmProvider, RelevanceJudge, Reranker, RetrieveResult, Retriever
-
-
-class ProviderExecError(TypedDict):
-    code: str
-    message: str
-    type: str
+from app.rag.interfaces import (
+    LlmProvider,
+    ProviderExecError,
+    RelevanceJudge,
+    Reranker,
+    Retriever,
+    RetrieveResult,
+)
 
 
 class ProviderExecDetail(TypedDict):

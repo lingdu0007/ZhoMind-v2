@@ -1,5 +1,5 @@
-from datetime import datetime, timedelta, timezone
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -24,7 +24,7 @@ def build_auth_session_key(subject: str, jti: str) -> str:
 
 def create_access_token(subject: str, role: str) -> str:
     settings = get_settings()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expire_at = now + timedelta(minutes=settings.jwt_expire_minutes)
     payload = {
         "sub": subject,

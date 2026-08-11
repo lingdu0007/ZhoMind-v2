@@ -1,22 +1,67 @@
 from __future__ import annotations
 
 import re
+from time import perf_counter
 from typing import Any
 
+import jieba
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.common.config import Settings, get_settings
+from app.common.config import Settings
 from app.extensions.registry import get_extension_registry
 from app.infra.milvus_document_index import MilvusDocumentIndex
 from app.model.document import Document, DocumentChunk
-from app.rag.dense_contract import DenseEmbeddingContract, build_embedding_contract_fingerprint, build_milvus_collection_name
-from app.rag.interfaces import EmbeddingProvider, RetrieveResult
+from app.rag.dense_contract import (
+    DenseEmbeddingContract,
+    build_embedding_contract_fingerprint,
+    build_milvus_collection_name,
+)
+from app.rag.interfaces import EmbeddingProvider, ProviderExecError, RetrieveResult
+from app.settings.runtime import get_runtime_settings
 
 _DEFAULT_EMBEDDING_PROVIDER = "embedding-default"
+_ANSWER_EVIDENCE_QUERY_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "is",
+        "are",
+        "was",
+        "were",
+        "what",
+        "which",
+        "who",
+        "where",
+        "when",
+        "why",
+        "how",
+        "please",
+        "explain",
+        "describe",
+        "tell",
+        "about",
+        "based",
+        "according",
+        "请问",
+        "说明",
+        "解释",
+        "描述",
+        "回答",
+        "介绍",
+        "根据",
+        "资料",
+        "一下",
+        "什么",
+        "如何",
+        "怎么",
+        "为什么",
+    }
+)
 
 
-def _normalize_provider_error(exc: Exception) -> dict[str, str]:
+def _normalize_provider_error(exc: Exception) -> ProviderExecError:
     return {
         "code": "PROVIDER_EXEC_FAILED",
         "message": str(exc),
@@ -38,7 +83,7 @@ class MixedModeDocumentRetrieverService:
         dense_search_multiplier: int = 4,
     ) -> None:
         self._session = session
-        self._settings = settings or get_settings()
+        self._settings = settings or get_runtime_settings()
         self._embedding_provider = embedding_provider
         self._document_index = document_index
         self._candidate_limit = candidate_limit
@@ -66,11 +111,15 @@ class MixedModeDocumentRetrieverService:
         dense_candidates: list[dict[str, Any]] = []
         dense_items: list[dict[str, Any]] = []
         dense_query_failed = False
-        dense_provider_error: dict[str, str] | None = None
+        dense_provider_error: ProviderExecError | None = None
+        embedding_provider_ms = 0.0
 
         try:
-            dense_candidates = await self._dense_search(normalized_query, top_k=top_k, fingerprint=fingerprint)
-            dense_items = await self._hydrate_dense_hits(dense_candidates=dense_candidates, fingerprint=fingerprint)
+            dense_candidates, dense_items, embedding_provider_ms = await self._dense_search(
+                normalized_query,
+                top_k=top_k,
+                fingerprint=fingerprint,
+            )
         except Exception as exc:
             dense_candidates = []
             dense_items = []
@@ -96,10 +145,19 @@ class MixedModeDocumentRetrieverService:
             lexical_scope=lexical_scope,
             fallback_used=dense_query_failed,
             provider_error=dense_provider_error,
+            embedding_provider_ms=embedding_provider_ms,
         )
 
     def _tokenize(self, text: str) -> list[str]:
         return [item for item in re.split(r"[\s\W_]+", text.lower()) if len(item) >= 2]
+
+    def _complete_anchor_tokens(self, text: str) -> list[str]:
+        tokens: list[str] = []
+        for raw_token in jieba.cut(text):
+            for token in self._tokenize(raw_token):
+                if token not in _ANSWER_EVIDENCE_QUERY_STOPWORDS:
+                    tokens.append(token)
+        return tokens
 
     def _compact(self, text: str) -> str:
         return "".join(ch for ch in text.lower() if ch.isalnum())
@@ -133,6 +191,27 @@ class MixedModeDocumentRetrieverService:
         score += min(self._bigram_overlap(query_compact, content_compact), 6) * 0.8
         return score
 
+    def _has_lexical_anchor(self, query: str, content: str) -> bool:
+        query_norm = query.strip().lower()
+        content_norm = (content or "").strip().lower()
+        if not query_norm or not content_norm:
+            return False
+
+        query_compact = self._compact(query_norm)
+        content_compact = self._compact(content_norm)
+        if query_compact and query_compact in content_compact:
+            return True
+
+        query_tokens = self._complete_anchor_tokens(query_norm)
+        content_tokens = self._complete_anchor_tokens(content_norm)
+        if not query_tokens:
+            return False
+        if len(query_tokens) == 1:
+            return query_tokens[0] in content_tokens
+
+        content_pairs = set(zip(content_tokens, content_tokens[1:], strict=False))
+        return any(pair in content_pairs for pair in zip(query_tokens, query_tokens[1:], strict=False))
+
     async def _lexical_search(
         self,
         query: str,
@@ -141,7 +220,7 @@ class MixedModeDocumentRetrieverService:
         lexical_scope: str,
         fingerprint: str | None = None,
     ) -> list[dict[str, Any]]:
-        stmt = select(DocumentChunk).join(Document, DocumentChunk.document_id == Document.id).where(
+        stmt = select(DocumentChunk, Document).join(Document, DocumentChunk.document_id == Document.id).where(
             Document.deleted_at.is_(None),
             Document.published_generation > 0,
             DocumentChunk.generation == Document.published_generation,
@@ -158,12 +237,13 @@ class MixedModeDocumentRetrieverService:
             stmt = stmt.limit(self._candidate_limit)
 
         result = await self._session.execute(stmt)
-        candidates = list(result.scalars().all())
+        candidates = list(result.all())
 
         ranked: list[dict[str, Any]] = []
-        for chunk in candidates:
+        for candidate in candidates:
+            chunk, document = self._chunk_and_document(candidate)
             score = self._score_chunk(query=query, content=chunk.content)
-            if score <= 0:
+            if score <= self._settings.runtime_score_threshold:
                 continue
             ranked.append(
                 {
@@ -173,8 +253,9 @@ class MixedModeDocumentRetrieverService:
                     "chunk_index": chunk.chunk_index,
                     "score": round(score, 4),
                     "content_preview": chunk.content[:160],
-                    "metadata": chunk.chunk_metadata,
+                    "metadata": self._citation_metadata(chunk=chunk, document=document),
                     "retrieval_source": "lexical",
+                    "answer_evidence_eligible": self._has_lexical_anchor(query, chunk.content),
                 }
             )
 
@@ -187,35 +268,57 @@ class MixedModeDocumentRetrieverService:
         *,
         top_k: int,
         fingerprint: str,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], float]:
         embedding_provider = self._resolve_embedding_provider()
         if embedding_provider is None:
             raise RuntimeError("dense embedding provider is unavailable")
 
+        embedding_started = perf_counter()
         vectors = await embedding_provider.embed([query])
+        embedding_provider_ms = round((perf_counter() - embedding_started) * 1000, 3)
         if not vectors:
-            return []
+            return [], [], embedding_provider_ms
 
-        search_results = await self._resolve_document_index().search(
-            collection_name=build_milvus_collection_name(fingerprint),
+        document_index = self._resolve_document_index()
+        collection_name = build_milvus_collection_name(fingerprint)
+        batch_size = max(top_k, top_k * self._dense_search_multiplier)
+        dense_candidates: list[dict[str, Any]] = []
+        dense_items: list[dict[str, Any]] = []
+
+        async for search_results in document_index.search_batches(
+            collection_name=collection_name,
             vector=vectors[0],
-            limit=max(top_k, top_k * self._dense_search_multiplier),
+            batch_size=batch_size,
             output_fields=["document_id", "generation", "chunk_index", "content_sha256"],
-        )
-        return [candidate for candidate in (self._normalize_dense_candidate(row) for row in search_results) if candidate is not None]
+        ):
+            dense_candidates.extend(
+                candidate
+                for candidate in (self._normalize_dense_candidate(row) for row in search_results)
+                if candidate is not None
+            )
+            dense_items = await self._hydrate_dense_hits(
+                dense_candidates=dense_candidates,
+                fingerprint=fingerprint,
+                query=query,
+            )
+            if len(dense_items) >= top_k:
+                break
+
+        return dense_candidates, dense_items, embedding_provider_ms
 
     async def _hydrate_dense_hits(
         self,
         *,
         dense_candidates: list[dict[str, Any]],
         fingerprint: str,
+        query: str,
     ) -> list[dict[str, Any]]:
         if not dense_candidates:
             return []
 
         document_ids = sorted({str(item["document_id"]) for item in dense_candidates})
         result = await self._session.execute(
-            select(DocumentChunk)
+            select(DocumentChunk, Document)
             .join(Document, DocumentChunk.document_id == Document.id)
             .where(
                 Document.id.in_(document_ids),
@@ -226,11 +329,11 @@ class MixedModeDocumentRetrieverService:
                 DocumentChunk.generation == Document.published_generation,
             )
         )
-        chunks = list(result.scalars().all())
-        chunk_map = {
-            (chunk.document_id, chunk.generation, chunk.chunk_index, chunk.content_sha256): chunk
-            for chunk in chunks
-        }
+        chunks = list(result.all())
+        chunk_map = {}
+        for candidate in chunks:
+            chunk, document = self._chunk_and_document(candidate)
+            chunk_map[(chunk.document_id, chunk.generation, chunk.chunk_index, chunk.content_sha256)] = (chunk, document)
 
         hydrated: list[dict[str, Any]] = []
         seen: set[tuple[str, int, int]] = set()
@@ -241,9 +344,10 @@ class MixedModeDocumentRetrieverService:
                 int(candidate["chunk_index"]),
                 str(candidate["content_sha256"]),
             )
-            chunk = chunk_map.get(key)
-            if chunk is None:
+            source = chunk_map.get(key)
+            if source is None:
                 continue
+            chunk, document = source
             merged_key = (chunk.document_id, chunk.generation, chunk.chunk_index)
             if merged_key in seen:
                 continue
@@ -256,11 +360,30 @@ class MixedModeDocumentRetrieverService:
                     "chunk_index": chunk.chunk_index,
                     "score": round(float(candidate.get("score") or 0.0), 4),
                     "content_preview": chunk.content[:160],
-                    "metadata": chunk.chunk_metadata,
+                    "metadata": self._citation_metadata(chunk=chunk, document=document),
                     "retrieval_source": "dense",
+                    # Dense nearest-neighbor results remain diagnostic candidates. Only
+                    # passages with a complete lexical anchor may enter answer evidence.
+                    "answer_evidence_eligible": self._has_lexical_anchor(query, chunk.content),
                 }
             )
         return hydrated
+
+    @staticmethod
+    def _citation_metadata(*, chunk: DocumentChunk, document: Document | None) -> dict[str, Any]:
+        metadata = dict(chunk.chunk_metadata) if isinstance(chunk.chunk_metadata, dict) else {}
+        if document is None:
+            return metadata
+        metadata["title"] = document.filename
+        metadata["publication_version"] = f"v{document.published_generation}"
+        return metadata
+
+    @staticmethod
+    def _chunk_and_document(row: Any) -> tuple[DocumentChunk, Document | None]:
+        if isinstance(row, DocumentChunk):
+            return row, None
+        chunk, document = row
+        return chunk, document
 
     def _merge_items(
         self,
@@ -307,14 +430,19 @@ class MixedModeDocumentRetrieverService:
         generation = payload.get("generation")
         chunk_index = payload.get("chunk_index")
         content_sha256 = payload.get("content_sha256")
-        if not all(item is not None for item in (document_id, generation, chunk_index, content_sha256)):
+        if (
+            not isinstance(document_id, (str, int))
+            or not isinstance(generation, (str, int))
+            or not isinstance(chunk_index, (str, int))
+            or not isinstance(content_sha256, str)
+        ):
             return None
 
         return {
             "document_id": str(document_id),
             "generation": int(generation),
             "chunk_index": int(chunk_index),
-            "content_sha256": str(content_sha256),
+            "content_sha256": content_sha256,
             "score": self._extract_dense_score(row),
         }
 

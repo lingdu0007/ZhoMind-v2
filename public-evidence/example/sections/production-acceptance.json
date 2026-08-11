@@ -1,0 +1,17 @@
+{
+  "section": "production-acceptance",
+  "schema_version": "1.0.0",
+  "run_ids": [
+    "example-run-20260805"
+  ],
+  "path": "/api/v1/chat",
+  "results": [
+    {
+      "case_id": "accept-normal-01",
+      "check": "normal_answer",
+      "outcome": "evidence_gated_answer",
+      "passed": true,
+      "limitations": []
+    }
+  ]
+}

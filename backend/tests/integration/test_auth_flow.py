@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.common.config import get_settings
 from app.common.security import build_auth_session_key, decode_access_token
 from app.infra.db import get_db_session
 from app.infra.redis import get_redis_client
@@ -45,18 +46,45 @@ def client(tmp_path) -> Generator[TestClient, None, None]:
 
     app.dependency_overrides[get_db_session] = override_get_db_session
     app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    original_session_factory = app.state.settings_session_factory
+    settings = get_settings()
+    original_bootstrap_username = settings.bootstrap_admin_username
+    original_bootstrap_password = settings.bootstrap_admin_password
+    settings.bootstrap_admin_username = "bootstrap-admin"
+    settings.bootstrap_admin_password = "bootstrap-password"
+    app.state.settings_session_factory = session_factory
     with TestClient(app) as test_client:
         test_client.app.state.test_redis = fake_redis
         yield test_client
     app.dependency_overrides.clear()
+    app.state.settings_session_factory = original_session_factory
+    settings.bootstrap_admin_username = original_bootstrap_username
+    settings.bootstrap_admin_password = original_bootstrap_password
     asyncio.run(engine.dispose())
 
 
-def test_register_login_me_flow(client: TestClient) -> None:
-    register_response = client.post(
-        "/api/v1/auth/register",
-        json={"username": "alice", "password": "secret-123", "role": "user"},
+def _bootstrap_headers(client: TestClient) -> dict[str, str]:
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"username": "bootstrap-admin", "password": "bootstrap-password"},
     )
+    assert response.status_code == 200
+    return {"Authorization": f"Bearer {response.json()['data']['access_token']}"}
+
+
+def _register_knowledge_user(client: TestClient, username: str) -> dict:
+    invitation = client.post("/api/v1/members/invitations", headers=_bootstrap_headers(client), json={})
+    assert invitation.status_code == 200
+    response = client.post(
+        "/api/v1/auth/register",
+        json={"username": username, "password": "secret-123", "invitation_code": invitation.json()["data"]["invitation_code"]},
+    )
+    assert response.status_code == 200
+    return response
+
+
+def test_register_login_me_flow(client: TestClient) -> None:
+    register_response = _register_knowledge_user(client, "alice")
     assert register_response.status_code == 200
     token = register_response.json()["data"]["access_token"]
     payload = decode_access_token(token)
@@ -71,17 +99,52 @@ def test_register_login_me_flow(client: TestClient) -> None:
     assert me_response.json()["data"]["username"] == "alice"
 
 
+def test_me_projects_the_enabled_system_settings_capability_for_administrators(client: TestClient, monkeypatch) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "system_settings_draft_enabled", True)
+    monkeypatch.setattr(settings, "system_settings_application_enabled", True)
+
+    user_response = _register_knowledge_user(client, "knowledge-user")
+    admin_login = client.post("/api/v1/auth/login", json={"username": "bootstrap-admin", "password": "bootstrap-password"})
+
+    user_me = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {user_response.json()['data']['access_token']}"})
+    admin_me = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {admin_login.json()['data']['access_token']}"})
+
+    assert user_me.json()["data"]["capabilities"] == {"system_settings": False}
+    assert admin_me.json()["data"]["capabilities"] == {"system_settings": True}
+
+
+@pytest.mark.parametrize(
+    ("draft_enabled", "application_enabled"),
+    [(False, False), (False, True), (True, False)],
+)
+def test_me_hides_system_settings_when_its_lifecycle_is_incomplete(
+    client: TestClient,
+    monkeypatch,
+    draft_enabled: bool,
+    application_enabled: bool,
+) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "system_settings_draft_enabled", draft_enabled)
+    monkeypatch.setattr(settings, "system_settings_application_enabled", application_enabled)
+
+    registration = client.post("/api/v1/auth/login", json={"username": "bootstrap-admin", "password": "bootstrap-password"})
+    response = client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {registration.json()['data']['access_token']}"},
+    )
+
+    assert response.json()["data"]["capabilities"] == {"system_settings": False}
+
+
 def test_auth_routes_registered(client: TestClient) -> None:
-    assert client.post("/api/v1/auth/register", json={"username": "u", "password": "p"}).status_code != 404
+    assert client.post("/api/v1/auth/register", json={"username": "u", "password": "p", "invitation_code": "invalid"}).status_code != 404
     assert client.post("/api/v1/auth/login", json={"username": "u", "password": "p"}).status_code != 404
     assert client.get("/api/v1/auth/me").status_code != 404
 
 
 def test_me_rejects_when_redis_session_missing(client: TestClient) -> None:
-    register_response = client.post(
-        "/api/v1/auth/register",
-        json={"username": "bob", "password": "secret-123", "role": "user"},
-    )
+    register_response = _register_knowledge_user(client, "bob")
     assert register_response.status_code == 200
     token = register_response.json()["data"]["access_token"]
     payload = decode_access_token(token)

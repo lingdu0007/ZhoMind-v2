@@ -1,862 +1,1088 @@
 <template>
-  <section class="upload-page">
-    <div class="top-bar">
-      <h1>文档上传</h1>
-      <el-button v-if="authStore.isAdmin" class="btn-ghost" @click="refreshAll">刷新</el-button>
+  <section class="document-library" aria-labelledby="document-library-title">
+    <header class="document-library__header">
+      <div>
+        <p class="document-library__eyebrow">知识库运维</p>
+        <h1 id="document-library-title">文档库</h1>
+        <p class="document-library__description">查看已上传文档，并为新的资料创建索引构建任务。</p>
+      </div>
+      <button v-if="isDesktop" class="document-library__refresh" type="button" :disabled="loading || isBatchActionLoading" @click="loadDocuments">
+        <RefreshCw :size="16" :class="{ 'document-library__refresh-icon--spinning': loading }" aria-hidden="true" />
+        <span>{{ loading ? '正在刷新' : '刷新' }}</span>
+      </button>
+    </header>
+
+    <div v-if="!isDesktop" class="document-library__desktop-notice" role="status">
+      <Monitor :size="18" aria-hidden="true" />
+      <p>文档库当前仅支持桌面工作区。</p>
     </div>
 
-    <div v-if="!authStore.isLoggedIn" class="card notice">请先在聊天页登录。</div>
-    <div v-else-if="!authStore.isAdmin" class="card notice">仅管理员可操作文档管理功能。</div>
     <template v-else>
       <UploadPanel @uploaded="handleUploaded" />
 
-      <div class="stat-row">
-        <div class="stat-card" v-for="stat in stats" :key="stat.label">
-          <p class="stat-label">{{ stat.label }}</p>
-          <p class="stat-value">{{ stat.value }}</p>
+      <div v-if="uploadResult" class="document-library__upload-result" role="status">
+        <CircleCheck :size="18" aria-hidden="true" />
+        <div>
+          <p>已为 {{ uploadResult.filename }} 创建初始构建任务。</p>
+          <p class="document-library__identifiers">文档 ID：{{ uploadResult.document_id || '-' }}<br />构建任务 ID：{{ uploadResult.job_id || '-' }}</p>
         </div>
-      </div>
-
-      <div class="card table-card">
-        <div class="table-header">
-          <h3>构建任务（最近）</h3>
-          <el-button class="btn-ghost" @click="loadJobs">刷新任务</el-button>
-        </div>
-
-        <div class="job-table-wrap">
-          <el-table class="table-minimal" :data="jobs" empty-text="暂无任务">
-            <el-table-column prop="job_id" label="任务ID" min-width="220" show-overflow-tooltip />
-            <el-table-column prop="document_id" label="文档ID" min-width="220" show-overflow-tooltip />
-            <el-table-column label="状态" width="120">
-              <template #default="scope">
-                <el-tag size="small" :type="jobStatusMeta(scope.row.status).type">
-                  {{ jobStatusMeta(scope.row.status).label }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="阶段" width="140">
-              <template #default="scope">
-                {{ jobStageLabel(scope.row.stage) }}
-              </template>
-            </el-table-column>
-            <el-table-column label="进度" width="180">
-              <template #default="scope">
-                <el-progress :percentage="Number(scope.row.progress || 0)" :stroke-width="10" />
-              </template>
-            </el-table-column>
-            <el-table-column label="信息" min-width="180" show-overflow-tooltip>
-              <template #default="scope">
-                {{ scope.row.message || '-' }}
-              </template>
-            </el-table-column>
-            <el-table-column label="更新时间" width="200" show-overflow-tooltip>
-              <template #default="scope">
-                {{ formatTime(scope.row.updated_at) }}
-              </template>
-            </el-table-column>
-            <el-table-column label="操作" width="120">
-              <template #default="scope">
-                <el-button
-                  v-if="canCancelJob(scope.row)"
-                  link
-                  type="warning"
-                  :loading="Boolean(jobCancelLoadingMap[scope.row.job_id])"
-                  @click="cancelJob(scope.row)"
-                >
-                  取消任务
-                </el-button>
-                <span v-else>-</span>
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
-      </div>
-
-      <div class="card table-card">
-        <div class="table-header">
-          <h3>文档列表</h3>
-          <div class="table-tools">
-            <el-input v-model="keyword" class="search-input" placeholder="搜索文件" clearable />
-            <el-select v-model="batchChunkStrategy" placeholder="批量分块策略" style="width: 140px">
-              <el-option v-for="item in chunkStrategyOptions" :key="item.value" :label="item.label" :value="item.value" />
-            </el-select>
-            <el-button
-              class="btn-ghost"
-              :disabled="!selectedDocIds.length"
-              :loading="batchBuildLoading"
-              @click="handleBatchBuild"
-            >
-              批量分块({{ selectedDocIds.length }})
-            </el-button>
-            <el-button
-              class="btn-ghost danger-btn"
-              :disabled="!selectedDocIds.length"
-              :loading="batchDeleteLoading"
-              @click="handleBatchDelete"
-            >
-              批量删除({{ selectedDocIds.length }})
-            </el-button>
-            <el-button class="btn-ghost" @click="loadDocs">刷新</el-button>
-          </div>
-        </div>
-        <el-table
-          ref="docsTableRef"
-          class="table-minimal"
-          :data="filteredDocs"
-          v-loading="docsLoading"
-          row-key="document_id"
-          @selection-change="handleSelectionChange"
+        <button
+          v-if="uploadResult.job_id"
+          type="button"
+          :aria-label="`查看构建任务 ${uploadResult.job_id}`"
+          @click="openJob(uploadResult.job_id)"
         >
-          <el-table-column type="selection" width="52" :reserve-selection="true" />
-          <el-table-column prop="filename" label="文件名" min-width="220" />
-          <el-table-column prop="file_type" label="类型" width="120" />
-          <el-table-column label="大小" width="120">
-            <template #default="scope">
-              {{ formatFileSize(scope.row.file_size) }}
-            </template>
-          </el-table-column>
-          <el-table-column label="状态" width="120">
-            <template #default="scope">
-              <el-tag size="small" :type="documentStatusMeta(scope.row.status).type">
-                {{ documentStatusMeta(scope.row.status).label }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="分块策略" width="150">
-            <template #default="scope">
-              <el-select
-                size="small"
-                style="width: 120px"
-                :model-value="resolveDocumentStrategy(scope.row)"
-                @change="(value) => updateDocumentStrategy(scope.row.document_id, value)"
-              >
-                <el-option
-                  v-for="item in chunkStrategyOptions"
-                  :key="item.value"
-                  :label="item.label"
-                  :value="item.value"
-                />
-              </el-select>
-            </template>
-          </el-table-column>
-          <el-table-column prop="chunk_count" label="分块数" width="100" />
-          <el-table-column label="上传时间" width="200">
-            <template #default="scope">
-              {{ formatTime(scope.row.uploaded_at) }}
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="220" fixed="right">
-            <template #default="scope">
-              <el-button
-                link
-                type="primary"
-                :loading="Boolean(rowBuildLoadingMap[scope.row.document_id])"
-                @click="buildSingleDocument(scope.row)"
-              >
-                执行分块
-              </el-button>
-              <el-button
-                link
-                type="primary"
-                :disabled="scope.row.status !== 'ready'"
-                @click="openChunkDialog(scope.row)"
-              >
-                查看分块
-              </el-button>
-              <el-button
-                link
-                type="danger"
-                :loading="Boolean(rowDeleteLoadingMap[scope.row.document_id])"
-                @click="removeSingleDocument(scope.row)"
-              >
-                删除
-              </el-button>
-            </template>
-          </el-table-column>
-        </el-table>
+          查看构建任务
+        </button>
       </div>
 
-      <el-dialog
-        v-model="chunkDialog.visible"
-        title="分块结果"
-        width="72%"
-        :close-on-click-modal="false"
-        @closed="resetChunkDialog"
-      >
-        <div v-loading="chunkDialog.loading" class="chunk-dialog-body">
-          <div class="chunk-dialog-meta">
-            <span>文件：{{ chunkDialog.filename || '-' }}</span>
-            <span>文档ID：{{ chunkDialog.documentId || '-' }}</span>
-          </div>
+      <div class="document-library__controls" aria-label="文档库控制">
+        <label class="document-library__search" for="document-library-search">
+          <Search :size="16" aria-hidden="true" />
+          <span class="sr-only">按文件名搜索</span>
+          <input id="document-library-search" v-model="keyword" type="search" placeholder="按文件名搜索" />
+        </label>
+        <label class="document-library__filter" for="document-library-status">
+          <span>状态</span>
+          <select id="document-library-status" v-model="statusFilter" aria-label="按状态筛选">
+            <option v-for="option in statusFilterOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+          </select>
+        </label>
+        <p class="document-library__count" aria-live="polite">显示 {{ filteredDocuments.length }} 个文档</p>
+      </div>
 
-          <el-empty
-            v-if="!chunkDialog.loading && !chunkDialog.items.length"
-            description="暂无分块结果"
-            style="padding: 40px 0"
-          />
+      <div class="document-library__batch-controls" aria-label="批量文档操作">
+        <p class="document-library__selection-count" aria-live="polite">已选择 {{ selectedDocumentCount }} 个文档</p>
+        <button
+          type="button"
+          :disabled="!hasSelectedDocuments || isInventoryInteractionBlocked"
+          :aria-busy="batchAction === 'build'"
+          @click="openBatchRebuild"
+        >
+          <RefreshCw v-if="batchAction === 'build'" :size="15" class="document-library__refresh-icon--spinning" aria-hidden="true" />
+          <span>批量重新构建</span>
+        </button>
+        <button
+          type="button"
+          class="document-library__batch-delete"
+          :disabled="!hasSelectedDocuments || isInventoryInteractionBlocked"
+          :aria-busy="batchAction === 'delete'"
+          @click="confirmBatchDelete"
+        >
+          <RefreshCw v-if="batchAction === 'delete'" :size="15" class="document-library__refresh-icon--spinning" aria-hidden="true" />
+          <span>批量删除</span>
+        </button>
+      </div>
 
-          <div v-for="item in chunkDialog.items" :key="item.chunk_id" class="chunk-item">
-            <div class="chunk-item-header">
-              <span>Chunk #{{ item.chunk_index }}</span>
-              <span>{{ item.chunk_id }}</span>
-            </div>
-            <div class="chunk-item-row">
-              <strong>content</strong>
-              <p>{{ item.content || '-' }}</p>
-            </div>
-            <div class="chunk-item-row">
-              <strong>keywords</strong>
-              <p>{{ formatList(item.keywords) }}</p>
-            </div>
-            <div class="chunk-item-row">
-              <strong>generated_questions</strong>
-              <p>{{ formatList(item.generated_questions) }}</p>
-            </div>
-            <div class="chunk-item-row">
-              <strong>metadata</strong>
-              <pre>{{ formatMetadata(item.metadata) }}</pre>
-            </div>
-          </div>
-        </div>
+      <p v-if="listError" class="document-library__error" role="alert">
+        <span>{{ listError }}</span>
+        <button type="button" @click="loadDocuments">重新加载</button>
+      </p>
+      <p v-if="deleteSuccess" class="document-library__success" role="status">{{ deleteSuccess }}</p>
+      <p v-if="deleteError" class="document-library__error" role="alert">{{ deleteError }}</p>
+      <p v-if="batchError" class="document-library__error" role="alert">{{ batchError }}</p>
+      <div v-if="batchResult" class="document-library__batch-result" :class="`document-library__batch-result--${batchResult.tone}`" role="status">
+        <p>{{ batchResult.summary }}</p>
+        <button v-if="batchResult.hasJobs" type="button" @click="openIndexingJobs">前往构建任务</button>
+        <ul v-if="batchResult.failedItems.length">
+          <li v-for="failure in batchResult.failedItems" :key="`${failure.documentId}-${failure.message}`">
+            文档 {{ failure.label }}：{{ failure.message }}
+          </li>
+        </ul>
+      </div>
 
-        <template #footer>
-          <el-pagination
-            v-if="chunkDialog.total > 0"
-            background
-            layout="prev, pager, next, total"
-            :current-page="chunkDialog.page"
-            :page-size="chunkDialog.pageSize"
-            :total="chunkDialog.total"
-            @current-change="loadChunkPage"
-          />
-        </template>
-      </el-dialog>
+      <div class="document-library__table-wrap" :aria-busy="loading">
+        <table>
+          <caption class="sr-only">文档库列表</caption>
+          <thead>
+            <tr>
+              <th scope="col" class="document-library__selection-cell">
+                <input
+                  type="checkbox"
+                  aria-label="选择当前筛选的所有文档"
+                  :checked="areAllFilteredDocumentsSelected"
+                  :indeterminate="hasPartialFilteredSelection"
+                  :disabled="!filteredDocuments.length || isInventoryInteractionBlocked"
+                  @change="toggleFilteredDocumentSelection($event.target.checked)"
+                />
+              </th>
+              <th scope="col">文件名</th>
+              <th scope="col">类型</th>
+              <th scope="col">大小</th>
+              <th scope="col">状态</th>
+              <th scope="col">分块数</th>
+              <th scope="col">上传时间</th>
+              <th scope="col"><span class="sr-only">文档操作</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="loading && !documents.length">
+              <td colspan="8" class="document-library__state">正在加载文档库...</td>
+            </tr>
+            <tr v-else-if="!filteredDocuments.length">
+              <td colspan="8" class="document-library__state">{{ emptyStateText }}</td>
+            </tr>
+            <tr v-for="document in filteredDocuments" :key="document.document_id">
+              <td class="document-library__selection-cell">
+                <input
+                  type="checkbox"
+                  :aria-label="`选中文档 ${document.document_id}`"
+                  :checked="isDocumentSelected(document.document_id)"
+                  :disabled="isInventoryInteractionBlocked"
+                  @change="toggleDocumentSelection(document.document_id, $event.target.checked)"
+                />
+              </td>
+              <td class="document-library__filename">{{ document.filename || '-' }}</td>
+              <td>{{ formatFileType(document.file_type) }}</td>
+              <td class="document-library__numeric">{{ formatFileSize(document.file_size) }}</td>
+              <td>
+                <span class="document-library__status" :class="`document-library__status--${documentStatusMeta(document.status).tone}`">
+                  {{ documentStatusMeta(document.status).label }}
+                </span>
+                <div v-if="rebuildJobFor(document)" class="document-library__rebuild-status" role="status">
+                  <p>已创建重建任务 <span class="document-library__rebuild-job-id">{{ rebuildJobFor(document).jobId }}</span>。</p>
+                  <p v-if="rebuildJobFor(document).hasPublishedChunks">
+                    当前已发布版本的 {{ rebuildJobFor(document).publishedChunkCount }} 个分块仍可用于检索；候选分块尚未发布。
+                  </p>
+                  <p v-else>候选分块尚未发布，请等待构建任务完成后再查看。</p>
+                  <button
+                    type="button"
+                    :aria-label="`查看构建任务 ${rebuildJobFor(document).jobId}`"
+                    @click="openJob(rebuildJobFor(document).jobId)"
+                  >
+                    查看构建任务
+                  </button>
+                </div>
+                <div v-else-if="publishedContinuityMessage(document)" class="document-library__rebuild-status" role="status">
+                  <p>{{ publishedContinuityMessage(document) }}</p>
+                </div>
+              </td>
+              <td class="document-library__numeric">{{ formatChunkCount(document.chunk_count) }}</td>
+              <td class="document-library__timestamp">{{ formatTime(document.uploaded_at) }}</td>
+              <td class="document-library__action">
+                <button
+                  type="button"
+                  :aria-label="`查看文档 ${document.document_id} 的构建任务`"
+                  @click="openDocumentJobs(document.document_id)"
+                >
+                  查看任务
+                </button>
+                <button
+                  v-if="canInspectChunks(document)"
+                  type="button"
+                  class="document-library__icon-action"
+                  :aria-label="`查看文档 ${document.document_id} 的候选或已发布分块`"
+                  :title="'查看候选或已发布分块'"
+                  @click="inspectChunks(document)"
+                >
+                  <FileSearch :size="16" aria-hidden="true" />
+                </button>
+                <button
+                  v-if="canPublish(document)"
+                  type="button"
+                  class="document-library__icon-action"
+                  :aria-label="`发布候选构建 ${document.document_id}`"
+                  title="发布候选构建"
+                  :disabled="Boolean(publicationLoading[document.document_id])"
+                  @click="publishDocument(document)"
+                >
+                  <RefreshCw
+                    v-if="publicationLoading[document.document_id]"
+                    :size="16"
+                    class="document-library__refresh-icon--spinning"
+                    aria-hidden="true"
+                  />
+                  <CircleCheck v-else :size="16" aria-hidden="true" />
+                </button>
+                <button
+                  v-if="canRebuild(document)"
+                  type="button"
+                  class="document-library__icon-action"
+                  :aria-label="`重新构建文档 ${document.document_id}`"
+                  :title="'重新构建文档'"
+                  @click="openRebuild(document)"
+                >
+                  <RefreshCw :size="16" aria-hidden="true" />
+                </button>
+                <button
+                  v-if="canDelete(document)"
+                  type="button"
+                  class="document-library__icon-action document-library__icon-action--danger"
+                  :aria-label="`删除文档 ${document.document_id}`"
+                  :title="'删除文档'"
+                  :disabled="Boolean(deletionLoading[document.document_id])"
+                  @click="deleteDocument(document)"
+                >
+                  <RefreshCw
+                    v-if="deletionLoading[document.document_id]"
+                    :size="16"
+                    class="document-library__refresh-icon--spinning"
+                    aria-hidden="true"
+                  />
+                  <Trash2 v-else :size="16" aria-hidden="true" />
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </template>
+
+    <el-dialog
+      v-model="chunksDialogVisible"
+      class="document-library__chunks-dialog"
+      width="min(92vw, 860px)"
+      :close-on-click-modal="false"
+      @closed="resetChunkInspection"
+    >
+      <template #header>
+        <div>
+          <p class="document-library__dialog-eyebrow">{{ inspectedGenerationLabel }}</p>
+          <h2>{{ inspectedGenerationLabel }}分块</h2>
+        </div>
+      </template>
+
+      <div v-if="inspectedDocument" class="document-library__chunks" :aria-busy="chunksLoading">
+        <p class="document-library__chunks-identity">文档 ID：{{ inspectedDocument.document_id }}</p>
+        <p class="document-library__chunks-name">{{ inspectedDocument.filename }}</p>
+
+        <p v-if="chunksLoading" class="document-library__chunks-state" role="status">正在加载{{ inspectedGenerationLabel }}分块...</p>
+        <div v-else-if="chunkInspectionError" class="document-library__chunks-error" role="alert">
+          <p>{{ chunkInspectionError }}</p>
+          <button type="button" @click="loadChunks(chunkPagination.page)">重新检查</button>
+        </div>
+        <p v-else-if="!chunks.length" class="document-library__chunks-state" role="status">
+          当前{{ inspectedGenerationLabel }}没有可展示的分块。
+        </p>
+        <ol v-else class="document-library__chunk-list">
+          <li v-for="chunk in chunks" :key="chunk.chunk_id" class="document-library__chunk">
+            <header>
+              <span>分块 {{ Number(chunk.chunk_index) + 1 }}</span>
+              <span class="document-library__chunk-id">{{ chunk.chunk_id }}</span>
+            </header>
+            <p class="document-library__chunk-content">{{ chunk.content || '（分块内容为空）' }}</p>
+            <p v-if="chunk.keywords?.length" class="document-library__chunk-detail">关键词：{{ chunk.keywords.join('、') }}</p>
+            <p v-if="chunk.generated_questions?.length" class="document-library__chunk-detail">
+              生成问题：{{ chunk.generated_questions.join('、') }}
+            </p>
+            <dl v-if="metadataEntries(chunk.metadata).length" class="document-library__chunk-metadata">
+              <template v-for="entry in metadataEntries(chunk.metadata)" :key="entry.key">
+                <dt>{{ entry.key }}</dt>
+                <dd>{{ entry.value }}</dd>
+              </template>
+            </dl>
+          </li>
+        </ol>
+
+        <footer v-if="chunkTotalPages > 1 && !chunksLoading && !chunkInspectionError" class="document-library__chunk-pagination">
+          <button type="button" aria-label="上一页" :disabled="chunkPagination.page <= 1" @click="loadChunks(chunkPagination.page - 1)">
+            <ChevronLeft :size="16" aria-hidden="true" />
+          </button>
+          <span>第 {{ chunkPagination.page }} / {{ chunkTotalPages }} 页</span>
+          <button
+            type="button"
+            aria-label="下一页"
+            :disabled="chunkPagination.page >= chunkTotalPages"
+            @click="loadChunks(chunkPagination.page + 1)"
+          >
+            <ChevronRight :size="16" aria-hidden="true" />
+          </button>
+        </footer>
+      </div>
+    </el-dialog>
+
+    <el-dialog
+      v-model="rebuildDialogVisible"
+      class="document-library__rebuild-dialog"
+      width="min(92vw, 520px)"
+      :close-on-click-modal="false"
+      @closed="resetRebuild"
+    >
+      <template #header>
+        <div>
+          <p class="document-library__dialog-eyebrow">重建已存在文档</p>
+          <h2>重新构建文档</h2>
+        </div>
+      </template>
+
+      <div v-if="rebuildTarget" class="document-library__rebuild-form">
+        <p class="document-library__rebuild-document">{{ rebuildTarget.filename }}</p>
+        <p v-if="hasPublishedGeneration(rebuildTarget)" class="document-library__rebuild-continuity">
+          当前已发布版本的 {{ rebuildTarget.chunk_count }} 个分块将在新任务运行时继续用于检索；候选分块尚未发布。
+        </p>
+        <label for="document-rebuild-strategy">
+          <span>重建分块策略</span>
+          <select id="document-rebuild-strategy" v-model="rebuildStrategy" aria-label="重建分块策略" :disabled="rebuildLoading">
+            <option v-for="strategy in supportedRebuildStrategies" :key="strategy.value" :value="strategy.value">
+              {{ strategy.label }}
+            </option>
+          </select>
+        </label>
+        <p class="document-library__rebuild-help">策略选项与服务端当前接受的重建契约保持一致。</p>
+        <p v-if="rebuildError" class="document-library__rebuild-error" role="alert">{{ rebuildError }}</p>
+      </div>
+
+      <template #footer>
+        <button type="button" class="document-library__dialog-button" :disabled="rebuildLoading" @click="rebuildDialogVisible = false">取消</button>
+        <button type="button" class="document-library__dialog-button document-library__dialog-button--primary" :disabled="rebuildLoading" @click="submitRebuild">
+          {{ rebuildLoading ? '正在创建' : '创建重建任务' }}
+        </button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="batchRebuildDialogVisible"
+      class="document-library__rebuild-dialog"
+      width="min(92vw, 560px)"
+      :close-on-click-modal="false"
+      @closed="resetBatchRebuild"
+    >
+      <template #header>
+        <div>
+          <p class="document-library__dialog-eyebrow">批量重建</p>
+          <h2>重新构建 {{ selectedDocumentCount }} 个文档</h2>
+        </div>
+      </template>
+
+      <div class="document-library__rebuild-form">
+        <p class="document-library__rebuild-document">已选择 {{ selectedDocumentCount }} 个当前文档。</p>
+        <p v-if="selectedPublishedDocumentCount" class="document-library__rebuild-continuity">
+          其中 {{ selectedPublishedDocumentCount }} 个文档的当前已发布版本将在新任务运行时继续用于检索；候选分块尚未发布。
+        </p>
+        <label for="batch-document-rebuild-strategy">
+          <span>重建分块策略</span>
+          <select id="batch-document-rebuild-strategy" v-model="batchRebuildStrategy" aria-label="批量重建分块策略" :disabled="isInventoryInteractionBlocked">
+            <option v-for="strategy in supportedRebuildStrategies" :key="strategy.value" :value="strategy.value">
+              {{ strategy.label }}
+            </option>
+          </select>
+        </label>
+        <p class="document-library__rebuild-help">策略选项与服务端当前接受的批量重建契约保持一致。</p>
+        <p v-if="batchRebuildError" class="document-library__rebuild-error" role="alert">{{ batchRebuildError }}</p>
+      </div>
+
+      <template #footer>
+        <button type="button" class="document-library__dialog-button" :disabled="isInventoryInteractionBlocked" @click="batchRebuildDialogVisible = false">取消</button>
+        <button
+          type="button"
+          class="document-library__dialog-button document-library__dialog-button--primary"
+          :disabled="!hasSelectedDocuments || isInventoryInteractionBlocked"
+          @click="submitBatchRebuild"
+        >
+          {{ isBatchActionLoading ? '正在创建' : `创建 ${selectedDocumentCount} 个重建任务` }}
+        </button>
+      </template>
+    </el-dialog>
   </section>
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { useRouter } from 'vue-router';
+import { ElMessageBox } from 'element-plus';
+import { ChevronLeft, ChevronRight, CircleCheck, FileSearch, Monitor, RefreshCw, Search, Trash2 } from 'lucide-vue-next';
 import UploadPanel from '../components/UploadPanel.vue';
 import { apiAdapter } from '../api/adapters';
-import { useAuthStore } from '../store/auth';
 
-const TERMINAL_JOB_STATUS = ['succeeded', 'failed', 'canceled'];
-
-const documentStatusMap = {
-  pending: { label: '待处理', type: 'info' },
-  processing: { label: '处理中', type: 'warning' },
-  ready: { label: '可检索', type: 'success' },
-  failed: { label: '构建失败', type: 'danger' },
-  deleting: { label: '删除中', type: 'warning' }
-};
-
-const jobStatusMap = {
-  queued: { label: '排队中', type: 'info' },
-  running: { label: '执行中', type: 'warning' },
-  succeeded: { label: '已成功', type: 'success' },
-  failed: { label: '失败', type: 'danger' },
-  canceled: { label: '已取消', type: 'info' }
-};
-
-const jobStageMap = {
-  queued: '排队中',
-  uploaded: '已上传',
-  parsing: '解析中',
-  chunking: '分块中',
-  completed: '已完成',
-  failed: '失败'
-};
-
-const chunkStrategyOptions = [
-  { value: 'padding', label: '补齐分块' },
-  { value: 'general', label: '通用分块' },
-  { value: 'book', label: '书籍分块' },
-  { value: 'paper', label: '论文分块' },
-  { value: 'resume', label: '简历分块' },
-  { value: 'table', label: '表格分块' },
-  { value: 'qa', label: '问答分块' }
+const statusFilterOptions = [
+  { value: 'all', label: '全部状态' },
+  { value: 'pending', label: '待处理' },
+  { value: 'processing', label: '处理中' },
+  { value: 'candidate', label: '待发布候选' },
+  { value: 'ready', label: '可检索' },
+  { value: 'failed', label: '构建失败' },
+  { value: 'deleting', label: '删除中' }
 ];
 
-const authStore = useAuthStore();
-const docsTableRef = ref(null);
-const docs = ref([]);
-const jobs = ref([]);
-const selectedDocs = ref([]);
-const docsLoading = ref(false);
-const batchBuildLoading = ref(false);
-const batchDeleteLoading = ref(false);
-const rowBuildLoadingMap = ref({});
-const rowDeleteLoadingMap = ref({});
-const jobCancelLoadingMap = ref({});
+const documentStatuses = {
+  pending: { label: '待处理 (pending)', tone: 'neutral' },
+  processing: { label: '处理中 (processing)', tone: 'warning' },
+  candidate: { label: '待发布候选 (candidate)', tone: 'warning' },
+  ready: { label: '可检索 (ready)', tone: 'success' },
+  failed: { label: '构建失败 (failed)', tone: 'danger' },
+  deleting: { label: '删除中 (deleting)', tone: 'warning' }
+};
+
+const router = useRouter();
+const documents = ref([]);
 const keyword = ref('');
-const batchChunkStrategy = ref('general');
-const docStrategyMap = ref({});
+const statusFilter = ref('all');
+const loading = ref(false);
+const listError = ref('');
+const uploadResult = ref(null);
+const isDesktop = ref(true);
+const chunksDialogVisible = ref(false);
+const inspectedDocument = ref(null);
+const chunks = ref([]);
+const chunksLoading = ref(false);
+const chunkInspectionError = ref('');
+const chunkPagination = ref({ page: 1, page_size: 10, total: 0 });
+const rebuildDialogVisible = ref(false);
+const rebuildTarget = ref(null);
+const rebuildStrategy = ref('general');
+const rebuildLoading = ref(false);
+const rebuildError = ref('');
+const rebuildJobs = ref({});
+const deletionLoading = ref({});
+const publicationLoading = ref({});
+const deleteSuccess = ref('');
+const deleteError = ref('');
+const selectedDocumentIds = ref([]);
+const batchAction = ref('');
+const batchError = ref('');
+const batchResult = ref(null);
+const batchRebuildDialogVisible = ref(false);
+const batchRebuildStrategy = ref('general');
+const batchRebuildError = ref('');
 
-const chunkDialog = ref({
-  visible: false,
-  documentId: '',
-  filename: '',
-  items: [],
-  loading: false,
-  page: 1,
-  pageSize: 5,
-  total: 0
-});
+const CHUNK_PAGE_SIZE = 10;
+const supportedRebuildStrategies = [
+  { value: 'general', label: '通用策略 (general)' },
+  { value: 'paper', label: '论文策略 (paper)' },
+  { value: 'qa', label: '问答策略 (qa)' }
+];
+let chunkRequestEpoch = 0;
 
-const pollingTimers = new Map();
-
-const selectedDocIds = computed(() => selectedDocs.value.map((item) => item.document_id).filter(Boolean));
-
-const stats = computed(() => {
-  const queuedOrRunning = jobs.value.filter((item) => ['queued', 'running'].includes(item.status)).length;
-  return [
-    { label: '文档总数', value: docs.value.length },
-    {
-      label: '总分块',
-      value: docs.value.reduce((sum, item) => sum + (item.chunk_count || 0), 0)
-    },
-    { label: '进行中任务', value: queuedOrRunning }
-  ];
-});
-
-const filteredDocs = computed(() => {
+const filteredDocuments = computed(() => {
   const query = keyword.value.trim().toLowerCase();
-  if (!query) return docs.value;
-  return docs.value.filter((doc) => doc.filename?.toLowerCase().includes(query));
+  return documents.value.filter((document) => {
+    const matchesStatus = statusFilter.value === 'all' || document.status === statusFilter.value;
+    const matchesFilename = !query || document.filename?.toLowerCase().includes(query);
+    return matchesStatus && matchesFilename;
+  });
 });
 
-const getFriendlyError = (error, fallback = '请求失败') => {
-  if (error?.status === 401) return '登录状态已失效，请重新登录';
-  if (error?.status === 403) return '仅管理员可操作文档管理功能';
-  const message = error?.message || fallback;
-  if (error?.code && !message.includes(error.code)) {
-    return `${message} (${error.code})`;
+const selectedDocuments = computed(() => {
+  const selectedIds = new Set(selectedDocumentIds.value);
+  return documents.value.filter((document) => selectedIds.has(document.document_id));
+});
+
+const selectedDocumentCount = computed(() => selectedDocuments.value.length);
+
+const hasSelectedDocuments = computed(() => selectedDocumentCount.value > 0);
+
+const selectedPublishedDocumentCount = computed(() =>
+  selectedDocuments.value.filter((document) => hasPublishedGeneration(document)).length
+);
+
+const selectedFilteredDocumentCount = computed(() =>
+  filteredDocuments.value.filter((document) => isDocumentSelected(document.document_id)).length
+);
+
+const areAllFilteredDocumentsSelected = computed(() =>
+  filteredDocuments.value.length > 0 && selectedFilteredDocumentCount.value === filteredDocuments.value.length
+);
+
+const hasPartialFilteredSelection = computed(() =>
+  selectedFilteredDocumentCount.value > 0 && selectedFilteredDocumentCount.value < filteredDocuments.value.length
+);
+
+const isBatchActionLoading = computed(() => Boolean(batchAction.value));
+
+const isInventoryInteractionBlocked = computed(() => loading.value || isBatchActionLoading.value);
+
+const emptyStateText = computed(() => {
+  if (documents.value.length && (keyword.value.trim() || statusFilter.value !== 'all')) {
+    return '没有符合当前筛选条件的文档。';
   }
-  return message;
-};
+  return '当前文档库为空。';
+});
 
-const documentStatusMeta = (status) => documentStatusMap[status] || { label: status || '-', type: 'info' };
-const jobStatusMeta = (status) => jobStatusMap[status] || { label: status || '-', type: 'info' };
-const jobStageLabel = (stage) => jobStageMap[stage] || stage || '-';
+const chunkTotalPages = computed(() =>
+  Math.max(1, Math.ceil(Number(chunkPagination.value.total || 0) / Number(chunkPagination.value.page_size || CHUNK_PAGE_SIZE)))
+);
+const inspectedGenerationLabel = computed(() =>
+  Number(inspectedDocument.value?.candidate_generation) > 0 ? '候选构建' : '已发布版本'
+);
 
-const formatTime = (value) => {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString('zh-CN', { hour12: false });
-};
+const documentStatusMeta = (status) => documentStatuses[status] || { label: status || '-', tone: 'neutral' };
 
-const formatFileSize = (size) => {
-  if (size === null || size === undefined || Number.isNaN(Number(size))) return '-';
-  const bytes = Number(size);
+const formatFileType = (fileType) => (fileType ? String(fileType).toUpperCase() : '-');
+
+const formatFileSize = (value) => {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes)) return '-';
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 };
 
-const formatList = (list) => {
-  if (!Array.isArray(list) || !list.length) return '-';
-  return list.join('、');
+const formatChunkCount = (value) => (Number.isFinite(Number(value)) ? Number(value) : '-');
+
+const formatTime = (value) => {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date
+    .toLocaleString('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    })
+    .replaceAll('/', '-');
 };
 
-const formatMetadata = (metadata) => {
-  if (!metadata) return '{}';
+const loadErrorMessage = (error) => {
+  if (error?.status === 401) return '登录状态已失效，请重新登录。';
+  if (error?.status === 403) return '当前账户无权查看文档库。';
+  return '加载文档库失败，请重新加载。';
+};
+
+const chunkInspectionErrorMessage = (error) => {
+  if (error?.status === 401) return '登录状态已失效，请重新登录。';
+  if (error?.status === 403) return '当前账户无权查看文档分块。';
+  if (error?.status === 409) return '当前文档尚未产生可查看的候选或已发布分块，请等待构建完成后重试。';
+  return '加载候选或已发布分块失败，请重新检查。';
+};
+
+const hasPublishedGeneration = (document) => Number(document?.published_generation) > 0;
+
+const canInspectChunks = (document) => Number(document?.candidate_generation) > 0 || hasPublishedGeneration(document);
+
+const canPublish = (document) => document.status === 'candidate' && Number(document?.candidate_generation) > 0;
+
+const canRebuild = (document) => ['ready', 'candidate', 'failed'].includes(document.status);
+
+const canDelete = (document) => document.status !== 'deleting';
+
+const isDocumentSelected = (documentId) => selectedDocumentIds.value.includes(documentId);
+
+const toggleDocumentSelection = (documentId, selected) => {
+  if (isInventoryInteractionBlocked.value) return;
+
+  const nextIds = new Set(selectedDocumentIds.value);
+  if (selected) nextIds.add(documentId);
+  else nextIds.delete(documentId);
+  selectedDocumentIds.value = [...nextIds];
+};
+
+const toggleFilteredDocumentSelection = (selected) => {
+  if (isInventoryInteractionBlocked.value) return;
+
+  const nextIds = new Set(selectedDocumentIds.value);
+  for (const document of filteredDocuments.value) {
+    if (selected) nextIds.add(document.document_id);
+    else nextIds.delete(document.document_id);
+  }
+  selectedDocumentIds.value = [...nextIds];
+};
+
+const reconcileSelection = (inventory) => {
+  const validIds = new Set(inventory.map((document) => document.document_id));
+  selectedDocumentIds.value = selectedDocumentIds.value.filter((documentId) => validIds.has(documentId));
+};
+
+const rebuildJobFor = (document) => rebuildJobs.value[document.document_id] || null;
+
+const publishedContinuityMessage = (document) => {
+  if (rebuildJobFor(document) || !hasPublishedGeneration(document) || document.status === 'ready') return '';
+
+  const prefix = document.status === 'failed' ? '最近一次重建失败；' : '当前正在重新构建；';
+  return `${prefix}当前已发布版本的 ${formatChunkCount(document.chunk_count)} 个分块仍可用于检索。候选分块未发布。`;
+};
+
+const metadataEntries = (metadata) =>
+  Object.entries(metadata || {}).map(([key, value]) => ({
+    key,
+    value: typeof value === 'string' ? value : JSON.stringify(value)
+  }));
+
+const loadChunks = async (page = 1) => {
+  if (!inspectedDocument.value || chunksLoading.value) return;
+
+  const documentId = inspectedDocument.value.document_id;
+  const requestEpoch = ++chunkRequestEpoch;
+  chunksLoading.value = true;
+  chunkInspectionError.value = '';
   try {
-    return JSON.stringify(metadata, null, 2);
-  } catch {
-    return String(metadata);
+    const data = await apiAdapter.getDocumentChunks(documentId, {
+      page,
+      page_size: CHUNK_PAGE_SIZE
+    });
+    if (requestEpoch !== chunkRequestEpoch || inspectedDocument.value?.document_id !== documentId) return;
+
+    chunks.value = Array.isArray(data?.items) ? data.items : [];
+    chunkPagination.value = {
+      page: Number(data?.pagination?.page) || page,
+      page_size: Number(data?.pagination?.page_size) || CHUNK_PAGE_SIZE,
+      total: Number(data?.pagination?.total) || 0
+    };
+  } catch (error) {
+    if (requestEpoch !== chunkRequestEpoch || inspectedDocument.value?.document_id !== documentId) return;
+    chunkInspectionError.value = chunkInspectionErrorMessage(error);
+  } finally {
+    if (requestEpoch === chunkRequestEpoch) chunksLoading.value = false;
   }
 };
 
-const sortByUpdatedAtDesc = (items) =>
-  [...items].sort((a, b) => new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime());
-
-const mergeJob = (job) => {
-  if (!job?.job_id) return;
-  const index = jobs.value.findIndex((item) => item.job_id === job.job_id);
-  if (index >= 0) {
-    jobs.value[index] = { ...jobs.value[index], ...job };
-  } else {
-    jobs.value.unshift(job);
-  }
-  jobs.value = sortByUpdatedAtDesc(jobs.value).slice(0, 20);
+const inspectChunks = (document) => {
+  chunkRequestEpoch += 1;
+  inspectedDocument.value = document;
+  chunks.value = [];
+  chunksLoading.value = false;
+  chunkPagination.value = { page: 1, page_size: CHUNK_PAGE_SIZE, total: 0 };
+  chunkInspectionError.value = '';
+  chunksDialogVisible.value = true;
+  loadChunks(1);
 };
 
-const canCancelJob = (job) => ['queued', 'running'].includes(job?.status);
-
-const clearPolling = (jobId) => {
-  const timer = pollingTimers.get(jobId);
-  if (timer) {
-    clearTimeout(timer);
-    pollingTimers.delete(jobId);
-  }
+const resetChunkInspection = () => {
+  chunkRequestEpoch += 1;
+  inspectedDocument.value = null;
+  chunks.value = [];
+  chunksLoading.value = false;
+  chunkInspectionError.value = '';
 };
 
-const clearAllPolling = () => {
-  pollingTimers.forEach((timer) => clearTimeout(timer));
-  pollingTimers.clear();
+const rebuildErrorMessage = (error) => {
+  if (error?.status === 401) return '登录状态已失效，请重新登录。';
+  if (error?.status === 403) return '当前账户无权重新构建文档。';
+  if (error?.status === 409) return '文档当前正在变更，请刷新后重试。';
+  if (error?.status >= 400 && error?.status < 500) return '重建策略被服务端拒绝，请重新选择后重试。';
+  return '创建重建任务失败，请稍后重试。';
 };
 
-const schedulePoll = (jobId, delayMs = 2000) => {
-  clearPolling(jobId);
-  const timer = setTimeout(() => pollJob(jobId), delayMs);
-  pollingTimers.set(jobId, timer);
+const openRebuild = (document) => {
+  rebuildTarget.value = document;
+  rebuildStrategy.value = 'general';
+  rebuildError.value = '';
+  rebuildDialogVisible.value = true;
 };
 
-const pollJob = async (jobId) => {
-  if (!jobId || !authStore.isLoggedIn || !authStore.isAdmin) return;
+const resetRebuild = () => {
+  rebuildTarget.value = null;
+  rebuildError.value = '';
+  rebuildLoading.value = false;
+};
 
+const submitRebuild = async () => {
+  if (!rebuildTarget.value || rebuildLoading.value) return;
+
+  rebuildLoading.value = true;
+  rebuildError.value = '';
   try {
-    const job = await apiAdapter.getDocumentJob(jobId);
-    mergeJob(job);
+    const target = rebuildTarget.value;
+    const job = await apiAdapter.buildDocument(target.document_id, { chunk_strategy: rebuildStrategy.value });
+    if (!job?.job_id) throw new Error('rebuild job id is missing');
 
-    if (TERMINAL_JOB_STATUS.includes(job?.status)) {
-      clearPolling(jobId);
-      if (job.status === 'succeeded') {
-        await loadDocs();
+    rebuildJobs.value = {
+      ...rebuildJobs.value,
+      [target.document_id]: {
+        jobId: job.job_id,
+        hasPublishedChunks: hasPublishedGeneration(target),
+        publishedChunkCount: Number(target.chunk_count) || 0
       }
+    };
+    documents.value = documents.value.map((document) =>
+      document.document_id === target.document_id ? { ...document, status: 'pending' } : document
+    );
+    rebuildDialogVisible.value = false;
+  } catch (error) {
+    rebuildError.value = rebuildErrorMessage(error);
+  } finally {
+    rebuildLoading.value = false;
+  }
+};
+
+const deleteErrorMessage = (error) => {
+  if (error?.status === 401) return '登录状态已失效，请重新登录。';
+  if (error?.status === 403) return '当前账户无权删除文档。';
+  if (error?.status === 404) return '文档已不在文档库中，请刷新确认当前状态。';
+  if (error?.status === 409) return '文档当前正在变更，请刷新后重试。';
+  return '请稍后重试。';
+};
+
+const publishDocument = async (document) => {
+  try {
+    await ElMessageBox.confirm(
+      `确认发布文档“${document.filename}”的候选构建？发布后它将立即用于后续检索。`,
+      '发布候选构建',
+      { type: 'warning', confirmButtonText: '发布', cancelButtonText: '取消' }
+    );
+  } catch {
+    return;
+  }
+
+  publicationLoading.value = { ...publicationLoading.value, [document.document_id]: true };
+  try {
+    const published = await apiAdapter.publishDocument(document.document_id);
+    documents.value = documents.value.map((item) =>
+      item.document_id === document.document_id ? { ...item, ...published } : item
+    );
+  } catch (error) {
+    deleteError.value = `发布候选构建失败：${deleteErrorMessage(error)}`;
+  } finally {
+    const { [document.document_id]: _completed, ...remaining } = publicationLoading.value;
+    publicationLoading.value = remaining;
+  }
+};
+
+const deleteDocument = async (document) => {
+  try {
+    await ElMessageBox.confirm(`确认删除文档“${document.filename}”？此操作不能撤销。`, '删除文档', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消'
+    });
+  } catch (reason) {
+    if (reason === 'cancel' || reason === 'close') return;
+    return;
+  }
+
+  deletionLoading.value = { ...deletionLoading.value, [document.document_id]: true };
+  deleteSuccess.value = '';
+  deleteError.value = '';
+  try {
+    const result = await apiAdapter.deleteDocument(document.filename);
+    if (!result?.success_ids?.includes(document.document_id)) {
+      deleteError.value = `删除文档 ${document.filename} 失败：服务端未确认删除，请刷新后重试。`;
       return;
     }
 
-    schedulePoll(jobId, job?.status === 'queued' ? 4000 : 2000);
+    documents.value = documents.value.filter((item) => item.document_id !== document.document_id);
+    const { [document.document_id]: _removedRebuild, ...remainingRebuildJobs } = rebuildJobs.value;
+    rebuildJobs.value = remainingRebuildJobs;
+    deleteSuccess.value = `文档 ${document.filename} 已由服务端确认删除。`;
   } catch (error) {
-    clearPolling(jobId);
-    if (error?.status !== 404) {
-      ElMessage.error(getFriendlyError(error, `任务 ${jobId} 查询失败`));
-    }
+    deleteError.value = `删除文档 ${document.filename} 失败：${deleteErrorMessage(error)}`;
+  } finally {
+    const { [document.document_id]: _completed, ...remainingLoading } = deletionLoading.value;
+    deletionLoading.value = remainingLoading;
   }
 };
 
-const enqueueJob = (item, fallbackDocumentId = '') => {
-  const jobId = item?.job_id;
-  if (!jobId) return;
-
-  mergeJob({
-    job_id: jobId,
-    document_id: item?.document_id || fallbackDocumentId,
-    status: item?.status || 'queued',
-    stage: item?.stage || 'queued',
-    progress: item?.progress || 0,
-    message: item?.message || '',
-    updated_at: item?.updated_at || new Date().toISOString()
-  });
-  schedulePoll(jobId, 1000);
+const documentLabel = (documentId, documentSnapshot = selectedDocuments.value) => {
+  const document = documentSnapshot.find((item) => item.document_id === documentId) || documents.value.find((item) => item.document_id === documentId);
+  return document?.filename || documentId;
 };
 
-const dropJobsByDocumentIds = (documentIds = []) => {
-  const idSet = new Set(documentIds);
-  jobs.value.forEach((job) => {
-    if (idSet.has(job.document_id)) {
-      clearPolling(job.job_id);
+const batchFailureItems = (responseItems, expectedIds, handledIds, fallbackMessage, documentSnapshot) => {
+  const failures = Array.isArray(responseItems)
+    ? responseItems
+        .filter((item) => item?.document_id)
+        .map((item) => ({
+          documentId: item.document_id,
+          label: documentLabel(item.document_id, documentSnapshot),
+          message: item.message || fallbackMessage
+        }))
+    : [];
+  const failureIds = new Set(failures.map((item) => item.documentId));
+
+  for (const documentId of expectedIds) {
+    if (!handledIds.has(documentId) && !failureIds.has(documentId)) {
+      failures.push({
+        documentId,
+        label: documentLabel(documentId, documentSnapshot),
+        message: fallbackMessage
+      });
     }
-  });
-  jobs.value = jobs.value.filter((job) => !idSet.has(job.document_id));
+  }
+  return failures;
 };
 
-const resolveDocumentStrategy = (doc) =>
-  docStrategyMap.value[doc.document_id] || doc.chunk_strategy || batchChunkStrategy.value;
+const openBatchRebuild = () => {
+  if (!hasSelectedDocuments.value || isInventoryInteractionBlocked.value) return;
 
-const updateDocumentStrategy = (documentId, strategy) => {
-  docStrategyMap.value[documentId] = strategy;
+  batchRebuildStrategy.value = 'general';
+  batchRebuildError.value = '';
+  batchRebuildDialogVisible.value = true;
 };
 
-const handleSelectionChange = (rows) => {
-  selectedDocs.value = rows || [];
+const resetBatchRebuild = () => {
+  batchRebuildError.value = '';
 };
 
-const syncLocalStateAfterDocsReload = () => {
-  const docIdSet = new Set(docs.value.map((item) => item.document_id));
-  selectedDocs.value = selectedDocs.value.filter((item) => docIdSet.has(item.document_id));
+const submitBatchRebuild = async () => {
+  if (!hasSelectedDocuments.value || isInventoryInteractionBlocked.value) return;
 
-  Object.keys(docStrategyMap.value).forEach((documentId) => {
-    if (!docIdSet.has(documentId)) {
-      delete docStrategyMap.value[documentId];
+  const targetDocuments = [...selectedDocuments.value];
+  const targetIds = targetDocuments.map((document) => document.document_id);
+  batchAction.value = 'build';
+  batchError.value = '';
+  batchResult.value = null;
+  batchRebuildError.value = '';
+  try {
+    const result = await apiAdapter.batchBuildDocuments({
+      document_ids: targetIds,
+      chunk_strategy: batchRebuildStrategy.value
+    });
+    const jobs = Array.isArray(result?.items)
+      ? result.items.filter((job) => targetIds.includes(job?.document_id) && job?.job_id)
+      : [];
+    const acceptedIds = new Set(jobs.map((job) => job.document_id));
+    const failedItems = batchFailureItems(
+      result?.failed_items,
+      targetIds,
+      acceptedIds,
+      '服务端未返回可用的构建任务。',
+      targetDocuments
+    );
+
+    if (jobs.length) {
+      rebuildJobs.value = {
+        ...rebuildJobs.value,
+        ...Object.fromEntries(
+          jobs.map((job) => {
+            const document = targetDocuments.find((item) => item.document_id === job.document_id);
+            return [
+              job.document_id,
+              {
+                jobId: job.job_id,
+                hasPublishedChunks: hasPublishedGeneration(document),
+                publishedChunkCount: Number(document?.chunk_count) || 0
+              }
+            ];
+          })
+        )
+      };
+      documents.value = documents.value.map((document) =>
+        acceptedIds.has(document.document_id) ? { ...document, status: 'pending' } : document
+      );
     }
-  });
 
-  if (chunkDialog.value.visible && !docIdSet.has(chunkDialog.value.documentId)) {
-    resetChunkDialog();
+    batchResult.value = {
+      tone: failedItems.length ? 'warning' : 'success',
+      summary: jobs.length
+        ? `已为 ${jobs.length} 个文档创建重建任务。`
+        : '服务端未创建任何重建任务。',
+      hasJobs: jobs.length > 0,
+      failedItems
+    };
+    batchRebuildDialogVisible.value = false;
+  } catch (error) {
+    batchRebuildError.value = rebuildErrorMessage(error);
+  } finally {
+    batchAction.value = '';
   }
 };
 
-const loadDocs = async () => {
-  if (!authStore.isLoggedIn || !authStore.isAdmin) return;
-  docsLoading.value = true;
+const confirmBatchDelete = async () => {
+  if (!hasSelectedDocuments.value || isInventoryInteractionBlocked.value) return;
+
+  const targetDocuments = [...selectedDocuments.value];
+  const targetIds = targetDocuments.map((document) => document.document_id);
+  try {
+    await ElMessageBox.confirm(`确认删除已选择的 ${targetIds.length} 个文档？此操作不能撤销。`, '批量删除文档', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消'
+    });
+  } catch {
+    return;
+  }
+
+  batchAction.value = 'delete';
+  batchError.value = '';
+  batchResult.value = null;
+  try {
+    const result = await apiAdapter.batchDeleteDocuments({ document_ids: targetIds });
+    const successIds = new Set(
+      (Array.isArray(result?.success_ids) ? result.success_ids : []).filter((documentId) => targetIds.includes(documentId))
+    );
+    const failedItems = batchFailureItems(
+      result?.failed_items,
+      targetIds,
+      successIds,
+      '服务端未确认删除，请刷新后重试。',
+      targetDocuments
+    );
+
+    if (successIds.size) {
+      documents.value = documents.value.filter((document) => !successIds.has(document.document_id));
+      rebuildJobs.value = Object.fromEntries(
+        Object.entries(rebuildJobs.value).filter(([documentId]) => !successIds.has(documentId))
+      );
+      reconcileSelection(documents.value);
+    }
+
+    batchResult.value = {
+      tone: failedItems.length ? 'warning' : 'success',
+      summary: successIds.size
+        ? `已由服务端确认删除 ${successIds.size} 个文档。`
+        : '服务端未确认删除任何文档。',
+      hasJobs: false,
+      failedItems
+    };
+  } catch (error) {
+    batchError.value = `批量删除失败：${deleteErrorMessage(error)}`;
+  } finally {
+    batchAction.value = '';
+  }
+};
+
+const loadDocuments = async () => {
+  if (!isDesktop.value || isBatchActionLoading.value) return;
+
+  loading.value = true;
+  listError.value = '';
   try {
     const data = await apiAdapter.listDocuments({ page: 1, page_size: 200 });
-    docs.value = data?.items || [];
-    syncLocalStateAfterDocsReload();
+    const items = Array.isArray(data?.items) ? data.items : [];
+    documents.value = items;
+    reconcileSelection(items);
+    rebuildJobs.value = Object.fromEntries(
+      Object.entries(rebuildJobs.value).filter(([documentId]) => {
+        const document = items.find((item) => item.document_id === documentId);
+        return document && ['pending', 'processing'].includes(document.status);
+      })
+    );
   } catch (error) {
-    ElMessage.error(getFriendlyError(error, '加载文档列表失败'));
+    listError.value = loadErrorMessage(error);
   } finally {
-    docsLoading.value = false;
+    loading.value = false;
   }
 };
 
-const loadJobs = async () => {
-  if (!authStore.isLoggedIn || !authStore.isAdmin) return;
-  try {
-    const data = await apiAdapter.listDocumentJobs({ page: 1, page_size: 20 });
-    jobs.value = sortByUpdatedAtDesc(data?.items || []).slice(0, 20);
-
-    clearAllPolling();
-    jobs.value.forEach((job) => {
-      if (canCancelJob(job)) {
-        schedulePoll(job.job_id, job.status === 'queued' ? 4000 : 2000);
-      }
-    });
-  } catch (error) {
-    ElMessage.error(getFriendlyError(error, '加载任务列表失败'));
-  }
+const handleUploaded = async (result) => {
+  uploadResult.value = result;
+  await loadDocuments();
 };
 
-const refreshAll = async () => {
-  await Promise.all([loadDocs(), loadJobs()]);
+const openJob = (jobId) => router.push({ name: 'indexing-jobs', query: { job: jobId } });
+
+const openDocumentJobs = (documentId) => router.push({ name: 'indexing-jobs', query: { document: documentId } });
+
+const openIndexingJobs = () => router.push({ name: 'indexing-jobs' });
+
+const updateViewportScope = () => {
+  const wasDesktop = isDesktop.value;
+  isDesktop.value = window.innerWidth >= 768;
+  if (!wasDesktop && isDesktop.value) loadDocuments();
 };
 
-const handleUploaded = async (payload) => {
-  const jobId = payload?.job_id;
-  if (!jobId) {
-    ElMessage.warning('上传成功，但未获取到任务ID');
-    await loadDocs();
-    return;
-  }
-
-  enqueueJob(
-    {
-      job_id: payload.job_id,
-      document_id: payload.document_id,
-      status: 'queued',
-      stage: 'queued',
-      progress: 0
-    },
-    payload?.document_id
-  );
-};
-
-const buildSingleDocument = async (doc) => {
-  const documentId = doc?.document_id;
-  if (!documentId) return;
-
-  rowBuildLoadingMap.value[documentId] = true;
-  try {
-    const response = await apiAdapter.buildDocument(documentId, {
-      chunk_strategy: resolveDocumentStrategy(doc)
-    });
-    enqueueJob(response, documentId);
-    ElMessage.success('单文件分块任务已入队');
-  } catch (error) {
-    ElMessage.error(getFriendlyError(error, '单文件分块失败'));
-  } finally {
-    delete rowBuildLoadingMap.value[documentId];
-  }
-};
-
-const handleBatchBuild = async () => {
-  if (!selectedDocIds.value.length) {
-    ElMessage.warning('请先选择文档');
-    return;
-  }
-
-  batchBuildLoading.value = true;
-  try {
-    const response = await apiAdapter.batchBuildDocuments({
-      document_ids: selectedDocIds.value,
-      chunk_strategy: batchChunkStrategy.value
-    });
-    const items = response?.items || [];
-    items.forEach((item) => enqueueJob(item, item.document_id));
-    ElMessage.success(`批量分块已入队 ${items.length} 个任务`);
-  } catch (error) {
-    ElMessage.error(getFriendlyError(error, '批量分块失败'));
-  } finally {
-    batchBuildLoading.value = false;
-  }
-};
-
-const doBatchDelete = async (documentIds, confirmText) => {
-  if (!documentIds.length) return;
-
-  await ElMessageBox.confirm(confirmText, '提示', { type: 'warning' });
-
-  const response = await apiAdapter.batchDeleteDocuments({ document_ids: documentIds });
-  const successIds = response?.success_ids || [];
-  const failedItems = response?.failed_items || [];
-
-  if (successIds.length) {
-    dropJobsByDocumentIds(successIds);
-    docsTableRef.value?.clearSelection();
-    selectedDocs.value = [];
-    ElMessage.success(`已删除 ${successIds.length} 个文档`);
-  }
-
-  if (failedItems.length) {
-    const detail = failedItems
-      .slice(0, 3)
-      .map((item) => `${item.document_id}: ${item.message}`)
-      .join('；');
-    ElMessage.warning(`部分删除失败：${detail}${failedItems.length > 3 ? '；...' : ''}`);
-  }
-
-  await loadDocs();
-};
-
-const handleBatchDelete = async () => {
-  if (!selectedDocIds.value.length) {
-    ElMessage.warning('请先选择文档');
-    return;
-  }
-
-  batchDeleteLoading.value = true;
-  try {
-    await doBatchDelete(selectedDocIds.value, `确认删除已选 ${selectedDocIds.value.length} 个文档？`);
-  } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error(getFriendlyError(error, '批量删除失败'));
-    }
-  } finally {
-    batchDeleteLoading.value = false;
-  }
-};
-
-const removeSingleDocument = async (doc) => {
-  const documentId = doc?.document_id;
-  if (!documentId) return;
-
-  rowDeleteLoadingMap.value[documentId] = true;
-  try {
-    await doBatchDelete([documentId], `确认删除文档 ${doc.filename}？`);
-  } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error(getFriendlyError(error, '删除文档失败'));
-    }
-  } finally {
-    delete rowDeleteLoadingMap.value[documentId];
-  }
-};
-
-const cancelJob = async (job) => {
-  if (!canCancelJob(job)) return;
-  jobCancelLoadingMap.value[job.job_id] = true;
-  try {
-    await apiAdapter.cancelDocumentJob(job.job_id);
-    ElMessage.success('取消任务请求已提交');
-    await loadJobs();
-  } catch (error) {
-    ElMessage.error(getFriendlyError(error, '取消任务失败'));
-  } finally {
-    delete jobCancelLoadingMap.value[job.job_id];
-  }
-};
-
-const resetChunkDialog = () => {
-  chunkDialog.value = {
-    ...chunkDialog.value,
-    visible: false,
-    documentId: '',
-    filename: '',
-    items: [],
-    loading: false,
-    page: 1,
-    total: 0
-  };
-};
-
-const loadChunkPage = async (page = 1) => {
-  if (!chunkDialog.value.documentId) return;
-  chunkDialog.value = {
-    ...chunkDialog.value,
-    page,
-    loading: true
-  };
-
-  try {
-    const data = await apiAdapter.getDocumentChunks(chunkDialog.value.documentId, {
-      page,
-      page_size: chunkDialog.value.pageSize
-    });
-    chunkDialog.value = {
-      ...chunkDialog.value,
-      items: data?.items || [],
-      page: data?.pagination?.page || page,
-      total: data?.pagination?.total || 0
-    };
-  } catch (error) {
-    chunkDialog.value = {
-      ...chunkDialog.value,
-      items: [],
-      total: 0
-    };
-    if (error?.status === 409 || error?.code === 'DOC_CHUNK_RESULT_NOT_READY') {
-      ElMessage.warning('分块结果未就绪，请稍后再试');
-      return;
-    }
-    ElMessage.error(getFriendlyError(error, '加载分块结果失败'));
-  } finally {
-    chunkDialog.value = {
-      ...chunkDialog.value,
-      loading: false
-    };
-  }
-};
-
-const openChunkDialog = async (doc) => {
-  if (doc?.status !== 'ready') {
-    ElMessage.warning('文档未就绪，暂不可查看分块结果');
-    return;
-  }
-
-  chunkDialog.value = {
-    ...chunkDialog.value,
-    visible: true,
-    documentId: doc.document_id,
-    filename: doc.filename,
-    items: [],
-    page: 1,
-    total: 0
-  };
-  await loadChunkPage(1);
-};
-
-onMounted(refreshAll);
-
-onBeforeUnmount(() => {
-  clearAllPolling();
+onMounted(() => {
+  updateViewportScope();
+  window.addEventListener('resize', updateViewportScope);
+  if (isDesktop.value) loadDocuments();
 });
+
+onBeforeUnmount(() => window.removeEventListener('resize', updateViewportScope));
 </script>
 
 <style scoped>
-.upload-page {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.table-card {
-  margin-top: 16px;
-}
-
-.job-table-wrap {
-  width: 100%;
-  padding: 0 24px 24px;
-  overflow-x: auto;
-}
-
-.job-table-wrap :deep(.el-table) {
-  width: 100%;
-}
-
-.table-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 24px;
-  border-bottom: 1px solid var(--line-soft);
-  gap: 12px;
-}
-
-.table-header h3 {
-  margin: 0;
-}
-
-.table-tools {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.search-input {
-  width: 220px;
-}
-
-.danger-btn {
-  border-color: rgba(220, 38, 38, 0.2);
-  color: #dc2626;
-}
-
-.chunk-dialog-body {
-  max-height: 60vh;
-  overflow-y: auto;
-  padding-right: 8px;
-}
-
-.chunk-dialog-meta {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 13px;
-  color: var(--text-soft);
-  margin-bottom: 12px;
-}
-
-.chunk-item {
-  border: 1px solid var(--line-soft);
-  border-radius: 12px;
-  padding: 12px;
-  margin-bottom: 12px;
-  background: #fff;
-}
-
-.chunk-item-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 12px;
-  color: var(--text-soft);
-  margin-bottom: 8px;
-}
-
-.chunk-item-row {
-  margin-bottom: 8px;
-}
-
-.chunk-item-row strong {
-  display: block;
-  font-size: 12px;
-  margin-bottom: 4px;
-}
-
-.chunk-item-row p {
-  margin: 0;
-  line-height: 1.6;
-  word-break: break-word;
-}
-
-.chunk-item-row pre {
-  margin: 0;
-  background: var(--bg-shell);
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
-  padding: 8px;
-  overflow-x: auto;
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-@media (max-width: 900px) {
-  .table-header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .table-tools {
-    width: 100%;
-    justify-content: flex-start;
-  }
-
-  .search-input {
-    width: 100%;
-  }
-
-  .chunk-dialog-meta {
-    flex-direction: column;
-  }
+.document-library { max-width: 1280px; margin: 0 auto; }
+.document-library__header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-5); padding-bottom: var(--space-5); border-bottom: 1px solid var(--color-rule); }
+.document-library__eyebrow { margin: 0 0 var(--space-2); color: var(--color-moss); font-size: 12px; font-weight: 600; }
+.document-library h1 { margin: 0; font-family: var(--font-display); font-size: 26px; font-weight: 600; line-height: 1.3; }
+.document-library__description { max-width: 620px; margin: var(--space-2) 0 0; color: var(--color-ink-soft); font-size: 14px; line-height: 1.7; }
+.document-library__refresh, .document-library__error button, .document-library__upload-result button, .document-library__action button, .document-library__batch-controls button, .document-library__batch-result button { min-height: 32px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--color-rule); border-radius: var(--radius-control); background: var(--color-paper-raised); color: var(--color-ink); font: inherit; font-size: 13px; cursor: pointer; }
+.document-library__refresh { min-width: 82px; padding: 0 var(--space-3); }
+.document-library__refresh:disabled { cursor: wait; opacity: 0.65; }
+.document-library__refresh:not(:disabled):hover, .document-library__error button:not(:disabled):hover, .document-library__upload-result button:not(:disabled):hover, .document-library__action button:not(:disabled):hover, .document-library__batch-controls button:not(:disabled):hover, .document-library__batch-result button:not(:disabled):hover { border-color: var(--color-copper); color: var(--color-copper-strong); }
+.document-library__refresh:not(:disabled):active, .document-library__error button:not(:disabled):active, .document-library__upload-result button:not(:disabled):active, .document-library__action button:not(:disabled):active, .document-library__batch-controls button:not(:disabled):active, .document-library__batch-result button:not(:disabled):active { background: var(--color-paper-muted); }
+.document-library__error button:disabled, .document-library__upload-result button:disabled, .document-library__action button:disabled, .document-library__batch-controls button:disabled, .document-library__rebuild-status button:disabled, .document-library__chunks-error button:disabled, .document-library__chunk-pagination button:disabled { cursor: not-allowed; opacity: 0.55; }
+.document-library__refresh-icon--spinning { animation: document-library-spin 0.9s linear infinite; }
+.document-library__desktop-notice, .document-library__error, .document-library__success, .document-library__upload-result { display: flex; align-items: center; gap: var(--space-3); margin: var(--space-5) 0 0; padding: var(--space-3) var(--space-4); border-left: 3px solid var(--color-warning); background: var(--color-warning-soft); color: var(--color-warning); font-size: 13px; line-height: 1.5; }
+.document-library__desktop-notice p, .document-library__upload-result p { margin: 0; }
+.document-library__error { border-left-color: var(--color-danger); background: var(--color-danger-soft); color: var(--color-danger); }
+.document-library__success { border-left-color: var(--color-moss); background: var(--color-moss-soft); color: var(--color-moss); }
+.document-library__error button { margin-left: auto; padding: 0 var(--space-2); border-color: currentColor; background: transparent; color: inherit; }
+.document-library__upload-result { align-items: flex-start; border-left-color: var(--color-moss); background: var(--color-moss-soft); color: var(--color-moss); }
+.document-library__upload-result > div { min-width: 0; }
+.document-library__identifiers { margin-top: var(--space-1) !important; font-family: var(--font-mono); font-size: 12px; }
+.document-library__upload-result button { margin-left: auto; flex: 0 0 auto; padding: 0 var(--space-3); border-color: currentColor; background: transparent; color: inherit; }
+.document-library__controls { display: flex; align-items: center; gap: var(--space-3); min-height: 64px; padding: var(--space-4) 0; }
+.document-library__search { display: flex; width: min(360px, 45%); min-width: 220px; align-items: center; gap: var(--space-2); padding: 0 var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-control); background: var(--color-paper-raised); color: var(--color-ink-soft); }
+.document-library__search:focus-within { border-color: var(--color-copper); }
+.document-library__search input { width: 100%; min-width: 0; height: 32px; border: 0; background: transparent; color: var(--color-ink); font-size: 13px; }
+.document-library__filter { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--color-ink-soft); font-size: 13px; }
+.document-library__filter select { min-height: 34px; border: 1px solid var(--color-rule); border-radius: var(--radius-control); background: var(--color-paper-raised); color: var(--color-ink); padding: 0 var(--space-2); }
+.document-library__filter select:hover { border-color: var(--color-copper); }
+.document-library__filter select:active { background: var(--color-paper-muted); }
+.document-library__count { margin: 0 0 0 auto; color: var(--color-ink-soft); font-size: 13px; white-space: nowrap; }
+.document-library__batch-controls { display: flex; min-height: 56px; align-items: center; gap: var(--space-2); padding: var(--space-3) 0; border-top: 1px solid var(--color-rule); border-bottom: 1px solid var(--color-rule); }
+.document-library__selection-count { min-width: 112px; margin: 0 auto 0 0; color: var(--color-ink-soft); font-size: 13px; white-space: nowrap; }
+.document-library__batch-controls button { min-width: 116px; padding: 0 var(--space-3); }
+.document-library__batch-controls .document-library__batch-delete { border-color: var(--color-danger); color: var(--color-danger); }
+.document-library__batch-result { display: flex; align-items: flex-start; gap: var(--space-3); margin: var(--space-4) 0 0; padding: var(--space-3) var(--space-4); border-left: 3px solid var(--color-moss); background: var(--color-moss-soft); color: var(--color-moss); font-size: 13px; line-height: 1.5; }
+.document-library__batch-result--warning { border-left-color: var(--color-warning); background: var(--color-warning-soft); color: var(--color-warning); }
+.document-library__batch-result p, .document-library__batch-result ul { margin: 0; }
+.document-library__batch-result ul { min-width: 0; padding-left: 16px; }
+.document-library__batch-result li + li { margin-top: var(--space-1); }
+.document-library__batch-result button { flex: 0 0 auto; margin-left: auto; padding: 0 var(--space-3); border-color: currentColor; background: transparent; color: inherit; }
+.document-library__table-wrap { overflow-x: auto; border-top: 1px solid var(--color-rule); border-bottom: 1px solid var(--color-rule); background: var(--color-paper-raised); }
+.document-library table { width: 100%; min-width: 1160px; border-collapse: collapse; table-layout: fixed; }
+.document-library th, .document-library td { padding: 13px 12px; border-bottom: 1px solid var(--color-rule); color: var(--color-ink); font-size: 13px; line-height: 1.45; text-align: left; vertical-align: middle; }
+.document-library th { position: sticky; top: 0; z-index: 1; background: var(--color-paper-muted); color: var(--color-ink-soft); font-size: 12px; font-weight: 600; }
+.document-library tbody tr:last-child td { border-bottom: 0; }
+.document-library th:nth-child(1) { width: 5%; }
+.document-library th:nth-child(2) { width: 20%; }
+.document-library th:nth-child(3) { width: 8%; }
+.document-library th:nth-child(4) { width: 10%; }
+.document-library th:nth-child(5) { width: 22%; }
+.document-library th:nth-child(6) { width: 8%; }
+.document-library th:nth-child(7) { width: 14%; }
+.document-library th:nth-child(8) { width: 13%; }
+.document-library__selection-cell { text-align: center !important; }
+.document-library__selection-cell input { width: 16px; height: 16px; margin: 0; accent-color: var(--color-copper); cursor: pointer; }
+.document-library__selection-cell input:disabled { cursor: wait; }
+.document-library__filename { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.document-library__numeric, .document-library__timestamp { font-family: var(--font-mono); font-size: 12px; }
+.document-library__timestamp { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.document-library__status { display: inline-flex; min-width: 124px; align-items: center; justify-content: center; padding: 3px 6px; border: 1px solid currentColor; border-radius: 3px; font-size: 12px; white-space: nowrap; }
+.document-library__status--neutral { color: var(--color-ink-soft); }
+.document-library__status--warning { color: var(--color-warning); }
+.document-library__status--success { color: var(--color-moss); }
+.document-library__status--danger { color: var(--color-danger); }
+.document-library__rebuild-status { margin-top: var(--space-2); color: var(--color-ink-soft); font-size: 12px; line-height: 1.5; }
+.document-library__rebuild-status p { margin: 0; }
+.document-library__rebuild-status p + p { margin-top: var(--space-1); }
+.document-library__rebuild-job-id { font-family: var(--font-mono); }
+.document-library__rebuild-status button { min-height: auto; margin-top: var(--space-2); padding: 0; border: 0; background: transparent; color: var(--color-copper-strong); font: inherit; text-decoration: underline; cursor: pointer; }
+.document-library__rebuild-status button:hover { color: var(--color-copper); }
+.document-library__rebuild-status button:active { color: var(--color-ink); }
+.document-library__action { display: flex; min-width: 0; flex-wrap: wrap; justify-content: flex-start; gap: var(--space-2); text-align: left; }
+.document-library__action button { min-width: 72px; padding: 0 var(--space-2); }
+.document-library__action .document-library__icon-action { width: 32px; min-width: 32px; padding: 0; }
+.document-library__action .document-library__icon-action--danger { border-color: var(--color-danger); color: var(--color-danger); }
+.document-library__state { height: 192px; color: var(--color-ink-soft); text-align: center; }
+.document-library__dialog-eyebrow { margin: 0 0 var(--space-1); color: var(--color-moss); font-size: 12px; font-weight: 600; }
+.document-library__chunks-dialog h2 { margin: 0; font-family: var(--font-display); font-size: 20px; font-weight: 600; }
+.document-library__chunks { min-height: 240px; }
+.document-library__chunks-identity, .document-library__chunks-name { margin: 0; color: var(--color-ink-soft); font-size: 13px; }
+.document-library__chunks-identity { font-family: var(--font-mono); }
+.document-library__chunks-name { margin-top: var(--space-1); }
+.document-library__chunks-state { padding: var(--space-6) var(--space-4); color: var(--color-ink-soft); text-align: center; }
+.document-library__chunks-error { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-top: var(--space-4); padding: var(--space-3) var(--space-4); border-left: 3px solid var(--color-danger); background: var(--color-danger-soft); color: var(--color-danger); font-size: 13px; line-height: 1.5; }
+.document-library__chunks-error p { margin: 0; }
+.document-library__chunks-error button, .document-library__chunk-pagination button { min-height: 32px; border: 1px solid currentColor; border-radius: var(--radius-control); background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.document-library__chunks-error button { flex: 0 0 auto; padding: 0 var(--space-2); }
+.document-library__chunks-error button:hover, .document-library__chunk-pagination button:not(:disabled):hover { background: var(--color-paper-raised); }
+.document-library__chunks-error button:active, .document-library__chunk-pagination button:not(:disabled):active { background: var(--color-paper-muted); }
+.document-library__chunk-list { display: grid; gap: var(--space-3); margin: var(--space-4) 0 0; padding: 0; list-style: none; }
+.document-library__chunk { padding: var(--space-4); border: 1px solid var(--color-rule); background: var(--color-paper-raised); }
+.document-library__chunk header { display: flex; justify-content: space-between; gap: var(--space-3); color: var(--color-ink-soft); font-size: 12px; }
+.document-library__chunk-id { overflow: hidden; font-family: var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.document-library__chunk-content { margin: var(--space-3) 0; white-space: pre-wrap; line-height: 1.7; }
+.document-library__chunk-detail { margin: var(--space-2) 0 0; color: var(--color-ink-soft); font-size: 13px; line-height: 1.5; }
+.document-library__chunk-metadata { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-1) var(--space-3); margin: var(--space-3) 0 0; color: var(--color-ink-soft); font-family: var(--font-mono); font-size: 12px; }
+.document-library__chunk-metadata dt, .document-library__chunk-metadata dd { margin: 0; overflow-wrap: anywhere; }
+.document-library__chunk-pagination { display: flex; align-items: center; justify-content: center; gap: var(--space-3); margin-top: var(--space-4); color: var(--color-ink-soft); font-family: var(--font-mono); font-size: 12px; }
+.document-library__chunk-pagination button { width: 32px; padding: 0; color: var(--color-ink-soft); }
+.document-library__chunk-pagination button:disabled { cursor: not-allowed; opacity: 0.45; }
+.document-library__rebuild-document { margin: 0; color: var(--color-ink); font-weight: 600; overflow-wrap: anywhere; }
+.document-library__rebuild-continuity { margin: var(--space-3) 0 0; padding: var(--space-3); border-left: 3px solid var(--color-moss); background: var(--color-moss-soft); color: var(--color-moss); font-size: 13px; line-height: 1.6; }
+.document-library__rebuild-form label { display: grid; gap: var(--space-2); margin-top: var(--space-4); color: var(--color-ink-soft); font-size: 13px; }
+.document-library__rebuild-form select { min-height: 36px; border: 1px solid var(--color-rule); border-radius: var(--radius-control); background: var(--color-paper-raised); color: var(--color-ink); padding: 0 var(--space-2); }
+.document-library__rebuild-form select:not(:disabled):hover { border-color: var(--color-copper); }
+.document-library__rebuild-form select:not(:disabled):active { background: var(--color-paper-muted); }
+.document-library__rebuild-form select:disabled { cursor: wait; opacity: 0.65; }
+.document-library__rebuild-help { margin: var(--space-2) 0 0; color: var(--color-ink-soft); font-size: 12px; line-height: 1.5; }
+.document-library__rebuild-error { margin: var(--space-3) 0 0; padding: var(--space-3); border-left: 3px solid var(--color-danger); background: var(--color-danger-soft); color: var(--color-danger); font-size: 13px; line-height: 1.5; }
+.document-library__dialog-button { min-height: 34px; margin-left: var(--space-2); padding: 0 var(--space-3); border: 1px solid var(--color-rule); border-radius: var(--radius-control); background: var(--color-paper-raised); color: var(--color-ink); font: inherit; cursor: pointer; }
+.document-library__dialog-button--primary { border-color: var(--color-copper); background: var(--color-copper); color: var(--color-paper-raised); }
+.document-library__dialog-button:not(:disabled):hover { border-color: var(--color-copper-strong); background: var(--color-paper-muted); color: var(--color-copper-strong); }
+.document-library__dialog-button--primary:not(:disabled):hover { border-color: var(--color-copper-strong); background: var(--color-copper-strong); color: var(--color-paper-raised); }
+.document-library__dialog-button:not(:disabled):active { background: var(--color-paper-muted); }
+.document-library__dialog-button--primary:not(:disabled):active { background: var(--color-ink); border-color: var(--color-ink); color: var(--color-paper-raised); }
+.document-library__dialog-button:disabled { cursor: wait; opacity: 0.65; }
+@keyframes document-library-spin { to { transform: rotate(360deg); } }
+@media (max-width: 1024px) {
+  .document-library__header { gap: var(--space-4); }
+  .document-library table { min-width: 0; }
 }
 </style>

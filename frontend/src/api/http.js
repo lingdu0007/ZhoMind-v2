@@ -4,6 +4,12 @@ const DIRECT_BACKEND_BASE_URL = 'http://127.0.0.1:8000/api/v1';
 
 const trimTrailingSlash = (value) => value.replace(/\/+$/, '');
 
+export const notifyAuthInvalid = () => {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('zhomind:auth-invalid'));
+  }
+};
+
 export const resolveApiBaseURL = () => {
   const envBase = import.meta.env.VITE_API_BASE_URL;
   if (envBase && envBase.trim()) {
@@ -43,6 +49,7 @@ http.interceptors.response.use(
       localStorage.removeItem('access_token');
       localStorage.removeItem('username');
       localStorage.removeItem('role');
+      notifyAuthInvalid();
     }
 
     const normalizedError = new Error(payload.message || payload.detail || error.message || '请求失败');

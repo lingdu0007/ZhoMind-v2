@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -38,8 +38,8 @@ class _RedisSpy:
 async def test_enable_drain_sets_mode_and_preserves_existing_started_at():
     redis = _RedisSpy()
     service = DocumentsOperatorService(redis=redis)
-    first_started_at = datetime(2026, 4, 24, 12, 0, tzinfo=timezone.utc)
-    second_started_at = datetime(2026, 4, 24, 13, 0, tzinfo=timezone.utc)
+    first_started_at = datetime(2026, 4, 24, 12, 0, tzinfo=UTC)
+    second_started_at = datetime(2026, 4, 24, 13, 0, tzinfo=UTC)
 
     await service.enable_drain(now=first_started_at)
     await service.enable_drain(now=second_started_at)
@@ -67,7 +67,7 @@ async def test_collect_status_derives_ready_for_migration_from_db_and_dispatcher
         )
         await session.commit()
 
-        await service.enable_drain(now=datetime(2026, 4, 24, 12, 0, tzinfo=timezone.utc))
+        await service.enable_drain(now=datetime(2026, 4, 24, 12, 0, tzinfo=UTC))
         status = await service.collect_status(session=session, active_dispatcher_tasks=1)
 
     assert status["drain_enabled"] is True

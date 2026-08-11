@@ -1,6 +1,6 @@
 import asyncio
-from collections.abc import Generator
 import hashlib
+from collections.abc import Generator
 
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -12,7 +12,9 @@ from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
 from app.model.document import Document, DocumentChunk
+from app.repository.chat_repository import ChatRepository
 from app.service.chat_service import CHAT_JUDGE_PROVIDER, CHAT_RERANK_PROVIDER, CHAT_RETRIEVER_PROVIDER
+from tests.support.auth import create_authenticated_test_token
 
 
 class _InMemoryRedis:
@@ -34,14 +36,24 @@ def _extract_data(payload: dict) -> dict:
     return payload.get("data") or payload
 
 
-def _auth_headers(client: TestClient, username: str = "chat-user") -> dict[str, str]:
-    response = client.post(
-        "/api/v1/auth/register",
-        json={"username": username, "password": "secret-123", "role": "user"},
+def _auth_headers(client: TestClient, username: str = "chat-user", role: str = "user") -> dict[str, str]:
+    token = asyncio.run(
+        create_authenticated_test_token(
+            client.app.state.test_auth_session_factory,
+            client.app.state.test_auth_redis,
+            username=username,
+            role=role,
+        )
     )
-    assert response.status_code == 200
-    token = response.json()["data"]["access_token"]
     return {"Authorization": f"Bearer {token}"}
+
+
+async def _load_assistant_trace(session_factory, session_id: str, user_id: str) -> dict:
+    async with session_factory() as session:
+        messages = await ChatRepository(session).list_messages(session_id=session_id, user_id=user_id)
+    trace = next((item.rag_trace for item in messages if item.type == "assistant"), None)
+    assert isinstance(trace, dict)
+    return trace
 
 
 class _CustomRetriever:
@@ -50,18 +62,20 @@ class _CustomRetriever:
             {
                 "chunk_id": "custom-chunk-1",
                 "document_id": "doc-custom",
+                "generation": 1,
                 "chunk_index": 0,
                 "score": 0.4,
                 "content_preview": f"来自自定义检索器：{query}",
-                "metadata": {"source": "custom-retriever"},
+                "metadata": {"title": "自定义资料.md", "publication_version": "v1"},
             },
             {
                 "chunk_id": "custom-chunk-2",
                 "document_id": "doc-custom",
+                "generation": 1,
                 "chunk_index": 1,
                 "score": 0.9,
                 "content_preview": "高优先级证据",
-                "metadata": {"source": "custom-retriever"},
+                "metadata": {"title": "自定义资料.md", "publication_version": "v1"},
             },
         ][:top_k]
 
@@ -76,6 +90,15 @@ class _CustomReranker:
 class _CustomJudge:
     async def judge(self, query: str, context: list[dict]) -> bool:
         return len(context) > 0
+
+
+class _RecordingLlmProvider:
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
+        self.prompts.append(prompt)
+        return "已基于发布资料生成回答。"
 
 
 class _StubEmbeddingProvider:
@@ -101,6 +124,20 @@ class _FakeDenseDocumentIndex:
             raise self._error
         return self._rows[:limit]
 
+    async def search_batches(
+        self,
+        *,
+        collection_name: str,
+        vector: list[float],
+        batch_size: int,
+        filter: str = "",
+        output_fields: list[str] | None = None,
+    ):
+        if self._error is not None:
+            raise self._error
+        for offset in range(0, len(self._rows), batch_size):
+            yield self._rows[offset : offset + batch_size]
+
 
 async def _seed_chat_retrieval_docs(
     session_factory,
@@ -113,7 +150,7 @@ async def _seed_chat_retrieval_docs(
             document_id="doc-chat-dense",
             generation=1,
             chunk_index=0,
-            content="alpha evidence from dense corpus",
+            content="alpha beta evidence from dense corpus",
             keywords=[],
             generated_questions=[],
             chunk_metadata={"source": "dense"},
@@ -123,7 +160,7 @@ async def _seed_chat_retrieval_docs(
             document_id="doc-chat-lexical",
             generation=1,
             chunk_index=0,
-            content="beta evidence from lexical fallback",
+            content="alpha beta evidence from lexical fallback",
             keywords=[],
             generated_questions=[],
             chunk_metadata={"source": "lexical"},
@@ -262,7 +299,9 @@ def test_chat_and_sessions_flow(monkeypatch) -> None:
         return fake_redis
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = override_get_redis_client
+    app.state.test_auth_redis = fake_redis
 
     registry = get_extension_registry()
     prev_retriever = registry.get_retriever(CHAT_RETRIEVER_PROVIDER)
@@ -274,7 +313,7 @@ def test_chat_and_sessions_flow(monkeypatch) -> None:
 
     try:
         with TestClient(app) as client:
-            headers = _auth_headers(client)
+            headers = _auth_headers(client, role="admin")
 
             chat_response = client.post(
                 "/api/v1/chat",
@@ -286,11 +325,17 @@ def test_chat_and_sessions_flow(monkeypatch) -> None:
             chat_data = _extract_data(chat_body)
             assert chat_data["session_id"] == "session_test_1"
             assert isinstance(chat_data["answer"], str)
-            assert "高优先级证据" in chat_data["answer"]
+            assert chat_data["answer"] == "【生成不可用】生成服务暂不可用，请稍后重试。"
             assert chat_data["message"]["type"] == "assistant"
-            assert isinstance(chat_data["rag_steps"], list)
-            assert chat_data["rag_trace"]["query"] == "请介绍系统当前状态"
-            runtime_trace = chat_data["rag_trace"]["runtime"]
+            diagnostics = chat_data["retrieval_diagnostics"]
+            assert diagnostics["candidate_counts"] == {"retrieved": 2, "reranked": 1}
+            assert diagnostics["evidence_gate"] == {"outcome": "passed", "reason": "sufficient_evidence"}
+            assert "rag_steps" not in chat_data
+            assert "rag_trace" not in chat_data
+
+            saved_trace = asyncio.run(_load_assistant_trace(session_factory, "session_test_1", "chat-user"))
+            assert saved_trace["query"] == "请介绍系统当前状态"
+            runtime_trace = saved_trace["runtime"]
             assert runtime_trace["request_id"].startswith("chat-")
             assert runtime_trace["session_id"] == "session_test_1"
             assert runtime_trace["graph_alias"] == "default_v1"
@@ -308,20 +353,20 @@ def test_chat_and_sessions_flow(monkeypatch) -> None:
                 "retrieve",
                 "fusion",
                 "rerank",
-                "verify",
                 "context_pack",
+                "verify",
                 "generate",
                 "memory_write_gate",
                 "finalize",
             ]
             assert runtime_trace["steps"][0]["step"] == "normalize"
-            assert chat_data["rag_steps"][0]["step"] == "retrieve"
-            assert chat_data["rag_steps"][0]["detail"]["retriever"] == CHAT_RETRIEVER_PROVIDER
-            assert chat_data["rag_steps"][0]["detail"]["gate_passed"] is True
-            assert chat_data["rag_steps"][0]["detail"]["gate_reason"] == "sufficient_evidence"
-            assert chat_data["rag_steps"][1]["detail"]["model"] == CHAT_RERANK_PROVIDER
-            assert chat_data["rag_steps"][2]["detail"]["judge"] == CHAT_JUDGE_PROVIDER
-            assert len(chat_data["rag_trace"]["evidence"]) == 1
+            assert saved_trace["steps"][0]["step"] == "retrieve"
+            assert saved_trace["steps"][0]["detail"]["retriever"] == CHAT_RETRIEVER_PROVIDER
+            assert saved_trace["steps"][0]["detail"]["gate_passed"] is True
+            assert saved_trace["steps"][0]["detail"]["gate_reason"] == "sufficient_evidence"
+            assert saved_trace["steps"][1]["detail"]["model"] == CHAT_RERANK_PROVIDER
+            assert saved_trace["steps"][2]["detail"]["judge"] == CHAT_JUDGE_PROVIDER
+            assert len(saved_trace["evidence"]) == 1
             assert "request_id" in chat_body
 
             stream_response = client.post(
@@ -332,9 +377,10 @@ def test_chat_and_sessions_flow(monkeypatch) -> None:
             assert stream_response.status_code == 200
             assert stream_response.headers["content-type"].startswith("text/event-stream")
             text = stream_response.text
-            assert "event: rag_step" in text
             assert "event: content" in text
-            assert "event: trace" in text
+            assert "event: retrieval_diagnostics" in text
+            assert "event: rag_step" not in text
+            assert "event: trace" not in text
             assert "event: done" in text
             assert "data: [DONE]" in text
 
@@ -353,6 +399,7 @@ def test_chat_and_sessions_flow(monkeypatch) -> None:
             assert len(detail_data["messages"]) == 4
             assert detail_data["messages"][0]["type"] == "user"
             assert detail_data["messages"][1]["type"] == "assistant"
+            assert "retrieval_diagnostics" in detail_data["messages"][1]
 
             delete_response = client.delete("/api/v1/sessions/session_test_1", headers=headers)
             assert delete_response.status_code == 200
@@ -426,7 +473,9 @@ def test_chat_reject_gate_when_no_evidence(monkeypatch) -> None:
         return fake_redis
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = override_get_redis_client
+    app.state.test_auth_redis = fake_redis
 
     registry = get_extension_registry()
     prev_retriever = registry.get_retriever(CHAT_RETRIEVER_PROVIDER)
@@ -438,7 +487,7 @@ def test_chat_reject_gate_when_no_evidence(monkeypatch) -> None:
 
     try:
         with TestClient(app) as client:
-            headers = _auth_headers(client, username="reject-user")
+            headers = _auth_headers(client, username="reject-user", role="admin")
             response = client.post(
                 "/api/v1/chat",
                 headers=headers,
@@ -447,13 +496,11 @@ def test_chat_reject_gate_when_no_evidence(monkeypatch) -> None:
             assert response.status_code == 200
             body = response.json()
             data = _extract_data(body)
-            assert data["rag_steps"][0]["step"] == "retrieve"
-            assert data["rag_steps"][0]["detail"]["gate_passed"] is False
-            assert data["rag_steps"][0]["detail"]["gate_reason"] == "reject_insufficient_evidence"
-            assert data["rag_trace"]["gate"]["passed"] is False
-            assert data["rag_trace"]["gate"]["reason"] == "reject_insufficient_evidence"
-            assert data["rag_trace"]["runtime"]["gate"]["passed"] is False
-            assert data["rag_trace"]["runtime"]["gate"]["reason"] == "reject_insufficient_evidence"
+            assert data["retrieval_diagnostics"]["evidence_gate"] == {
+                "outcome": "rejected",
+                "reason": "reject_insufficient_evidence",
+            }
+            assert "rag_trace" not in data
             assert "未检索到足够相关的知识片段" in data["answer"]
             assert "request_id" in body
     finally:
@@ -468,7 +515,7 @@ def test_chat_reject_gate_when_no_evidence(monkeypatch) -> None:
         asyncio.run(db_engine.dispose())
 
 
-def test_chat_smalltalk_fallback_without_evidence(monkeypatch) -> None:
+def test_chat_returns_non_knowledge_base_reply_without_retrieval_evidence(monkeypatch) -> None:
     db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -493,7 +540,9 @@ def test_chat_smalltalk_fallback_without_evidence(monkeypatch) -> None:
         return fake_redis
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = override_get_redis_client
+    app.state.test_auth_redis = fake_redis
 
     registry = get_extension_registry()
     prev_retriever = registry.get_retriever(CHAT_RETRIEVER_PROVIDER)
@@ -505,7 +554,7 @@ def test_chat_smalltalk_fallback_without_evidence(monkeypatch) -> None:
 
     try:
         with TestClient(app) as client:
-            headers = _auth_headers(client, username="smalltalk-user")
+            headers = _auth_headers(client, username="smalltalk-user", role="admin")
             response = client.post(
                 "/api/v1/chat",
                 headers=headers,
@@ -514,13 +563,12 @@ def test_chat_smalltalk_fallback_without_evidence(monkeypatch) -> None:
             assert response.status_code == 200
             body = response.json()
             data = _extract_data(body)
-            assert data["rag_steps"][0]["step"] == "retrieve"
-            assert data["rag_steps"][0]["detail"]["gate_passed"] is True
-            assert data["rag_steps"][0]["detail"]["gate_reason"] == "smalltalk_fallback"
-            assert data["rag_trace"]["gate"]["passed"] is True
-            assert data["rag_trace"]["gate"]["reason"] == "smalltalk_fallback"
-            assert data["rag_trace"]["runtime"]["gate"]["passed"] is True
-            assert data["rag_trace"]["runtime"]["gate"]["reason"] == "smalltalk_fallback"
+            assert data["retrieval_diagnostics"]["evidence_gate"] == {
+                "outcome": "unavailable",
+                "reason": "not_applicable_non_knowledge_base",
+            }
+            assert data["outcome"] == "non_knowledge_base_reply"
+            assert "rag_trace" not in data
             assert "我是 ZhoMind 智能助手" in data["answer"]
             assert "request_id" in body
     finally:
@@ -560,7 +608,7 @@ def test_chat_dense_trace_uses_default_mixed_mode_retriever(monkeypatch) -> None
         "document_id": "doc-chat-dense",
         "generation": 1,
         "chunk_index": 0,
-        "content_sha256": hashlib.sha256("alpha evidence from dense corpus".encode("utf-8")).hexdigest(),
+        "content_sha256": hashlib.sha256(b"alpha beta evidence from dense corpus").hexdigest(),
         "distance": 0.97,
     }
 
@@ -581,7 +629,9 @@ def test_chat_dense_trace_uses_default_mixed_mode_retriever(monkeypatch) -> None
         return fake_redis
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = override_get_redis_client
+    app.state.test_auth_redis = fake_redis
 
     registry = get_extension_registry()
     prev_retriever = registry.get_retriever(CHAT_RETRIEVER_PROVIDER)
@@ -606,7 +656,7 @@ def test_chat_dense_trace_uses_default_mixed_mode_retriever(monkeypatch) -> None
 
     try:
         with TestClient(app) as client:
-            headers = _auth_headers(client, username="dense-default-user")
+            headers = _auth_headers(client, username="dense-default-admin", role="admin")
             response = client.post(
                 "/api/v1/chat",
                 headers=headers,
@@ -614,10 +664,11 @@ def test_chat_dense_trace_uses_default_mixed_mode_retriever(monkeypatch) -> None
             )
             assert response.status_code == 200
             data = _extract_data(response.json())
-            assert data["rag_steps"][0]["detail"]["retriever"] == "inmemory-mixed-mode-retriever"
-            assert data["rag_trace"]["gate"]["passed"] is True
+            assert data["retrieval_diagnostics"]["evidence_gate"]["outcome"] == "passed"
+            saved_trace = asyncio.run(_load_assistant_trace(session_factory, "session_dense_default_1", "dense-default-admin"))
+            assert saved_trace["steps"][0]["detail"]["retriever"] == "inmemory-mixed-mode-retriever"
 
-            retrieve_trace = data["rag_trace"]["runtime"]["provider_trace"]["retrieve"]
+            retrieve_trace = saved_trace["runtime"]["provider_trace"]["retrieve"]
             assert retrieve_trace["strategy"] == "dense_plus_lexical_migration"
             assert retrieve_trace["dense_candidate_count"] == 1
             assert retrieve_trace["dense_hydrated_count"] == 1
@@ -626,9 +677,9 @@ def test_chat_dense_trace_uses_default_mixed_mode_retriever(monkeypatch) -> None
             assert retrieve_trace["dense_query_failed"] is False
             assert retrieve_trace["lexical_scope"] == "not_dense_ready_published"
 
-            evidence = data["rag_trace"]["evidence"]
+            evidence = saved_trace["evidence"]
             assert [item["retrieval_source"] for item in evidence] == ["dense", "lexical"]
-            assert "alpha evidence from dense corpus" in data["answer"]
+            assert data["answer"] == "【生成不可用】生成服务暂不可用，请稍后重试。"
     finally:
         if prev_retriever is not None:
             registry.register_retriever(CHAT_RETRIEVER_PROVIDER, prev_retriever)
@@ -646,6 +697,270 @@ def test_chat_dense_trace_uses_default_mixed_mode_retriever(monkeypatch) -> None
             registry.register_judge(CHAT_JUDGE_PROVIDER, prev_judge)
         else:
             registry.judges.pop(CHAT_JUDGE_PROVIDER, None)
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+        get_extension_registry.cache_clear()
+        asyncio.run(db_engine.dispose())
+
+
+def test_dense_only_candidate_without_lexical_anchor_is_insufficient_evidence(monkeypatch) -> None:
+    from app.rag.dense_contract import build_embedding_contract_fingerprint
+    from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
+
+    db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    monkeypatch.setenv("RAG_DISABLE_GATE", "false")
+    monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "missing-test-llm")
+    monkeypatch.setenv("RAG_LLM_FALLBACK_PROVIDERS", "")
+    get_settings.cache_clear()
+    get_extension_registry.cache_clear()
+
+    settings = Settings(
+        EMBEDDING_API_KEY="emb-key",
+        EMBEDDING_BASE_URL="https://emb.example.com/v1",
+        EMBEDDING_MODEL="emb-model",
+        DENSE_EMBEDDING_DIM=2,
+        MILVUS_URI="http://milvus.example.com:19530",
+    )
+    fingerprint = build_embedding_contract_fingerprint(settings)
+    dense_row = {
+        "document_id": "doc-chat-dense",
+        "generation": 1,
+        "chunk_index": 0,
+        "content_sha256": hashlib.sha256(b"alpha beta evidence from dense corpus").hexdigest(),
+        "distance": 0.97,
+    }
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_init_db())
+    asyncio.run(_seed_chat_retrieval_docs(session_factory, fingerprint=fingerprint))
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    fake_redis = _InMemoryRedis()
+
+    async def override_get_redis_client() -> _InMemoryRedis:
+        return fake_redis
+
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
+    app.dependency_overrides[get_redis_client] = override_get_redis_client
+    app.state.test_auth_redis = fake_redis
+
+    registry = get_extension_registry()
+    prev_retriever = registry.get_retriever(CHAT_RETRIEVER_PROVIDER)
+    prev_embedding = registry.get_embedding("embedding-default")
+    prev_reranker = registry.get_rerank(CHAT_RERANK_PROVIDER)
+    prev_judge = registry.get_judge(CHAT_JUDGE_PROVIDER)
+    registry.retrievers.pop(CHAT_RETRIEVER_PROVIDER, None)
+    registry.rerank_providers.pop(CHAT_RERANK_PROVIDER, None)
+    registry.judges.pop(CHAT_JUDGE_PROVIDER, None)
+    registry.register_embedding("embedding-default", _StubEmbeddingProvider())
+
+    class _InjectedMixedModeRetriever(MixedModeDocumentRetrieverService):
+        def __init__(self, session: AsyncSession) -> None:
+            super().__init__(
+                session,
+                settings=settings,
+                embedding_provider=_StubEmbeddingProvider(),
+                document_index=_FakeDenseDocumentIndex(rows=[dense_row]),
+            )
+
+    monkeypatch.setattr("app.service.chat_service.MixedModeDocumentRetrieverService", _InjectedMixedModeRetriever)
+
+    try:
+        with TestClient(app) as client:
+            headers = _auth_headers(client, username="dense-unmatched-admin", role="admin")
+            response = client.post(
+                "/api/v1/chat",
+                headers=headers,
+                # A generic shared token is not a complete query anchor. The
+                # published passage says nothing about the requested subject.
+                json={
+                    "message": "what evidence supports the warranty period",
+                    "session_id": "session_dense_unmatched_1",
+                },
+            )
+            assert response.status_code == 200
+            data = _extract_data(response.json())
+            assert data["outcome"] == "insufficient_evidence_reply"
+            assert data["message"]["evidence_summary"] == {
+                "coverage": "insufficient",
+                "source_count": 0,
+                "sources": [],
+            }
+            assert data["retrieval_diagnostics"]["evidence_gate"] == {
+                "outcome": "rejected",
+                "reason": "reject_insufficient_evidence",
+            }
+            saved_trace = asyncio.run(
+                _load_assistant_trace(session_factory, "session_dense_unmatched_1", "dense-unmatched-admin")
+            )
+            assert saved_trace["evidence"] == []
+    finally:
+        if prev_retriever is not None:
+            registry.register_retriever(CHAT_RETRIEVER_PROVIDER, prev_retriever)
+        else:
+            registry.retrievers.pop(CHAT_RETRIEVER_PROVIDER, None)
+        if prev_embedding is not None:
+            registry.register_embedding("embedding-default", prev_embedding)
+        else:
+            registry.embedding_providers.pop("embedding-default", None)
+        if prev_reranker is not None:
+            registry.register_rerank(CHAT_RERANK_PROVIDER, prev_reranker)
+        else:
+            registry.rerank_providers.pop(CHAT_RERANK_PROVIDER, None)
+        if prev_judge is not None:
+            registry.register_judge(CHAT_JUDGE_PROVIDER, prev_judge)
+        else:
+            registry.judges.pop(CHAT_JUDGE_PROVIDER, None)
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+        get_extension_registry.cache_clear()
+        asyncio.run(db_engine.dispose())
+
+
+def test_knowledge_user_chat_hydrates_published_evidence_beyond_stale_dense_candidates(monkeypatch) -> None:
+    from app.rag.dense_contract import build_embedding_contract_fingerprint
+    from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
+
+    db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    fake_redis = _InMemoryRedis()
+    provider = _RecordingLlmProvider()
+
+    monkeypatch.delenv("RUNTIME_RETRIEVAL_TOP_K", raising=False)
+    monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "ark")
+    get_settings.cache_clear()
+    get_extension_registry.cache_clear()
+
+    settings = Settings(
+        EMBEDDING_API_KEY="emb-key",
+        EMBEDDING_BASE_URL="https://emb.example.com/v1",
+        EMBEDDING_MODEL="emb-model",
+        DENSE_EMBEDDING_DIM=2,
+        MILVUS_URI="http://milvus.example.com:19530",
+    )
+    fingerprint = build_embedding_contract_fingerprint(settings)
+    published_content = "发布验收锚点：当前发布版本必须经过产品对话路径返回引用。"
+
+    async def _init_db() -> None:
+        async with db_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        async with session_factory() as session:
+            session.add_all(
+                [
+                    Document(
+                        id="doc-chat-current-published",
+                        filename="当前发布验收.md",
+                        file_type="md",
+                        file_size=100,
+                        status="ready",
+                        chunk_strategy="general",
+                        chunk_count=1,
+                        published_generation=1,
+                        dense_ready_generation=1,
+                        dense_ready_fingerprint=fingerprint,
+                        next_generation=2,
+                        latest_requested_generation=1,
+                    ),
+                    DocumentChunk(
+                        id="chunk-chat-current-published",
+                        document_id="doc-chat-current-published",
+                        generation=1,
+                        chunk_index=0,
+                        content=published_content,
+                        keywords=[],
+                        generated_questions=[],
+                        chunk_metadata={},
+                    ),
+                ]
+            )
+            await session.commit()
+
+    asyncio.run(_init_db())
+
+    stale_rows = [
+        {
+            "entity": {
+                "document_id": f"withdrawn-document-{index}",
+                "generation": 1,
+                "chunk_index": 0,
+                "content_sha256": hashlib.sha256(f"stale-{index}".encode()).hexdigest(),
+            },
+            "distance": 1.0 - (index / 100),
+        }
+        for index in range(224)
+    ]
+    current_published_row = {
+        "entity": {
+            "document_id": "doc-chat-current-published",
+            "generation": 1,
+            "chunk_index": 0,
+            "content_sha256": hashlib.sha256(published_content.encode()).hexdigest(),
+        },
+        "distance": 0.8,
+    }
+
+    async def override_get_db_session() -> Generator[AsyncSession, None, None]:
+        async with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
+    app.dependency_overrides[get_redis_client] = lambda: fake_redis
+    app.state.test_auth_redis = fake_redis
+
+    registry = get_extension_registry()
+    registry.register_embedding("embedding-default", _StubEmbeddingProvider())
+    registry.register_llm("ark", provider)
+    registry.retrievers.pop(CHAT_RETRIEVER_PROVIDER, None)
+    registry.rerank_providers.pop(CHAT_RERANK_PROVIDER, None)
+    registry.judges.pop(CHAT_JUDGE_PROVIDER, None)
+
+    class _InjectedMixedModeRetriever(MixedModeDocumentRetrieverService):
+        def __init__(self, session: AsyncSession) -> None:
+            super().__init__(
+                session,
+                settings=settings,
+                embedding_provider=_StubEmbeddingProvider(),
+                document_index=_FakeDenseDocumentIndex(rows=[*stale_rows, current_published_row]),
+            )
+
+    monkeypatch.setattr("app.service.chat_service.MixedModeDocumentRetrieverService", _InjectedMixedModeRetriever)
+
+    try:
+        with TestClient(app) as client:
+            headers = _auth_headers(client, username="published-window-user", role="user")
+            response = client.post(
+                "/api/v1/chat",
+                headers=headers,
+                json={"message": "发布验收锚点", "session_id": "published-window"},
+            )
+
+            assert response.status_code == 200
+            data = _extract_data(response.json())
+            assert data["answer"] == "已基于发布资料生成回答。"
+            assert data["message"]["evidence_summary"] == {
+                "coverage": "sufficient",
+                "source_count": 1,
+                "sources": [
+                    {
+                        "source_id": "chunk-chat-current-published",
+                        "metadata": {"title": "当前发布验收.md", "publication_version": "v1"},
+                        "excerpt": published_content,
+                    }
+                ],
+            }
+            assert len(provider.prompts) == 1
+            assert published_content in provider.prompts[0]
+    finally:
         app.dependency_overrides.clear()
         get_settings.cache_clear()
         get_extension_registry.cache_clear()
@@ -691,7 +1006,9 @@ def test_chat_dense_failure_trace_marks_runtime_fallback_and_error(monkeypatch) 
         return fake_redis
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = override_get_redis_client
+    app.state.test_auth_redis = fake_redis
 
     registry = get_extension_registry()
     prev_retriever = registry.get_retriever(CHAT_RETRIEVER_PROVIDER)
@@ -716,7 +1033,7 @@ def test_chat_dense_failure_trace_marks_runtime_fallback_and_error(monkeypatch) 
 
     try:
         with TestClient(app) as client:
-            headers = _auth_headers(client, username="dense-failure-user")
+            headers = _auth_headers(client, username="dense-failure-admin", role="admin")
             response = client.post(
                 "/api/v1/chat",
                 headers=headers,
@@ -724,8 +1041,12 @@ def test_chat_dense_failure_trace_marks_runtime_fallback_and_error(monkeypatch) 
             )
             assert response.status_code == 200
             data = _extract_data(response.json())
+            assert {"stage": "retrieve", "code": "PROVIDER_EXEC_FAILED", "type": "RuntimeError"} in data[
+                "retrieval_diagnostics"
+            ]["provider_errors"]
 
-            retrieve_trace = data["rag_trace"]["runtime"]["provider_trace"]["retrieve"]
+            saved_trace = asyncio.run(_load_assistant_trace(session_factory, "session_dense_failure_1", "dense-failure-admin"))
+            retrieve_trace = saved_trace["runtime"]["provider_trace"]["retrieve"]
             assert retrieve_trace["dense_query_failed"] is True
             assert retrieve_trace["fallback_used"] is True
             assert retrieve_trace["provider_error"] == {
@@ -735,7 +1056,7 @@ def test_chat_dense_failure_trace_marks_runtime_fallback_and_error(monkeypatch) 
             }
 
             retrieve_step = next(
-                step for step in data["rag_trace"]["runtime"]["steps"] if step["step"] == "retrieve"
+                step for step in saved_trace["runtime"]["steps"] if step["step"] == "retrieve"
             )
             assert retrieve_step["detail"]["dense_query_failed"] is True
             assert retrieve_step["detail"]["fallback_used"] is True
@@ -806,7 +1127,9 @@ def test_chat_dense_failure_full_lexical_fallback_reads_tail_of_published_live_c
         return fake_redis
 
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.state.test_auth_session_factory = session_factory
     app.dependency_overrides[get_redis_client] = override_get_redis_client
+    app.state.test_auth_redis = fake_redis
 
     registry = get_extension_registry()
     prev_retriever = registry.get_retriever(CHAT_RETRIEVER_PROVIDER)
@@ -831,7 +1154,7 @@ def test_chat_dense_failure_full_lexical_fallback_reads_tail_of_published_live_c
 
     try:
         with TestClient(app) as client:
-            headers = _auth_headers(client, username="dense-tail-failure-user")
+            headers = _auth_headers(client, username="dense-tail-failure-admin", role="admin")
             response = client.post(
                 "/api/v1/chat",
                 headers=headers,
@@ -839,16 +1162,22 @@ def test_chat_dense_failure_full_lexical_fallback_reads_tail_of_published_live_c
             )
             assert response.status_code == 200
             data = _extract_data(response.json())
+            assert {"stage": "retrieve", "code": "PROVIDER_EXEC_FAILED", "type": "RuntimeError"} in data[
+                "retrieval_diagnostics"
+            ]["provider_errors"]
 
-            retrieve_trace = data["rag_trace"]["runtime"]["provider_trace"]["retrieve"]
+            saved_trace = asyncio.run(
+                _load_assistant_trace(session_factory, "session_dense_tail_failure_1", "dense-tail-failure-admin")
+            )
+            retrieve_trace = saved_trace["runtime"]["provider_trace"]["retrieve"]
             assert retrieve_trace["dense_query_failed"] is True
             assert retrieve_trace["fallback_used"] is True
             assert retrieve_trace["lexical_scope"] == "full_published_live"
             assert retrieve_trace["lexical_candidate_count"] == 1
 
-            evidence = data["rag_trace"]["evidence"]
+            evidence = saved_trace["evidence"]
             assert [item["document_id"] for item in evidence] == ["doc-chat-tail-match"]
-            assert "xqvzjk chat tail evidence" in data["answer"]
+            assert data["answer"] == "【生成不可用】生成服务暂不可用，请稍后重试。"
     finally:
         if prev_retriever is not None:
             registry.register_retriever(CHAT_RETRIEVER_PROVIDER, prev_retriever)
