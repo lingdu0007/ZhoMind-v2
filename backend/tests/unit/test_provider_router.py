@@ -3,6 +3,7 @@ import json
 
 from app.extensions.provider_router import ProviderRouter
 from app.rag.generation_observation import provider_visible_snapshot_ids, wire_generation_envelope_observation
+from app.rag.interfaces import GenerationAttemptError, GenerationCompletion
 
 
 class _OkProvider:
@@ -10,7 +11,9 @@ class _OkProvider:
         self.text = text
 
     async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
-        self.last_generation_envelope = wire_generation_envelope_observation(
+        return GenerationCompletion(
+            text=self.text,
+            generation_envelope=wire_generation_envelope_observation(
             wire_payload=json.dumps(
                 {"messages": ([{"role": "system", "content": system_prompt}] if system_prompt else []) + [
                     {"role": "user", "content": prompt}
@@ -19,8 +22,8 @@ class _OkProvider:
                 separators=(",", ":"),
             ).encode("utf-8"),
             snapshot_ids=provider_visible_snapshot_ids(prompt),
+            ),
         )
-        return self.text
 
 
 class _RetryableFailProvider:
@@ -30,12 +33,14 @@ class _RetryableFailProvider:
 
 class _HardFailProvider:
     async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
-        self.last_generation_envelope = wire_generation_envelope_observation(
-            wire_payload=json.dumps({"messages": [{"role": "user", "content": prompt}]}, separators=(",", ":"))
-            .encode("utf-8"),
-            snapshot_ids=provider_visible_snapshot_ids(prompt),
+        raise GenerationAttemptError(
+            "bad request",
+            generation_envelope=wire_generation_envelope_observation(
+                wire_payload=json.dumps({"messages": [{"role": "user", "content": prompt}]}, separators=(",", ":"))
+                .encode("utf-8"),
+                snapshot_ids=provider_visible_snapshot_ids(prompt),
+            ),
         )
-        raise ValueError("bad request")
 
 
 def test_router_failover_on_retryable_error() -> None:
@@ -143,3 +148,56 @@ def test_router_uses_provider_observation_instead_of_rebuilding_generic_argument
     )
 
     assert without_system_prompt["generation_envelope"]["identity"] == with_empty_system_prompt["generation_envelope"]["identity"]
+
+
+def test_router_keeps_concurrent_provider_observations_request_scoped() -> None:
+    class _ConcurrentProvider:
+        async def complete(self, prompt: str, *, system_prompt: str | None = None) -> GenerationCompletion:
+            await asyncio.sleep(0)
+            return GenerationCompletion(
+                text=prompt,
+                generation_envelope=wire_generation_envelope_observation(
+                    wire_payload=prompt.encode("utf-8"),
+                    snapshot_ids=provider_visible_snapshot_ids(prompt),
+                ),
+            )
+
+    first_prompt = '{"evidence_sources":[]}'
+    second_prompt = '{"evidence_sources":[{"title":"t","publication_version":"v1","excerpt":"e"}]}'
+    router = ProviderRouter(providers={"ark": _ConcurrentProvider()})
+    async def run_concurrently() -> tuple[dict, dict]:
+        return await asyncio.gather(
+            router.complete(primary="ark", fallbacks=[], prompt=first_prompt),
+            router.complete(primary="ark", fallbacks=[], prompt=second_prompt),
+        )
+
+    first, second = asyncio.run(run_concurrently())
+
+    assert first["generation_envelope"]["source_count"] == 0
+    assert second["generation_envelope"]["source_count"] == 1
+    assert first["generation_envelope"]["identity"] != second["generation_envelope"]["identity"]
+
+
+def test_router_does_not_retain_observation_from_failed_attempt_when_fallback_has_none() -> None:
+    class _RetryableObservedFailure:
+        async def complete(self, prompt: str, *, system_prompt: str | None = None) -> GenerationCompletion:
+            raise GenerationAttemptError(
+                "upstream timeout",
+                generation_envelope=wire_generation_envelope_observation(
+                    wire_payload=b"failed-attempt",
+                    snapshot_ids=(),
+                ),
+            )
+
+    class _FallbackWithoutObservation:
+        async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
+            return "fallback"
+
+    result = asyncio.run(
+        ProviderRouter(providers={"primary": _RetryableObservedFailure(), "fallback": _FallbackWithoutObservation()}).complete(
+            primary="primary", fallbacks=["fallback"], prompt="question"
+        )
+    )
+
+    assert result["final_provider"] == "fallback"
+    assert result["generation_envelope"] is None

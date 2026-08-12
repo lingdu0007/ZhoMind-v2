@@ -1,6 +1,7 @@
 from typing import TypedDict
 
 from app.rag.interfaces import (
+    GenerationCompletion,
     LlmProvider,
     ProviderExecError,
     RelevanceJudge,
@@ -148,7 +149,8 @@ class LlmAdapter:
 
         try:
             result = await self.provider.complete(prompt, system_prompt=system_prompt)
-            return result, _build_detail(
+            text = result.text if isinstance(result, GenerationCompletion) else result
+            return text, _build_detail(
                 provider=self.provider_name,
                 fallback_used=False,
                 error=None,

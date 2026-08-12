@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.rag.generation_observation import observed_generation_envelope
+from app.rag.interfaces import GenerationCompletion
 
 
 @dataclass
@@ -50,14 +51,14 @@ class ProviderRouter:
 
             started = time.perf_counter()
             try:
-                if hasattr(provider, "last_generation_envelope"):
-                    provider.last_generation_envelope = None
                 # The provider owns the final wire/message construction. Do
                 # not recreate it here from the generic protocol arguments.
-                text = await provider.complete(prompt=prompt, system_prompt=system_prompt)
-                observed = observed_generation_envelope(getattr(provider, "last_generation_envelope", None))
-                if observed is not None:
-                    generation_envelope = observed
+                completion = await provider.complete(prompt=prompt, system_prompt=system_prompt)
+                text = completion.text if isinstance(completion, GenerationCompletion) else str(completion or "")
+                observed = observed_generation_envelope(
+                    completion.generation_envelope if isinstance(completion, GenerationCompletion) else None
+                )
+                generation_envelope = observed
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 final_provider = provider_name
                 attempts.append(
@@ -72,6 +73,7 @@ class ProviderRouter:
                 if text:
                     break
             except Exception as exc:
+                observed = observed_generation_envelope(getattr(exc, "generation_envelope", None))
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 attempts.append(
                     {
@@ -79,14 +81,10 @@ class ProviderRouter:
                         "attempt": idx,
                         "latency_ms": latency_ms,
                         "error_code": type(exc).__name__,
-                        "generation_envelope": observed_generation_envelope(
-                            getattr(provider, "last_generation_envelope", None)
-                        ),
+                        "generation_envelope": observed,
                     }
                 )
-                observed = observed_generation_envelope(getattr(provider, "last_generation_envelope", None))
-                if observed is not None:
-                    generation_envelope = observed
+                generation_envelope = observed
                 final_provider = provider_name
                 if not self._is_retryable(exc):
                     break

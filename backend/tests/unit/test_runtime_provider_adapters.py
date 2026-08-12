@@ -1,6 +1,7 @@
 import asyncio
 
 from app.extensions.ark_llm_provider import ArkLlmProvider
+from app.rag.interfaces import GenerationCompletion
 from app.rag.runtime.provider_adapters import (
     JudgeAdapter,
     LlmAdapter,
@@ -102,6 +103,11 @@ class _LlmBoom:
         raise RuntimeError("llm exploded")
 
 
+class _ObservedLlm:
+    async def complete(self, prompt: str, system_prompt: str | None = None) -> GenerationCompletion:
+        return GenerationCompletion(text="observed answer")
+
+
 class _FakeResponse:
     def __init__(self, payload: dict) -> None:
         self._payload = payload
@@ -149,8 +155,9 @@ def test_ark_llm_provider_parses_chat_completions_payload(monkeypatch) -> None:
         base_url="https://ark.example.com/api/v3",
     )
 
-    text = asyncio.run(provider.complete("hello"))
-    assert text == "这是模型回答"
+    completion = asyncio.run(provider.complete("hello"))
+    assert completion.text == "这是模型回答"
+    assert completion.generation_envelope is not None
 
 
 def test_reranker_primary_success() -> None:
@@ -231,3 +238,10 @@ def test_llm_fallback_on_exception_has_normalized_error() -> None:
     assert detail["error"]["code"] == "PROVIDER_EXEC_FAILED"
     assert detail["error"]["message"] == "llm exploded"
     assert detail["error"]["type"] == "RuntimeError"
+
+
+def test_llm_adapter_preserves_its_text_only_contract_for_observed_provider() -> None:
+    text, detail = asyncio.run(LlmAdapter(_ObservedLlm(), provider_name="llm-main").complete("prompt"))
+
+    assert text == "observed answer"
+    assert detail["fallback_used"] is False

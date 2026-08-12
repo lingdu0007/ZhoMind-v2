@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol, TypedDict
 
@@ -6,6 +7,22 @@ class ProviderExecError(TypedDict):
     code: str
     message: str
     type: str
+
+
+@dataclass(frozen=True)
+class GenerationCompletion:
+    """One provider attempt's text and content-free input observation."""
+
+    text: str
+    generation_envelope: Mapping[str, Any] | None = None
+
+
+class GenerationAttemptError(RuntimeError):
+    """A failed provider attempt that still has a wire-envelope observation."""
+
+    def __init__(self, message: str, *, generation_envelope: Mapping[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.generation_envelope = generation_envelope
 
 
 @dataclass(frozen=True)
@@ -59,7 +76,7 @@ class RelevanceJudge(Protocol):
 
 
 class LlmProvider(Protocol):
-    async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str: ...
+    async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str | GenerationCompletion: ...
 
 
 class EmbeddingProvider(Protocol):

@@ -5,7 +5,7 @@ import json
 from httpx import AsyncClient, HTTPError, Timeout
 
 from app.rag.generation_observation import provider_visible_snapshot_ids, wire_generation_envelope_observation
-from app.rag.interfaces import LlmProvider
+from app.rag.interfaces import GenerationAttemptError, GenerationCompletion, LlmProvider
 
 
 class ArkLlmProvider(LlmProvider):
@@ -23,12 +23,9 @@ class ArkLlmProvider(LlmProvider):
         self.model = model.strip()
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
-        self.last_generation_envelope: dict | None = None
-
-    async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
-        self.last_generation_envelope = None
+    async def complete(self, prompt: str, *, system_prompt: str | None = None) -> GenerationCompletion:
         if not self.api_key or not self.model or not self.base_url:
-            return ""
+            return GenerationCompletion(text="")
 
         messages = []
         if system_prompt:
@@ -42,7 +39,7 @@ class ArkLlmProvider(LlmProvider):
             "stream": False,
         }
         wire_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.last_generation_envelope = wire_generation_envelope_observation(
+        observation = wire_generation_envelope_observation(
             wire_payload=wire_body,
             snapshot_ids=provider_visible_snapshot_ids(prompt),
         )
@@ -58,14 +55,14 @@ class ArkLlmProvider(LlmProvider):
                 response = await client.post(url, headers=headers, content=wire_body)
                 response.raise_for_status()
                 data = response.json()
-        except (HTTPError, ValueError):
-            return ""
+        except (HTTPError, ValueError) as exc:
+            raise GenerationAttemptError(str(exc), generation_envelope=observation) from exc
 
         choices = data.get("choices") if isinstance(data, dict) else None
         if not isinstance(choices, list) or not choices:
-            return ""
+            return GenerationCompletion(text="", generation_envelope=observation)
 
         first = choices[0] if isinstance(choices[0], dict) else {}
         message = first.get("message") if isinstance(first, dict) else {}
         content = message.get("content") if isinstance(message, dict) else ""
-        return str(content or "").strip()
+        return GenerationCompletion(text=str(content or "").strip(), generation_envelope=observation)
