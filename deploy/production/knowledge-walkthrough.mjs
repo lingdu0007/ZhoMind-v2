@@ -122,6 +122,12 @@ assert.equal(normal.response.status, 200);
 assert.equal(normal.data.outcome, 'evidence_gated_answer');
 const normalSummary = normal.data.message.evidence_summary;
 assert.equal(normalSummary.sources.some((source) => source.entry_id === entryId), true);
+const normalHistory = await request(`/sessions/${runId}-normal`, { token: userToken });
+assert.equal(normalHistory.response.status, 200);
+const normalHistoryAnswer = normalHistory.data.messages.find((item) => item.type === 'assistant');
+assert.equal(normalHistoryAnswer.id, normal.data.message.id);
+assert.equal(normalHistoryAnswer.content, normal.data.message.content);
+assert.deepEqual(normalHistoryAnswer.evidence_summary, normalSummary);
 record('normal_answer', normal.data.outcome);
 
 const streamResponse = await fetch(`${apiUrl}/chat/stream`, {
@@ -133,14 +139,20 @@ assert.equal(streamResponse.status, 200);
 const events = parseSse(await streamResponse.text());
 const streamSummary = events.find((item) => item.event === 'evidence_summary')?.data.evidence_summary;
 assert.deepEqual(streamSummary, normalSummary);
-assert.equal(events.some((item) => item.event === 'answer_identity'), true);
+const streamAnswerId = events.find((item) => item.event === 'answer_identity')?.data.answer_id;
+assert.ok(streamAnswerId);
+const streamContent = events
+  .filter((item) => item.event === 'content')
+  .map((item) => item.data.content)
+  .join('');
 record('sse_answer', 'evidence_gated_answer');
 
 const history = await request(`/sessions/${runId}-stream`, { token: userToken });
 assert.equal(history.response.status, 200);
 const historyAnswer = history.data.messages.find((item) => item.type === 'assistant');
 assert.deepEqual(historyAnswer.evidence_summary, normalSummary);
-assert.equal(historyAnswer.content, normal.data.message.content);
+assert.equal(historyAnswer.id, streamAnswerId);
+assert.equal(historyAnswer.content, streamContent);
 record('history_citations', 'evidence_gated_answer');
 
 const paraphrase = await request('/chat', {

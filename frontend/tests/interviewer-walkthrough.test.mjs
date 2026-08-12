@@ -171,6 +171,12 @@ test('Production Interviewer Walkthrough publishes a Candidate and proves the Kn
   });
   assert.equal(normal.response.status, 200);
   assert.equal(normal.data.outcome, 'evidence_gated_answer');
+  const normalHistory = await apiRequest(api, '/sessions/walkthrough-normal', { token: userToken });
+  assert.equal(normalHistory.response.status, 200);
+  const normalHistoryAnswer = normalHistory.data.messages.find((item) => item.type === 'assistant');
+  assert.equal(normalHistoryAnswer.id, normal.data.message.id);
+  assert.equal(normalHistoryAnswer.content, normal.data.message.content);
+  assert.deepEqual(normalHistoryAnswer.evidence_summary, normal.data.message.evidence_summary);
 
   const streamedResponse = await fetch(`${api.baseUrl}/chat/stream`, {
     method: 'POST',
@@ -181,13 +187,19 @@ test('Production Interviewer Walkthrough publishes a Candidate and proves the Kn
   const streamEvents = parseSse(await streamedResponse.text());
   const streamSummary = streamEvents.find((item) => item.event === 'evidence_summary')?.data.evidence_summary;
   assert.deepEqual(streamSummary, normal.data.message.evidence_summary);
-  assert.equal(streamEvents.some((item) => item.event === 'answer_identity'), true);
+  const streamAnswerId = streamEvents.find((item) => item.event === 'answer_identity')?.data.answer_id;
+  assert.ok(streamAnswerId);
+  const streamContent = streamEvents
+    .filter((item) => item.event === 'content')
+    .map((item) => item.data.content)
+    .join('');
 
   const history = await apiRequest(api, '/sessions/walkthrough-stream', { token: userToken });
   assert.equal(history.response.status, 200);
   const historyAnswer = history.data.messages.find((item) => item.type === 'assistant');
   assert.deepEqual(historyAnswer.evidence_summary, streamSummary);
-  assert.equal(historyAnswer.content, normal.data.message.content);
+  assert.equal(historyAnswer.id, streamAnswerId);
+  assert.equal(historyAnswer.content, streamContent);
 
   const paraphrase = await apiRequest(api, '/chat', {
     token: userToken,
