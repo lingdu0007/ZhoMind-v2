@@ -1,21 +1,17 @@
 # Knowledge Base First Edition Candidate Evidence
 
-## Scope
+## Current Candidate
 
-This bounded public projection records a thirty-entry reviewed candidate corpus across the six declared themes. The authority corpus, Acceptance Set text, source snapshots, Gold Evidence, and complete editorial artifacts remain in the Private Editorial Repository.
+The private authority contains thirty declared target identities across six themes: six approved Pilot entries and twenty-four draft expansion entries. The drafts require human Knowledge Editorial Review of direct source support, exact Evidence Excerpt Snapshots, claim links, snippets, and Gold Evidence. No current target entry is published, and the Knowledge Base Release Gate has not run for the current asset hashes. This candidate is not a `First Edition`.
 
-## Release Gate
+## Historical Production Run
 
-The authenticated production Compose and live-provider run completed 120 normalized cases. It did not pass the Knowledge Base Release Gate: direct top-three coverage was 3.33%, paraphrase and combined-condition coverage was 0%, three Boundary Queries produced unsupported answers, and exact openable citation snapshots covered 17.78% of answerable cases. All thirty target entries remain unpublished, so this candidate is not labeled `First Edition`.
-
-## Production Limits
-
-The provider timed out in four cases and rate-limited 84 cases during the bounded observation window. Those cases are recorded as `Generation Unavailable`; they fail entry acceptance but are not counted as unsupported answers. The results are not a retrieval-only diagnostic or a disposable local substitute.
+An earlier candidate completed 120 authenticated production Compose and live-provider chat cases but failed its gate: direct top-three coverage was 3.33%, paraphrase and combined-condition coverage was 0%, three Boundary Queries produced unsupported answers, and exact openable citation snapshot coverage was 17.78%. The provider timed out in four cases and rate-limited 84. All thirty entries were withdrawn through the product withdrawal seam. That run does not match the current editorial candidate hashes.
 
 ## Maintenance
 
-Monthly source checks, 90-day Version Mapping review, six-month Stable Principle review, and quarterly sampled re-acceptance create review work only. The recorded 90-day run created 30 Version Mapping review items and six quarterly re-acceptance items, with zero automatic publications.
+The recorded maintenance run opened 21 unique public source URLs with no broken-link work, created six manual release-comparison items, six 90-day Version Mapping items, twenty-four editorial-review items, and six quarterly re-acceptance items. It performed zero automatic publications.
 
 ## Limits
 
-The result applies only to the recorded source revision, hashes, model identities, timeout, and observation window. Private corpus prose, queries, answers, excerpts, users, hosts, credentials, and operational details are excluded.
+The public bundle contains only normalized counts, hashes, revisions, and limitations. Private corpus prose, queries, Gold Evidence, source snapshots, answers, excerpts, entry identities, users, hosts, credentials, and complete acceptance output are excluded.

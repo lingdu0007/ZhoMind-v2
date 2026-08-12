@@ -1,21 +1,17 @@
 # 知识库 First Edition 候选证据
 
-## 范围
+## 当前候选
 
-这份有界公开投影记录六个声明主题下三十条已复核候选 corpus。authority corpus、Acceptance Set 文本、source snapshot、Gold Evidence 和完整 editorial artifact 仍保留在 Private Editorial Repository。
+私有 authority 在六个主题下包含三十个声明 target identity：六条已批准 Pilot entry 和二十四条扩展 draft。draft 仍须由人工 Knowledge Editorial Review 核对直接来源支撑、exact Evidence Excerpt Snapshot、claim link、snippet 与 Gold Evidence。当前没有 target entry 发布，Knowledge Base Release Gate 也尚未针对当前 asset hash 运行。该候选不是 `First Edition`。
 
-## 发布门禁
+## 历史生产运行
 
-认证 production Compose 与 live-provider run 完成了 120 个归一化 case，但未通过 Knowledge Base Release Gate：direct top-three coverage 为 3.33%，paraphrase 与 combined-condition coverage 为 0%，三个 Boundary Query 产生 unsupported answer，answerable case 的 exact openable citation snapshot coverage 为 17.78%。三十条 target entry 全部保持未发布，因此该候选不能标记为 `First Edition`。
-
-## 生产限制
-
-在有界 observation window 内，provider 有四个 case 超时、84 个 case 被限流。这些 case 记录为 `Generation Unavailable`；它们导致 entry 验收失败，但不计为 unsupported answer。该结果不是 retrieval-only diagnostic，也不以 disposable local 结果替代 production evidence。
+较早的候选完成了 120 个认证 production Compose 与 live-provider chat case，但未通过 Gate：direct top-three coverage 为 3.33%，paraphrase 与 combined-condition coverage 为 0%，三个 Boundary Query 产生 unsupported answer，exact openable citation snapshot coverage 为 17.78%。provider 有四个 case 超时、84 个 case 被限流。三十条 entry 均已通过产品 withdrawal seam 撤下。该 run 与当前 editorial candidate hash 不一致。
 
 ## 维护
 
-monthly source check、90-day Version Mapping review、six-month Stable Principle review 和 quarterly sampled re-acceptance 只创建 review work。记录的 90-day run 创建了 30 条 Version Mapping review work 和 6 条 quarterly re-acceptance work，自动发布数为 0。
+记录的 maintenance run 实际打开 21 个唯一公开 source URL，没有产生 broken-link work；同时创建 6 条人工 release comparison、6 条 90-day Version Mapping、24 条 editorial review 和 6 条 quarterly re-acceptance work。自动发布数为 0。
 
 ## 限制
 
-结果只适用于记录的 source revision、hash、model identity、timeout 与 observation window。Private corpus prose、query、answer、excerpt、user、host、credential 和 operational detail 均被排除。
+公开 bundle 只包含归一化计数、hash、revision 与限制。Private corpus prose、query、Gold Evidence、source snapshot、answer、excerpt、entry identity、user、host、credential 与完整 acceptance output 均被排除。
