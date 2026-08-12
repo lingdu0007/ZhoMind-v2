@@ -210,7 +210,11 @@ class MixedModeDocumentRetrieverService:
             return query_tokens[0] in content_tokens
 
         content_pairs = set(zip(content_tokens, content_tokens[1:], strict=False))
-        return any(pair in content_pairs for pair in zip(query_tokens, query_tokens[1:], strict=False))
+        if any(pair in content_pairs for pair in zip(query_tokens, query_tokens[1:], strict=False)):
+            return True
+
+        overlap_count = len(set(query_tokens) & set(content_tokens))
+        return overlap_count >= 3 and overlap_count / len(set(query_tokens)) >= 0.5
 
     async def _lexical_search(
         self,

@@ -304,6 +304,17 @@ def test_agent_answer_rejects_stale_version_mapping_and_unresolved_evidence_conf
     assert conflict.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
 
 
+def test_agent_answer_rejects_unknowns_section_as_answer_authority() -> None:
+    outcome = _execute(
+        _executor(
+            retriever=_RecordingRetriever([_agent_candidate(section_id="evidence-conflicts-and-unknowns")]),
+            provider=_RecordingProvider(),
+        )
+    )
+
+    assert outcome.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
+
+
 def test_agent_implementation_request_requires_labeled_evidence_bounded_aid() -> None:
     answer = """【Evidence-Bounded Implementation Aid】
 

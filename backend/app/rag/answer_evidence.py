@@ -68,6 +68,8 @@ def _safe_public_url(value: str) -> bool:
 def _agent_metadata_is_eligible(metadata: Mapping[str, object]) -> bool:
     if not isinstance(metadata.get("entry_id"), str):
         return True
+    if metadata.get("section_id") == "evidence-conflicts-and-unknowns":
+        return False
     if metadata.get("review_status") != "approved" or metadata.get("source_availability") != "verified":
         return False
     if metadata.get("evidence_conflict") == "unresolved":
