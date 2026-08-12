@@ -21,7 +21,8 @@ SYSTEM_POLICY = (
     "引用必须来自 \"evidence_sources\" 中实际列出的来源；不要编造或虚构来源，也不要引用未列出的资料。\n"
     "如果 \"evidence_sources\" 为空或不足以回答问题，请明确说明无法回答，不要编造内容。\n"
     "当 user envelope 包含 response_contract 时，严格按其中的 language、required_sections、required_label 和 "
-    "citation_markers 输出；每个决策相关 section 必须引用至少一个实际 marker，禁止输出未列出的 marker。"
+    "citation_markers 输出。每个 required section 必须用单独一行的 \"## {section}\" 作为标题，section 正文必须"
+    "至少包含一个格式为 \"[{citation_id}]\" 的实际 citation marker，禁止输出未列出的 marker。"
 )
 
 USER_QUESTION_REGION = "user_question"
@@ -52,6 +53,8 @@ def _response_contract(question: str, evidence: tuple[AnswerEvidence, ...]) -> d
         "language": language,
         "required_sections": sections,
         "citation_markers": [f"S{index}" for index in range(1, len(evidence) + 1)],
+        "section_heading_format": "## {section}",
+        "citation_marker_format": "[{citation_id}]",
     }
     if implementation_aid:
         contract["required_label"] = "Evidence-Bounded Implementation Aid"
