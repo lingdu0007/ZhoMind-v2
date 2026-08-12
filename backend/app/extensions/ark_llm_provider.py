@@ -4,6 +4,7 @@ import json
 
 from httpx import AsyncClient, HTTPError, Timeout
 
+from app.rag.generation_observation import provider_visible_snapshot_ids, wire_generation_envelope_observation
 from app.rag.interfaces import LlmProvider
 
 
@@ -22,8 +23,10 @@ class ArkLlmProvider(LlmProvider):
         self.model = model.strip()
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self.last_generation_envelope: dict | None = None
 
     async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
+        self.last_generation_envelope = None
         if not self.api_key or not self.model or not self.base_url:
             return ""
 
@@ -38,6 +41,11 @@ class ArkLlmProvider(LlmProvider):
             "temperature": 0.2,
             "stream": False,
         }
+        wire_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.last_generation_envelope = wire_generation_envelope_observation(
+            wire_payload=wire_body,
+            snapshot_ids=provider_visible_snapshot_ids(prompt),
+        )
 
         url = f"{self.base_url}/chat/completions"
         headers = {
@@ -47,7 +55,7 @@ class ArkLlmProvider(LlmProvider):
 
         try:
             async with AsyncClient(timeout=Timeout(self.timeout_seconds)) as client:
-                response = await client.post(url, headers=headers, content=json.dumps(payload, ensure_ascii=False))
+                response = await client.post(url, headers=headers, content=wire_body)
                 response.raise_for_status()
                 data = response.json()
         except (HTTPError, ValueError):

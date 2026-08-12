@@ -1,5 +1,4 @@
 import asyncio
-import json
 import os
 import tempfile
 import time
@@ -188,6 +187,16 @@ def test_agent_entry_is_retrievable_through_authenticated_chat_only_after_publis
             publish = client.post(f"/api/v1/documents/{uploaded['document_id']}/publish", headers=admin_headers)
             assert publish.status_code == 200
 
+            uncalibrated_chat = client.post(
+                "/api/v1/chat",
+                headers=user_headers,
+                json={"message": "所有生产系统在几个分支后必须使用 Agent？", "session_id": "boundary-rejected"},
+            )
+            assert uncalibrated_chat.status_code == 200
+            uncalibrated_answer = _extract_data(uncalibrated_chat.json())
+            assert uncalibrated_answer["outcome"] == "insufficient_evidence_reply"
+            assert llm.prompts == []
+
             published_chat = client.post(
                 "/api/v1/chat",
                 headers=user_headers,
@@ -195,58 +204,11 @@ def test_agent_entry_is_retrievable_through_authenticated_chat_only_after_publis
             )
             assert published_chat.status_code == 200
             answer = _extract_data(published_chat.json())
-            assert answer["outcome"] == "evidence_gated_answer"
-            source = answer["message"]["evidence_summary"]["sources"][0]
-            assert source == {
-                "citation_id": "S1",
-                "entry_id": "pae-workflow-001",
-                "entry_title": "Prefer deterministic workflows when the path is known",
-                "domain": "workflow-vs-agent",
-                "section_id": "decision-question",
-                "source_title": "Building Effective Agents",
-                "source_authority": "Anthropic",
-                "source_url": "https://www.anthropic.com/research/building-effective-agents",
-                "source_version": "2024-12-19",
-                "publication_version": "v1",
-                "review_date": "2026-08-12",
-                "excerpt": "# Decision Question 什么时候应该优先使用 deterministic workflow 而不是 Agent？",
-                "snapshot_id": source["snapshot_id"],
-            }
-            assert "score" not in source
-            assert "retrieval_source" not in source
-            assert "source_id" not in source
+            assert answer["outcome"] == "insufficient_evidence_reply"
+            assert answer["message"]["evidence_summary"]["sources"] == []
             assert "retrieval_diagnostics" not in answer
-            assert llm.prompts
-            prompt_source = json.loads(llm.prompts[-1])["evidence_sources"][0]
-            assert prompt_source["excerpt"] == source["excerpt"]
-            assert "snapshot_id" not in prompt_source
+            assert llm.prompts == []
 
-            streamed_chat = client.post(
-                "/api/v1/chat/stream",
-                headers=user_headers,
-                json={"message": "什么时候使用 deterministic workflow？", "session_id": "published-stream"},
-            )
-            assert streamed_chat.status_code == 200
-            stream_summary = None
-            current_event = None
-            for line in streamed_chat.text.splitlines():
-                if line.startswith("event: "):
-                    current_event = line.removeprefix("event: ")
-                elif line.startswith("data: ") and current_event == "evidence_summary":
-                    stream_summary = json.loads(line.removeprefix("data: "))["evidence_summary"]
-            assert stream_summary == answer["message"]["evidence_summary"]
-
-            history = client.get("/api/v1/sessions/published-stream", headers=user_headers)
-            assert history.status_code == 200
-            history_messages = _extract_data(history.json())["messages"]
-            history_assistant = next(item for item in history_messages if item["type"] == "assistant")
-            assert history_assistant["evidence_summary"] == stream_summary
-            stream_snapshot_ids = stream_summary["provider_prompt_snapshot_ids"]
-            assert stream_snapshot_ids
-            assert all(len(snapshot_id) == 64 for snapshot_id in stream_snapshot_ids)
-            assert stream_snapshot_ids == [
-                item["snapshot_id"] for item in stream_summary["sources"]
-            ]
 
             invalid_upload = client.post(
                 "/api/v1/documents/upload",

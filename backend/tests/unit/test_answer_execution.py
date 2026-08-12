@@ -232,7 +232,7 @@ def test_generation_unavailable_preserves_the_exact_answer_evidence_set() -> Non
     assert outcome.to_rag_trace()["runtime"]["provider_attempts"][0]["error_code"] == "TimeoutError"
 
 
-def test_agent_answer_requires_decision_summary_and_projects_public_source_citation() -> None:
+def test_agent_answer_fails_closed_until_a_real_evidence_gate_exists() -> None:
     answer = """## 建议
 使用 deterministic workflow。[S1]
 
@@ -249,26 +249,9 @@ def test_agent_answer_requires_decision_summary_and_projects_public_source_citat
         question="什么时候使用 deterministic workflow？",
     )
 
-    assert outcome.kind is AnswerOutcomeKind.EVIDENCE_GATED_ANSWER
-    assert outcome.text == answer
-    source = outcome.evidence_summary()["sources"][0]
-    assert source == {
-        "citation_id": "S1",
-        "entry_id": "pae-workflow-001",
-        "entry_title": "Prefer deterministic workflows",
-        "domain": "workflow-vs-agent",
-        "section_id": "stable-principle",
-        "source_title": "Building effective agents",
-        "source_authority": "Anthropic",
-        "source_url": "https://www.anthropic.com/engineering/building-effective-agents",
-        "source_version": "2024-12-19",
-        "publication_version": "v2",
-        "review_date": "2026-08-12",
-        "excerpt": "已知路径应由 deterministic workflow 控制。",
-        "snapshot_id": outcome.evidence[0].snapshot_id,
-    }
-    assert "source_id" not in source
-    assert "score" not in source
+    assert outcome.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
+    assert outcome.gate_reason == "reject_evidence_gate_unavailable"
+    assert outcome.evidence == ()
 
 
 def test_agent_answer_fails_closed_for_invalid_summary_or_unavailable_source() -> None:
@@ -285,7 +268,7 @@ def test_agent_answer_fails_closed_for_invalid_summary_or_unavailable_source() -
         )
     )
 
-    assert invalid_summary.kind is AnswerOutcomeKind.GENERATION_UNAVAILABLE
+    assert invalid_summary.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
     assert unavailable.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
 
 
@@ -318,7 +301,7 @@ def test_agent_answer_rejects_unknowns_section_as_answer_authority() -> None:
     assert outcome.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
 
 
-def test_agent_implementation_request_requires_labeled_evidence_bounded_aid() -> None:
+def test_agent_implementation_request_fails_closed_without_verified_evidence_gate() -> None:
     answer = """【Evidence-Bounded Implementation Aid】
 
 ## 建议
@@ -343,8 +326,8 @@ mode = "workflow"
         question="请给我 implementation checklist 和 Python 代码",
     )
 
-    assert outcome.kind is AnswerOutcomeKind.EVIDENCE_GATED_ANSWER
-    assert outcome.text.startswith("【Evidence-Bounded Implementation Aid】")
+    assert outcome.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
+    assert outcome.gate_reason == "reject_evidence_gate_unavailable"
 
 
 def test_snapshot_identity_binds_public_source_identity() -> None:
@@ -375,4 +358,103 @@ def test_summary_recomputes_snapshot_identity_instead_of_trusting_trace() -> Non
 
     source = summary["sources"][0]
     assert source["snapshot_id"] != "forged-snapshot-id"
-    assert summary["provider_prompt_snapshot_ids"] == [source["snapshot_id"]]
+    assert "provider_prompt_snapshot_ids" not in summary
+    assert "provider_generation_envelope" not in summary
+
+
+def test_agent_evidence_rejects_an_uncalibrated_gate_before_generation() -> None:
+    class _UncalibratedJudge:
+        async def judge(self, query: str, context: list[dict]) -> bool:
+            return True
+
+    provider = _RecordingProvider()
+    outcome = _execute(
+        _executor(
+            retriever=_RecordingRetriever([_agent_candidate()]),
+            provider=provider,
+            judge=_UncalibratedJudge(),  # type: ignore[arg-type]
+        )
+    )
+
+    assert outcome.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
+    assert outcome.gate_reason == "reject_evidence_gate_unavailable"
+    assert provider.prompts == []
+
+
+def test_agent_evidence_rejects_any_unverified_gate_before_generation() -> None:
+    class _SelfDeclaredGate:
+        async def judge(self, query: str, context: list[dict]) -> bool:
+            return True
+
+    provider = _RecordingProvider()
+    outcome = _execute(
+        _executor(
+            retriever=_RecordingRetriever([_agent_candidate()]),
+            provider=provider,
+            judge=_SelfDeclaredGate(),  # type: ignore[arg-type]
+        )
+    )
+
+    assert outcome.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
+    assert outcome.gate_reason == "reject_evidence_gate_unavailable"
+    assert provider.prompts == []
+
+
+def test_summary_hides_observed_envelope_when_citations_do_not_match() -> None:
+    candidate = _agent_candidate()
+    evidence = {
+        "chunk_id": candidate["chunk_id"],
+        "generation": candidate["generation"],
+        "metadata": candidate["metadata"],
+        "content_preview": candidate["content_preview"],
+    }
+
+    summary = evidence_summary_from_trace(
+        {
+            "outcome": "evidence_gated_answer",
+            "gate": {"passed": True},
+            "evidence": [evidence],
+            "runtime": {
+                "provider_generation_envelope": {
+                    "identity": "a" * 64,
+                    "snapshot_ids": ["b" * 64],
+                    "source_count": 1,
+                }
+            },
+        }
+    )
+
+    assert "provider_prompt_snapshot_ids" not in summary
+    assert "provider_generation_envelope" not in summary
+
+
+def test_summary_hides_malformed_generation_envelope_identity() -> None:
+    candidate = _agent_candidate()
+    evidence = {
+        "chunk_id": candidate["chunk_id"],
+        "generation": candidate["generation"],
+        "metadata": candidate["metadata"],
+        "content_preview": candidate["content_preview"],
+    }
+
+    summary = evidence_summary_from_trace(
+        {
+            "outcome": "evidence_gated_answer",
+            "gate": {"passed": True},
+            "evidence": [evidence],
+            "runtime": {
+                "provider_generation_envelope": {
+                    "identity": "g" * 64,
+                    "snapshot_ids": [evidence_snapshot_id(
+                        title=candidate["metadata"]["title"],
+                        publication_version=candidate["metadata"]["publication_version"],
+                        excerpt=candidate["content_preview"],
+                        citation_metadata=candidate["metadata"],
+                    )],
+                    "source_count": 1,
+                }
+            },
+        }
+    )
+
+    assert "provider_generation_envelope" not in summary

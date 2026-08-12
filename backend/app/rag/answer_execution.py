@@ -97,7 +97,7 @@ class EvidenceGatedAnswerExecutor:
         *,
         retriever: Retriever,
         reranker: Reranker,
-        judge: RelevanceJudge,
+        judge: RelevanceJudge | None,
         provider_router: ProviderRouter,
         primary_provider: str,
         retriever_name: str,
@@ -148,6 +148,7 @@ class EvidenceGatedAnswerExecutor:
             "fallback_hops": int(runtime_result.get("fallback_hops") or 0),
             "timing_ms": runtime_result.get("timing_ms") or {},
             "provider_prompt_snapshot_ids": list(runtime_result.get("provider_prompt_snapshot_ids") or []),
+            "provider_generation_envelope": runtime_result.get("provider_generation_envelope"),
         }
         return trace
 
@@ -258,7 +259,6 @@ class EvidenceGatedAnswerExecutor:
         gate = _gate_value if isinstance(_gate_value, Mapping) else {}
         gate_passed = bool(gate.get("passed")) and bool(evidence)
         gate_reason = str(gate.get("reason") or "reject_insufficient_evidence")
-
         provider_result: dict[str, Any] = {
             "text": "",
             "final_provider": None,
@@ -270,7 +270,8 @@ class EvidenceGatedAnswerExecutor:
             kind = AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
             text = self._INSUFFICIENT_REPLY
             evidence = ()
-            gate_reason = "reject_insufficient_evidence"
+            if not gate_reason.startswith("reject_"):
+                gate_reason = "reject_insufficient_evidence"
         else:
             generation_prompt = build_generation_prompt(normalized_question, evidence)
             generation_started = perf_counter()
@@ -291,6 +292,7 @@ class EvidenceGatedAnswerExecutor:
 
         runtime_result["gate"] = {"passed": gate_passed, "reason": gate_reason}
         runtime_result["provider_prompt_snapshot_ids"] = [item.snapshot_id for item in evidence]
+        runtime_result["provider_generation_envelope"] = provider_result.get("generation_envelope")
         runtime_result["timing_ms"] = {
             "retrieval_ms": retrieval_ms,
             "generation_provider_ms": generation_provider_ms,

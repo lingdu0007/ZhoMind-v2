@@ -96,13 +96,6 @@ class _IdentityReranker:
         return items
 
 
-class _EvidenceJudge:
-    name = "inmemory-evidence-judge"
-
-    async def judge(self, query: str, context: list[dict]) -> bool:
-        return len(context) > 0
-
-
 class ChatService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -124,13 +117,12 @@ class ChatService:
         fallback = _IdentityReranker()
         return fallback, fallback.name
 
-    def _resolve_judge(self) -> tuple[RelevanceJudge, str]:
+    def _resolve_judge(self) -> tuple[RelevanceJudge | None, str]:
         provider = get_extension_registry().get_judge(CHAT_JUDGE_PROVIDER)
         if provider is not None:
             return provider, CHAT_JUDGE_PROVIDER
 
-        fallback = _EvidenceJudge()
-        return fallback, fallback.name
+        return None, "unconfigured-agent-evidence-gate"
 
     def _provider_router(self) -> ProviderRouter:
         return ProviderRouter(providers=get_extension_registry().llm_providers)

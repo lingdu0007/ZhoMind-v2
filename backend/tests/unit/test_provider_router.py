@@ -1,6 +1,8 @@
 import asyncio
+import json
 
 from app.extensions.provider_router import ProviderRouter
+from app.rag.generation_observation import provider_visible_snapshot_ids, wire_generation_envelope_observation
 
 
 class _OkProvider:
@@ -8,6 +10,16 @@ class _OkProvider:
         self.text = text
 
     async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
+        self.last_generation_envelope = wire_generation_envelope_observation(
+            wire_payload=json.dumps(
+                {"messages": ([{"role": "system", "content": system_prompt}] if system_prompt else []) + [
+                    {"role": "user", "content": prompt}
+                ]},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8"),
+            snapshot_ids=provider_visible_snapshot_ids(prompt),
+        )
         return self.text
 
 
@@ -18,6 +30,11 @@ class _RetryableFailProvider:
 
 class _HardFailProvider:
     async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
+        self.last_generation_envelope = wire_generation_envelope_observation(
+            wire_payload=json.dumps({"messages": [{"role": "user", "content": prompt}]}, separators=(",", ":"))
+            .encode("utf-8"),
+            snapshot_ids=provider_visible_snapshot_ids(prompt),
+        )
         raise ValueError("bad request")
 
 
@@ -50,3 +67,79 @@ def test_router_stops_on_non_retryable_error() -> None:
     assert result["text"] == ""
     assert result["final_provider"] == "ark"
     assert len(result["provider_attempts"]) == 1
+
+
+def test_router_observes_snapshot_ids_from_actual_provider_envelope() -> None:
+    router = ProviderRouter(providers={"ark": _OkProvider("answer")})
+    prompt = json.dumps(
+        {
+            "user_question": "question",
+            "evidence_sources": [
+                {
+                    "entry_id": "entry-1",
+                    "entry_title": "Decision",
+                    "domain": "operations",
+                    "section_id": "recommendation",
+                    "source_title": "Source",
+                    "source_authority": "Authority",
+                    "source_url": "https://example.com/source",
+                    "source_version": "2026",
+                    "review_date": "2026-08-12",
+                    "publication_version": "v1",
+                    "excerpt": "Observed evidence",
+                }
+            ],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    result = asyncio.run(
+        router.complete(
+            primary="ark",
+            fallbacks=[],
+            prompt=prompt,
+            system_prompt="policy",
+        )
+    )
+
+    envelope = result["generation_envelope"]
+    assert envelope["snapshot_ids"]
+    assert len(envelope["identity"]) == 64
+
+
+def test_router_does_not_observe_an_envelope_without_a_provider_call() -> None:
+    result = asyncio.run(ProviderRouter(providers={}).complete(primary="ark", fallbacks=[], prompt="{}"))
+
+    assert result["generation_envelope"] is None
+
+
+def test_router_observes_an_envelope_when_provider_call_fails() -> None:
+    result = asyncio.run(
+        ProviderRouter(providers={"ark": _HardFailProvider()}).complete(
+            primary="ark",
+            fallbacks=[],
+            prompt='{"evidence_sources":[]}',
+            system_prompt="policy",
+        )
+    )
+
+    assert result["generation_envelope"] == {
+        "identity": result["generation_envelope"]["identity"],
+        "snapshot_ids": [],
+        "source_count": 0,
+    }
+    assert len(result["generation_envelope"]["identity"]) == 64
+
+
+def test_router_uses_provider_observation_instead_of_rebuilding_generic_arguments() -> None:
+    router = ProviderRouter(providers={"ark": _OkProvider("answer")})
+
+    without_system_prompt = asyncio.run(
+        router.complete(primary="ark", fallbacks=[], prompt='{"evidence_sources":[]}')
+    )
+    with_empty_system_prompt = asyncio.run(
+        router.complete(primary="ark", fallbacks=[], prompt='{"evidence_sources":[]}', system_prompt="")
+    )
+
+    assert without_system_prompt["generation_envelope"]["identity"] == with_empty_system_prompt["generation_envelope"]["identity"]

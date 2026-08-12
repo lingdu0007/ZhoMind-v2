@@ -166,18 +166,31 @@ class VerifyNode:
 
     async def run(self, state: RagStateDict) -> RagStateDict:
         if state["evidence_pack"]:
-            passed, exec_detail = await self.judge.judge(state["query_norm"], state["evidence_pack"])
+            has_agent_evidence = any(
+                isinstance(item.get("metadata"), dict)
+                and isinstance(item["metadata"].get("entry_id"), str)
+                for item in state["evidence_pack"]
+            )
+            if has_agent_evidence:
+                passed = False
+                reason = "reject_evidence_gate_unavailable"
+                exec_detail = {
+                    "provider": self.judge.provider_name,
+                    "fallback_used": True,
+                    "error": None,
+                }
+            else:
+                passed, exec_detail = await self.judge.judge(state["query_norm"], state["evidence_pack"])
+                reason = "sufficient_evidence" if passed else "reject_insufficient_evidence"
         else:
             passed = False
+            reason = "reject_insufficient_evidence"
             exec_detail = {
                 "provider": self.judge.provider_name,
                 "fallback_used": False,
                 "error": None,
             }
-        state["gate_result"] = {
-            "passed": passed,
-            "reason": "sufficient_evidence" if passed else "reject_insufficient_evidence",
-        }
+        state["gate_result"] = {"passed": passed, "reason": reason}
         verify_detail: ProviderTraceDetail = {
             "provider": exec_detail["provider"],
             "fallback_used": exec_detail["fallback_used"],

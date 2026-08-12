@@ -9,6 +9,8 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
+from app.rag.generation_observation import observed_generation_envelope
+
 _CITATION_METADATA_KEYS = (
     "title",
     "publication_version",
@@ -352,23 +354,17 @@ def evidence_summary_from_trace(rag_trace: object) -> dict[str, Any]:
     else:
         coverage = "unavailable"
     summary: dict[str, Any] = {"coverage": coverage, "source_count": len(sources), "sources": sources}
+    raw_runtime = trace.get("runtime")
+    runtime = raw_runtime if isinstance(raw_runtime, Mapping) else {}
+    observed_envelope = observed_generation_envelope(runtime.get("provider_generation_envelope"))
     agent_sources = [source for source in sources if isinstance(source.get("entry_id"), str)]
-    if agent_sources:
-        canonical_snapshot_ids = []
-        for item in evidence_items:
-            if not isinstance(item, Mapping):
-                continue
-            metadata = item.get("metadata")
-            if not isinstance(metadata, Mapping) or not isinstance(metadata.get("entry_id"), str):
-                continue
-            canonical_snapshot_ids.append(
-                evidence_snapshot_id(
-                    title=str(metadata.get("title") or ""),
-                    publication_version=str(metadata.get("publication_version") or f"v{item.get('generation', 1)}"),
-                    excerpt=str(item.get("content_preview") or item.get("content") or ""),
-                    citation_metadata=metadata,
-                )
-            )
-        if canonical_snapshot_ids == [source.get("snapshot_id") for source in agent_sources]:
-            summary["provider_prompt_snapshot_ids"] = canonical_snapshot_ids
+    citation_snapshot_ids = [source.get("snapshot_id") for source in agent_sources]
+    if (
+        agent_sources
+        and len(agent_sources) == len(sources)
+        and observed_envelope is not None
+        and observed_envelope["snapshot_ids"] == citation_snapshot_ids
+    ):
+        summary["provider_prompt_snapshot_ids"] = observed_envelope["snapshot_ids"]
+        summary["provider_generation_envelope"] = observed_envelope
     return summary
