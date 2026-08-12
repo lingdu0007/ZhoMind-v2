@@ -4,10 +4,12 @@ from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import create_engine, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from alembic import command
 from app.infra.db import get_db_session
 from app.infra.redis import get_redis_client
 from app.main import app
@@ -345,3 +347,32 @@ def test_review_queue_syncs_source_release_and_review_age_triggers_and_purges_ex
             return len(signals), len([item for item in work_items if item.id == "expired-review-item"])
 
     assert asyncio.run(expired_counts()) == (0, 0)
+
+
+def test_knowledge_feedback_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "knowledge-feedback-migration.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    with monkeypatch.context() as settings_env:
+        settings_env.setenv("DATABASE_URL", database_url)
+        from app.common.config import get_settings
+
+        get_settings.cache_clear()
+        config = Config("alembic.ini")
+        command.stamp(config, "20260802_0012")
+        command.upgrade(config, "20260812_0013")
+
+        sync_engine = create_engine(f"sqlite:///{db_path}")
+        schema = inspect(sync_engine)
+        assert {"knowledge_feedback_signals", "knowledge_review_work_items"}.issubset(schema.get_table_names())
+        assert {item["name"] for item in schema.get_unique_constraints("knowledge_feedback_signals")} == {
+            "uq_feedback_user_answer_entry"
+        }
+        assert {item["name"] for item in schema.get_unique_constraints("knowledge_review_work_items")} == {
+            "uq_knowledge_review_work_item_dedupe"
+        }
+
+        command.downgrade(config, "20260802_0012")
+        assert "knowledge_feedback_signals" not in inspect(sync_engine).get_table_names()
+        assert "knowledge_review_work_items" not in inspect(sync_engine).get_table_names()
+        sync_engine.dispose()
+    get_settings.cache_clear()
