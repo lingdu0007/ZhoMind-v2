@@ -80,6 +80,9 @@ class GenerationPrompt:
 def _evidence_region(item: AnswerEvidence, *, index: int) -> dict[str, str]:
     if item.is_agent_entry():
         citation = item.to_public_citation(f"S{index}")
+        # Snapshot identity is an audit projection, not provider input. The
+        # provider receives only the public citation identity and excerpt.
+        citation.pop("snapshot_id", None)
         return citation
     return {
         "title": item.title,

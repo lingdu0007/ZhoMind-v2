@@ -219,7 +219,7 @@ def test_agent_entry_is_retrievable_through_authenticated_chat_only_after_publis
             assert llm.prompts
             prompt_source = json.loads(llm.prompts[-1])["evidence_sources"][0]
             assert prompt_source["excerpt"] == source["excerpt"]
-            assert prompt_source["snapshot_id"] == source["snapshot_id"]
+            assert "snapshot_id" not in prompt_source
 
             streamed_chat = client.post(
                 "/api/v1/chat/stream",

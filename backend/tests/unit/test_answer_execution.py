@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from app.extensions.provider_router import ProviderRouter
+from app.rag.answer_evidence import evidence_snapshot_id, evidence_summary_from_trace
 from app.rag.answer_execution import (
     AnswerOutcomeKind,
     EvidenceGatedAnswerExecutor,
@@ -344,3 +345,34 @@ mode = "workflow"
 
     assert outcome.kind is AnswerOutcomeKind.EVIDENCE_GATED_ANSWER
     assert outcome.text.startswith("【Evidence-Bounded Implementation Aid】")
+
+
+def test_snapshot_identity_binds_public_source_identity() -> None:
+    base = {
+        "title": "同一标题",
+        "publication_version": "v1",
+        "excerpt": "同一摘录",
+    }
+    first = evidence_snapshot_id(**base, citation_metadata={"entry_id": "entry-1", "source_url": "https://a.example"})
+    second = evidence_snapshot_id(**base, citation_metadata={"entry_id": "entry-2", "source_url": "https://b.example"})
+
+    assert first != second
+
+
+def test_summary_recomputes_snapshot_identity_instead_of_trusting_trace() -> None:
+    candidate = _agent_candidate()
+    evidence = {
+        "chunk_id": candidate["chunk_id"],
+        "generation": candidate["generation"],
+        "metadata": candidate["metadata"],
+        "content_preview": candidate["content_preview"],
+        "snapshot_id": "forged-snapshot-id",
+    }
+
+    summary = evidence_summary_from_trace(
+        {"outcome": "evidence_gated_answer", "gate": {"passed": True}, "evidence": [evidence]}
+    )
+
+    source = summary["sources"][0]
+    assert source["snapshot_id"] != "forged-snapshot-id"
+    assert summary["provider_prompt_snapshot_ids"] == [source["snapshot_id"]]

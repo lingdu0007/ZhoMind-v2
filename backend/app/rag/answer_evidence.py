@@ -100,19 +100,27 @@ def evidence_snapshot_id(
     title: str,
     publication_version: str,
     excerpt: str,
+    citation_metadata: Mapping[str, object] | None = None,
 ) -> str:
     """Return the stable identity for one provider-visible evidence snapshot.
 
     The identity binds the exact normalized excerpt to its published source
-    identity and citation metadata.  It is intentionally independent of the
+    identity and citation metadata. It is intentionally independent of the
     citation marker (``S1``), which is a presentation detail that can change
-    when retrieval order changes.
+    when retrieval order changes. Only provider-visible citation metadata is
+    accepted, so internal retrieval and runtime fields cannot affect it.
     """
-    payload = {
+    payload: dict[str, object] = {
         "title": title.strip(),
         "publication_version": publication_version.strip(),
         "excerpt": excerpt,
     }
+    if citation_metadata:
+        payload["citation_metadata"] = {
+            key: str(citation_metadata[key]).strip()
+            for key in _AGENT_CITATION_KEYS
+            if isinstance(citation_metadata.get(key), str) and str(citation_metadata[key]).strip()
+        }
     serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
@@ -231,10 +239,12 @@ class AnswerEvidence:
 
     @property
     def snapshot_id(self) -> str:
+        metadata = dict(self.metadata_items)
         return evidence_snapshot_id(
             title=self.title,
             publication_version=self.publication_version,
             excerpt=self.excerpt,
+            citation_metadata=metadata if self.is_agent_entry() else None,
         )
 
     def is_agent_entry(self) -> bool:
@@ -299,8 +309,6 @@ def evidence_summary_from_trace(rag_trace: object) -> dict[str, Any]:
                 **{key: source_metadata[key] for key in _AGENT_CITATION_KEYS if key in source_metadata},
                 "publication_version": source_metadata.get("publication_version") or f"v{item.get('generation', 1)}",
             }
-            if isinstance(item.get("snapshot_id"), str) and item["snapshot_id"].strip():
-                citation["snapshot_id"] = item["snapshot_id"].strip()
             if item.get("withdrawn") is True:
                 citation["withdrawal_notice"] = "This source has been withdrawn."
             else:
@@ -308,6 +316,14 @@ def evidence_summary_from_trace(rag_trace: object) -> dict[str, Any]:
                 if not excerpt:
                     continue
                 citation["excerpt"] = excerpt
+                citation["snapshot_id"] = evidence_snapshot_id(
+                    title=str(source_metadata.get("title") or ""),
+                    publication_version=str(
+                        source_metadata.get("publication_version") or f"v{item.get('generation', 1)}"
+                    ),
+                    excerpt=excerpt,
+                    citation_metadata=source_metadata,
+                )
             sources.append(citation)
             continue
         if item.get("withdrawn") is True:
@@ -348,6 +364,7 @@ def evidence_summary_from_trace(rag_trace: object) -> dict[str, Any]:
                     title=str(metadata.get("title") or ""),
                     publication_version=str(metadata.get("publication_version") or f"v{item.get('generation', 1)}"),
                     excerpt=str(item.get("content_preview") or item.get("content") or ""),
+                    citation_metadata=metadata,
                 )
             )
         if canonical_snapshot_ids == [source.get("snapshot_id") for source in agent_sources]:

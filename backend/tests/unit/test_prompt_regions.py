@@ -152,9 +152,9 @@ def test_agent_prompt_exposes_public_citations_and_decision_summary_contract() -
         "publication_version": "v2",
         "review_date": "2026-08-12",
         "excerpt": "已知路径应由 deterministic workflow 控制。",
-        "snapshot_id": _agent_evidence().snapshot_id,
     }
     serialized = json.dumps(envelope, ensure_ascii=False)
+    assert "snapshot_id" not in envelope[EVIDENCE_SOURCES_REGION][0]
     assert "internal-chunk-1" not in serialized
     assert "internal-document-1" not in serialized
     assert "9.5" not in serialized
