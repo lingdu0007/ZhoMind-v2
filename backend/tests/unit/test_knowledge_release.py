@@ -78,6 +78,18 @@ def test_release_gate_fails_closed_and_excludes_failed_entries_from_claims() -> 
         KnowledgeBaseReleaseGate(declared).evaluate(observations, requested_label="First Edition", strict_label=True)
 
 
+def test_generation_unavailable_fails_boundary_without_counting_an_unsupported_answer() -> None:
+    observations = _observations()
+    observations[3]["actual_outcome"] = "generation_unavailable"
+    declared = [f"pae-entry-{index + 1:03d}" for index in range(6)]
+
+    result = KnowledgeBaseReleaseGate(declared).evaluate(observations, requested_label="First Edition")
+
+    assert result["passed"] is False
+    assert result["failed_entry_ids"] == ["pae-entry-001"]
+    assert result["metrics"]["unsupported_boundary_answers"] == 0
+
+
 def test_manifest_is_non_sensitive_reproducible_and_supports_rollback(tmp_path) -> None:
     entries = [
         {"entry_id": "pae-a-001", "sha256": "a" * 64},

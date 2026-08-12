@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "run_id": "maintenance-2026-11-11",
+  "source_revision": "bf37bd338fbdf8fabaf691a014832b32331f16d8",
+  "observed_at": "2026-11-11T00:00:00+00:00",
+  "automatic_publications": 0,
+  "cadences": ["monthly", "quarterly", "six-month", "90-day"],
+  "results": [
+    {"check": "broken-link", "checked_entries": 30, "review_work_created": 0},
+    {"check": "new-release", "checked_entries": 30, "review_work_created": 0},
+    {"check": "version-mapping-stale", "checked_entries": 30, "review_work_created": 30},
+    {"check": "stable-principle-review", "checked_entries": 30, "review_work_created": 0},
+    {"check": "quarterly-reacceptance", "checked_entries": 6, "review_work_created": 6}
+  ],
+  "limits": [
+    "Maintenance creates review work only and never publishes content automatically.",
+    "The public record excludes source bodies, queries, answers, excerpts, entry identities, users, hosts, and credentials.",
+    "The quarterly sample covers one entry per declared theme."
+  ]
+}

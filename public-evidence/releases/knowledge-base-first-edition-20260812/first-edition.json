@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "edition_id": "knowledge-base-first-edition-20260812",
+  "edition_label": "Unreleased Candidate",
+  "source_revision": "135dbd8adf368dd6c2d321d8b30a5659b0880861",
+  "private_manifest_sha256": "aa33d2ae60f717416a7146a2ac295100a6fd06d8fe3c80bef3639d4194df707a",
+  "corpus_sha256": "88365393c9c0849b70cbe13001e69cafe7eda4087b09f94312f471233cb9f071",
+  "acceptance_set_sha256": "1da7473ad2a80f1cafedad03d02ee46f60b6fcad5437ee19eb4c3b1d766423bf",
+  "acceptance_run_id": "first-edition-live-20260812-01",
+  "declared_target_entry_count": 30,
+  "published_entry_count": 0,
+  "unpublished_entry_count": 30,
+  "theme_coverage": {
+    "workflow-vs-agent": 5,
+    "tools-and-mcp": 5,
+    "context-memory-rag": 5,
+    "orchestration": 5,
+    "reliability-safety-evaluation": 5,
+    "operating-constraints": 5
+  },
+  "release_gate": {
+    "passed": false,
+    "direct_top_three_coverage": 0.03333333333333333,
+    "paraphrase_combined_top_three_coverage": 0.0,
+    "unsupported_boundary_answers": 3,
+    "exact_openable_citation_snapshots": 0.17777777777777778,
+    "failed_entry_count": 30,
+    "severity_counts": {"P0": 3, "P1": 27, "P2": 0, "P3": 0}
+  },
+  "production_observation": {
+    "environment": "production-compose",
+    "provider_identity": "ark",
+    "generation_model": "deepseek-ai/DeepSeek-V4-Flash",
+    "embedding_model": "Qwen/Qwen3-Embedding-8B",
+    "query_count": 120,
+    "passed_case_count": 6,
+    "provider_timeout_count": 4,
+    "provider_rate_limited_count": 84,
+    "client_timeout_seconds": 45,
+    "started_at": "2026-08-12T06:41:33.035813+00:00",
+    "finished_at": "2026-08-12T06:51:46.874165+00:00"
+  }
+}

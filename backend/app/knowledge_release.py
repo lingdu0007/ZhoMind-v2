@@ -48,7 +48,7 @@ class KnowledgeBaseReleaseGate:
             "direct_top_three_coverage": self._ratio(direct, "top_three_evidence_covered"),
             "paraphrase_combined_top_three_coverage": self._ratio(semantic, "top_three_evidence_covered"),
             "unsupported_boundary_answers": sum(
-                item.get("actual_outcome") != "insufficient_evidence_reply" for item in boundaries
+                item.get("actual_outcome") == "evidence_gated_answer" for item in boundaries
             ),
             "exact_openable_citation_snapshots": self._citation_ratio(answerable),
         }
