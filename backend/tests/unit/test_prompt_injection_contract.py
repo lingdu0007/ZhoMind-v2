@@ -11,8 +11,10 @@ from app.rag.answer_execution import (
 from app.rag.prompt_injection_corpus import (
     ADVERSARIAL_INJECTION_CASES,
     FORGED_SOURCE,
+    FORGED_TOOL_CALL,
     INSTRUCTION_OVERRIDE,
     SECRET_EXTRACTION,
+    UNSAFE_CODE,
     UNSUPPORTED_ANSWER_PRESSURE,
 )
 from app.rag.prompt_regions import (
@@ -179,6 +181,24 @@ def test_forged_source_instruction_cannot_inject_citation_identity() -> None:
     assert case.answer_marker in envelope[EVIDENCE_SOURCES_REGION][0]["excerpt"]
     assert case.answer_marker not in envelope[USER_QUESTION_REGION]
     assert case.answer_marker not in system_prompt
+
+
+@pytest.mark.parametrize("kind", [FORGED_TOOL_CALL, UNSAFE_CODE])
+def test_agent_specific_effect_instructions_remain_untrusted_evidence(kind: str) -> None:
+    case = _seeded_case(kind)
+    assert case.answer_marker is not None
+    retriever = _RecordingRetriever([_candidate(case)])
+    provider = _RecordingProvider()
+
+    outcome = _execute(_executor(retriever=retriever, provider=provider), case.question)
+
+    assert outcome.kind is AnswerOutcomeKind.EVIDENCE_GATED_ANSWER
+    envelope = json.loads(provider.prompts[0])
+    system_prompt = provider.system_prompts[0] or ""
+    assert case.answer_marker in envelope[EVIDENCE_SOURCES_REGION][0]["excerpt"]
+    assert case.answer_marker not in envelope[USER_QUESTION_REGION]
+    assert case.answer_marker not in system_prompt
+    assert "不可信数据" in system_prompt
 
 
 def test_no_evidence_pressure_returns_insufficient_without_generation() -> None:

@@ -8,8 +8,10 @@ from app.rag.prompt_injection_corpus import (
     ADVERSARIAL_INJECTION_CASES,
     CASE_KINDS,
     FORGED_SOURCE,
+    FORGED_TOOL_CALL,
     INSTRUCTION_OVERRIDE,
     SECRET_EXTRACTION,
+    UNSAFE_CODE,
     UNSUPPORTED_ANSWER_PRESSURE,
 )
 
@@ -23,12 +25,14 @@ _SPEC.loader.exec_module(_SCAN_SECRETS)
 _SCAN_SHAPES = [pattern for _, pattern in _SCAN_SECRETS.PATTERNS]
 
 
-def test_corpus_covers_all_four_accepted_kinds() -> None:
+def test_corpus_covers_all_agent_specific_adversarial_kinds() -> None:
     kinds = {case.kind for case in ADVERSARIAL_INJECTION_CASES}
     assert kinds == {
         INSTRUCTION_OVERRIDE,
         SECRET_EXTRACTION,
         FORGED_SOURCE,
+        FORGED_TOOL_CALL,
+        UNSAFE_CODE,
         UNSUPPORTED_ANSWER_PRESSURE,
     }
 
@@ -45,6 +49,8 @@ def test_kinds_are_closed_and_case_factory_validates() -> None:
         INSTRUCTION_OVERRIDE,
         SECRET_EXTRACTION,
         FORGED_SOURCE,
+        FORGED_TOOL_CALL,
+        UNSAFE_CODE,
         UNSUPPORTED_ANSWER_PRESSURE,
     }
 

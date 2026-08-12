@@ -7,8 +7,10 @@ from app.prompt_injection_live import CaseResult, PromptInjectionLiveRun, _RunFa
 from app.rag.prompt_injection_corpus import (
     ADVERSARIAL_INJECTION_CASES,
     FORGED_SOURCE,
+    FORGED_TOOL_CALL,
     INSTRUCTION_OVERRIDE,
     SECRET_EXTRACTION,
+    UNSAFE_CODE,
     UNSUPPORTED_ANSWER_PRESSURE,
 )
 
@@ -21,7 +23,7 @@ def _case(kind: str):
 
 
 def test_seeded_case_passes_when_marker_stays_out_of_answer() -> None:
-    for kind in (INSTRUCTION_OVERRIDE, SECRET_EXTRACTION, FORGED_SOURCE):
+    for kind in (INSTRUCTION_OVERRIDE, SECRET_EXTRACTION, FORGED_SOURCE, FORGED_TOOL_CALL, UNSAFE_CODE):
         case = _case(kind)
         result = judge_case(case, outcome="evidence_gated_answer", answer_text="正常回答内容", source_count=2)
         assert result.pass_fail == "pass"
@@ -39,6 +41,8 @@ def test_seeded_case_passes_when_marker_stays_out_of_answer() -> None:
         (INSTRUCTION_OVERRIDE, "policy_override"),
         (SECRET_EXTRACTION, "secret_disclosure"),
         (FORGED_SOURCE, "forged_citation"),
+        (FORGED_TOOL_CALL, "forged_tool_call"),
+        (UNSAFE_CODE, "unsafe_code"),
     ],
 )
 def test_seeded_case_fails_when_marker_leaks_into_answer(kind: str, classification: str) -> None:
@@ -51,7 +55,7 @@ def test_seeded_case_fails_when_marker_leaks_into_answer(kind: str, classificati
 
 @pytest.mark.parametrize(
     "kind",
-    [INSTRUCTION_OVERRIDE, SECRET_EXTRACTION, FORGED_SOURCE, UNSUPPORTED_ANSWER_PRESSURE],
+    [INSTRUCTION_OVERRIDE, SECRET_EXTRACTION, FORGED_SOURCE, FORGED_TOOL_CALL, UNSAFE_CODE, UNSUPPORTED_ANSWER_PRESSURE],
 )
 def test_generation_unavailable_always_classifies_as_provider_failure(kind: str) -> None:
     case = _case(kind)
@@ -77,7 +81,14 @@ def test_unsupported_pressure_fails_when_an_answer_is_produced() -> None:
 
 def test_record_matches_public_evidence_contract_fields() -> None:
     case = _case(SECRET_EXTRACTION)
-    result = judge_case(case, outcome="evidence_gated_answer", answer_text="正常回答", source_count=1)
+    result = judge_case(
+        case,
+        outcome="evidence_gated_answer",
+        answer_text="正常回答",
+        source_count=1,
+        source_revision="candidate-revision",
+        run_id="security-run-01",
+    )
     record = result.to_record()
     assert set(record) == {
         "case_id",
@@ -86,10 +97,14 @@ def test_record_matches_public_evidence_contract_fields() -> None:
         "pass_fail",
         "citation_counts",
         "failure_classification",
+        "source_revision",
+        "run_id",
     }
     assert set(record["citation_counts"]) == {"source_count", "evidence_count"}
     assert record["citation_counts"]["source_count"] >= 0
     assert record["citation_counts"]["evidence_count"] >= 0
+    assert record["source_revision"] == "candidate-revision"
+    assert record["run_id"] == "security-run-01"
 
 
 def test_verification_sentinel_is_letter_only() -> None:

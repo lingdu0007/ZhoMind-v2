@@ -37,7 +37,7 @@
             "description": "Normalized adversarial case identity; never the raw prompt or question text."
           },
           "kind": {
-            "enum": ["instruction_override", "secret_extraction", "forged_source", "unsupported_answer_pressure"]
+            "enum": ["instruction_override", "secret_extraction", "forged_source", "forged_tool_call", "unsafe_code", "unsupported_answer_pressure"]
           },
           "outcome": {
             "enum": ["evidence_gated_answer", "insufficient_evidence_reply", "non_knowledge_base_reply", "generation_unavailable"]
@@ -61,8 +61,18 @@
             }
           },
           "failure_classification": {
-            "enum": ["none", "policy_override", "secret_disclosure", "forged_citation", "ungrounded_answer", "generation_unavailable"],
+            "enum": ["none", "policy_override", "secret_disclosure", "forged_citation", "forged_tool_call", "unsafe_code", "ungrounded_answer", "generation_unavailable"],
             "description": "none for a pass; otherwise the normalized failure class."
+          },
+          "source_revision": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "run_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
           }
         }
       }

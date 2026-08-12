@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0.0",
+  "bundle_id": "knowledge-base-pilot-20260812",
+  "kind": "public-evidence-bundle",
+  "canonical_language": "en",
+  "mirror_language": "zh-CN",
+  "source_revision": "9c663fe3e2e76c91f0a0261bf3abf6615be15986",
+  "release_candidate": {
+    "identity": "knowledge-base-pilot-20260812",
+    "revision": "9c663fe3e2e76c91f0a0261bf3abf6615be15986",
+    "status": "candidate",
+    "created_at": "2026-08-12T00:00:00+00:00"
+  },
+  "provenance": {
+    "revisions": ["9c663fe3e2e76c91f0a0261bf3abf6615be15986"],
+    "runs": [
+      {"run_id":"agent-security-20260812-01","kind":"prompt-injection-run","source_revision":"9c663fe3e2e76c91f0a0261bf3abf6615be15986","started_at":"2026-08-12T00:00:00+00:00","finished_at":"2026-08-12T00:05:00+00:00","outcome":"passed"}
+    ],
+    "corpora": [
+      {"corpus_id":"production-agent-engineering-pilot","version":"1.0.0","sha256":"07c3a44759f8e0cc93673a0357a117ad2184eee8f8b0a481a05d708a660bf3d9"}
+    ],
+    "query_sets": [
+      {"query_set_id":"knowledge-base-acceptance-set","version":"1.0.0","sha256":"e6945e27b988017f6cfe912b621f22f239ddecedfd6ba5c75d497c492a9ddaf7","query_count":24}
+    ]
+  },
+  "artifacts": [
+    {"kind":"manifest","path":"manifest.json","role":"manifest","sha256":"0000000000000000000000000000000000000000000000000000000000000000"},
+    {"kind":"prompt-injection","path":"sections/prompt-injection.json","role":"section","sha256":"7017cd40d65582264c73f5742d0451ab300c84129b52798b570139caaf1efc45"},
+    {"kind":"manifest","path":"knowledge-edition.json","role":"inventory","sha256":"8e0caacf2621d699d8d241133c2351210082d6ffedfbbb16fa7b94c4b8ff1fd2","description":"Non-sensitive Knowledge Edition binding and release-gate summary."},
+    {"kind":"report","path":"REPORT.md","role":"report-en","sha256":"d3a41128a863d6ce3d8477aba345651d43a286e7c8af777393647d82486eff0b"},
+    {"kind":"report","path":"REPORT.zh-CN.md","role":"report-zh","sha256":"baaa8ad503b048a438f047e0f22bf8ff977468ec702244806b23ea97d0f82f84"}
+  ],
+  "limits": [
+    {"kind":"qualification","name":"pilot_not_first_edition","statement":"The six-entry Pilot is not eligible for the First Edition label."},
+    {"kind":"qualification","name":"bounded_security_evidence","statement":"Security results apply only to the recorded source revision and model identities."},
+    {"kind":"exclusion","name":"no_sensitive_content","statement":"Prompts, complete model outputs, source passages, hosts, credentials, and private corpus text are excluded."}
+  ]
+}
