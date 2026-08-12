@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "run_id": "knowledge-walkthrough-20260812T051218600Z",
+  "environment": "production-compose",
+  "source_revision": "42bc93989ed39ea25d811a9e51f45f0950860d57",
+  "knowledge_edition_manifest": "knowledge-base-pilot-20260812/knowledge-edition.json",
+  "provider_identity": "ark",
+  "model_identities": {
+    "generation": "deepseek-ai/DeepSeek-V4-Flash",
+    "embedding": "Qwen/Qwen3-Embedding-8B"
+  },
+  "observation_window": {
+    "started_at": "2026-08-12T05:12:18.601Z",
+    "finished_at": "2026-08-12T05:13:35.964Z"
+  },
+  "results": [
+    {"case_id":"knowledge-walkthrough-20260812T051218600Z-bootstrap_administrator","check":"bootstrap_administrator","outcome":"non_knowledge_base_reply","passed":true,"limitations":[]},
+    {"case_id":"knowledge-walkthrough-20260812T051218600Z-candidate_publication","check":"candidate_publication","outcome":"non_knowledge_base_reply","passed":true,"limitations":[]},
+    {"case_id":"knowledge-walkthrough-20260812T051218600Z-team_invitation","check":"team_invitation","outcome":"non_knowledge_base_reply","passed":true,"limitations":[]},
+    {"case_id":"knowledge-walkthrough-20260812T051218600Z-knowledge_map","check":"knowledge_map","outcome":"non_knowledge_base_reply","passed":true,"limitations":[]},
+    {"case_id":"knowledge-walkthrough-20260812T051218600Z-normal_answer","check":"normal_answer","outcome":"evidence_gated_answer","passed":true,"limitations":[]},
+    {"case_id":"knowledge-walkthrough-20260812T051218600Z-sse_answer","check":"sse_answer","outcome":"evidence_gated_answer","passed":true,"limitations":[]},
+    {"case_id":"knowledge-walkthrough-20260812T051218600Z-history_citations","check":"history_citations","outcome":"evidence_gated_answer","passed":true,"limitations":[]},
+    {"case_id":"knowledge-walkthrough-20260812T051218600Z-paraphrase_answer","check":"paraphrase_answer","outcome":"evidence_gated_answer","passed":true,"limitations":[]},
+    {"case_id":"knowledge-walkthrough-20260812T051218600Z-insufficient_evidence","check":"insufficient_evidence","outcome":"insufficient_evidence_reply","passed":true,"limitations":[]},
+    {"case_id":"knowledge-walkthrough-20260812T051218600Z-knowledge_feedback","check":"knowledge_feedback","outcome":"non_knowledge_base_reply","passed":true,"limitations":[]},
+    {"case_id":"knowledge-walkthrough-20260812T051218600Z-public_source_citation","check":"public_source_citation","outcome":"non_knowledge_base_reply","passed":true,"limitations":[]},
+    {"case_id":"knowledge-walkthrough-20260812T051218600Z-deactivation","check":"deactivation","outcome":"non_knowledge_base_reply","passed":true,"limitations":[]}
+  ],
+  "limits": [
+    "One reviewed Pilot entry was sampled through the production path.",
+    "No question, answer, excerpt, user identity, credential, host, or private corpus text is recorded.",
+    "The result applies only to this source revision, model identity, and observation window."
+  ]
+}

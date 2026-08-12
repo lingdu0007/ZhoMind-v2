@@ -1,0 +1,34 @@
+{
+  "schema_version": "1.0.0",
+  "bundle_id": "knowledge-base-pilot-walkthrough-20260812",
+  "kind": "public-evidence-bundle",
+  "canonical_language": "en",
+  "mirror_language": "zh-CN",
+  "source_revision": "42bc93989ed39ea25d811a9e51f45f0950860d57",
+  "release_candidate": {
+    "identity": "knowledge-base-pilot-walkthrough-20260812",
+    "revision": "42bc93989ed39ea25d811a9e51f45f0950860d57",
+    "status": "candidate",
+    "created_at": "2026-08-12T05:13:35.964Z"
+  },
+  "provenance": {
+    "revisions": ["42bc93989ed39ea25d811a9e51f45f0950860d57"],
+    "runs": [
+      {"run_id":"knowledge-walkthrough-20260812T051218600Z","kind":"production-acceptance","source_revision":"42bc93989ed39ea25d811a9e51f45f0950860d57","started_at":"2026-08-12T05:12:18.601Z","finished_at":"2026-08-12T05:13:35.964Z","outcome":"passed"}
+    ],
+    "corpora": [],
+    "query_sets": []
+  },
+  "artifacts": [
+    {"kind":"manifest","path":"manifest.json","role":"manifest","sha256":"0000000000000000000000000000000000000000000000000000000000000000"},
+    {"kind":"production-acceptance","path":"sections/production-acceptance.json","role":"section","sha256":"248cd6faa3920155996bcb1367bb0d759b36e784ce02e2651f4ef8f66b81a8e7"},
+    {"kind":"production-acceptance","path":"walkthrough.json","role":"data","sha256":"be5cf41498942f967d9f7ba2079477e0d3bca4140dc126da8366b14acace5510","description":"Sanitized twelve-check production Interviewer Walkthrough inventory."},
+    {"kind":"report","path":"REPORT.md","role":"report-en","sha256":"13e2822427226b3981bcb2793a11923d3041449700063c9bb80173f8511d5768"},
+    {"kind":"report","path":"REPORT.zh-CN.md","role":"report-zh","sha256":"c3774f79feb36b82c89a8c28678795bad6705d629c012b080c250cdcf5b72fb6"}
+  ],
+  "limits": [
+    {"kind":"qualification","name":"bounded_pilot_sample","statement":"One reviewed Pilot entry was sampled through one production-compose observation window."},
+    {"kind":"qualification","name":"independent_generation_projection","statement":"Independent generations share evidence snapshots; byte equality is asserted only between each answer and its own history projection."},
+    {"kind":"exclusion","name":"no_sensitive_content","statement":"Questions, answers, excerpts, user identities, credentials, hosts, and private corpus text are excluded."}
+  ]
+}

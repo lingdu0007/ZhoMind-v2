@@ -1,0 +1,14 @@
+{
+  "section": "production-acceptance",
+  "schema_version": "1.0.0",
+  "run_ids": ["knowledge-walkthrough-20260812T051218600Z"],
+  "path": "/api/v1/chat",
+  "results": [
+    {"case_id":"knowledge-walkthrough-20260812T051218600Z-normal","check":"normal_answer","outcome":"evidence_gated_answer","passed":true,"limitations":[]},
+    {"case_id":"knowledge-walkthrough-20260812T051218600Z-sse","check":"sse_answer","outcome":"evidence_gated_answer","passed":true,"limitations":[]},
+    {"case_id":"knowledge-walkthrough-20260812T051218600Z-history","check":"history_citations","outcome":"evidence_gated_answer","passed":true,"limitations":[]},
+    {"case_id":"knowledge-walkthrough-20260812T051218600Z-boundary","check":"insufficient_evidence","outcome":"insufficient_evidence_reply","passed":true,"limitations":[]},
+    {"case_id":"knowledge-walkthrough-20260812T051218600Z-roles","check":"role_boundaries","outcome":"non_knowledge_base_reply","passed":true,"limitations":["Covers bootstrap administration, invitation admission, Knowledge Map access, feedback, and public citation checks recorded in walkthrough.json."]},
+    {"case_id":"knowledge-walkthrough-20260812T051218600Z-deactivation","check":"deactivation","outcome":"non_knowledge_base_reply","passed":true,"limitations":[]}
+  ]
+}
