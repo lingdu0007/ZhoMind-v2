@@ -2,7 +2,7 @@
   "schema_version": 1,
   "edition_id": "knowledge-base-first-edition-20260812",
   "edition_label": "Editorial Candidate",
-  "source_revision": "25f24625fae3cbc8071adcbf6896409d8813823e",
+  "source_revision": "f29404fafa2d390dcb03b2e113ba193838583df6",
   "private_manifest_sha256": "327fe1002c35c405c4e53e1d178d92099e373d68b65f6dcb89a1b57a3878e66d",
   "corpus_sha256": "428926a8c2b843363bb2d290cf06349f62c12919940a6f0be367786106a8fe24",
   "acceptance_set_sha256": "1da7473ad2a80f1cafedad03d02ee46f60b6fcad5437ee19eb4c3b1d766423bf",

@@ -15,3 +15,5 @@ The recorded maintenance run opened 21 unique public source URLs with no broken-
 ## Limits
 
 The public bundle contains only normalized counts, hashes, revisions, and limitations. Private corpus prose, queries, Gold Evidence, source snapshots, answers, excerpts, entry identities, users, hosts, credentials, and complete acceptance output are excluded.
+
+This run verified the first `helpful` feedback submission, but it did not prove the complete four-label live feedback contract. The follow-up runner now requires all four labels, Knowledge Map metadata, and Gold Evidence coverage over only the first three retrieval sources; those assertions must execute in the next production re-acceptance.

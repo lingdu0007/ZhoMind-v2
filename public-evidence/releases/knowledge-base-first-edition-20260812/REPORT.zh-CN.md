@@ -15,3 +15,5 @@
 ## 限制
 
 公开 bundle 只包含归一化计数、hash、revision 与限制。Private corpus prose、query、Gold Evidence、source snapshot、answer、excerpt、entry identity、user、host、credential 与完整 acceptance output 均被排除。
+
+本次 run 验证了首个 `helpful` feedback 提交，但未证明四种 feedback label 的完整 live 契约；后续 runner 已收紧为必须验证四种 label、Knowledge Map 元数据和前三个 retrieval source 的 Gold Evidence coverage，需在下一次 production re-acceptance 中执行。
