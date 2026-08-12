@@ -1,16 +1,16 @@
 {
   "schema_version": 1,
-  "run_id": "maintenance-2026-11-11",
-  "source_revision": "1b6f864136884aecc4264d2717884bc39f7c2587",
-  "observed_at": "2026-11-11T00:00:00+00:00",
+  "run_id": "maintenance-2026-08-12",
+  "source_revision": "d19d0f88e26f05a76a4f4f6a112b7b11c4ff2f14",
+  "observed_at": "2026-08-12T00:00:00+00:00",
   "automatic_publications": 0,
   "cadences": ["immediate", "monthly", "quarterly", "six-month", "90-day"],
   "results": [
     {"check": "broken-link", "checked_sources": 21, "review_work_created": 0},
-    {"check": "new-release", "checked_entries": 6, "review_work_created": 6, "result": "manual-version-comparison-required"},
-    {"check": "version-mapping-stale", "checked_entries": 6, "review_work_created": 6},
-    {"check": "stable-principle-review", "checked_entries": 6, "review_work_created": 0},
-    {"check": "editorial-review", "checked_entries": 24, "review_work_created": 24},
+    {"check": "new-release", "checked_entries": 30, "review_work_created": 30, "result": "manual-version-comparison-required"},
+    {"check": "version-mapping-stale", "checked_entries": 30, "review_work_created": 0},
+    {"check": "stable-principle-review", "checked_entries": 30, "review_work_created": 0},
+    {"check": "editorial-review", "checked_entries": 0, "review_work_created": 0},
     {"check": "quarterly-reacceptance", "checked_entries": 6, "checked_cases": 24, "review_work_created": 6, "acceptance_run_id": "first-edition-live-20260812-01"}
   ],
   "limits": [

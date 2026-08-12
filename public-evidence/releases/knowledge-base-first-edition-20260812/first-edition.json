@@ -3,31 +3,37 @@
   "edition_id": "knowledge-base-first-edition-20260812",
   "edition_label": "Editorial Candidate",
   "source_revision": "25f24625fae3cbc8071adcbf6896409d8813823e",
-  "private_manifest_sha256": "fa3b5ba679e016a8f563f5dbbca7f6d51cef461816ceacf45fa93afb5dde75c3",
-  "corpus_sha256": "872afad6da3720ff14d2c1695e9073569ab121ba5753155ad48f10983d905e02",
-  "acceptance_set_sha256": "0de3b7ee28d5eabeee42c51b65cbf2c2642cad8e3506f72311cb9e9a005078cd",
+  "private_manifest_sha256": "327fe1002c35c405c4e53e1d178d92099e373d68b65f6dcb89a1b57a3878e66d",
+  "corpus_sha256": "428926a8c2b843363bb2d290cf06349f62c12919940a6f0be367786106a8fe24",
+  "acceptance_set_sha256": "1da7473ad2a80f1cafedad03d02ee46f60b6fcad5437ee19eb4c3b1d766423bf",
   "declared_target_entry_count": 30,
-  "approved_entry_count": 6,
-  "draft_entry_count": 24,
+  "approved_entry_count": 30,
+  "draft_entry_count": 0,
   "published_entry_count": 0,
   "release_gate": {
     "passed": false,
-    "status": "not-run-for-current-assets",
+    "status": "failed-current-assets",
     "failed_entry_count": 30,
-    "severity_counts": {"P0": 0, "P1": 30, "P2": 0, "P3": 0}
+    "severity_counts": {"P0": 16, "P1": 14, "P2": 0, "P3": 0}
   },
-  "historical_production_run": {
+  "current_production_run": {
     "run_id": "first-edition-live-20260812-01",
-    "source_revision": "135dbd8adf368dd6c2d321d8b30a5659b0880861",
+    "source_revision": "f29404fafa2d390dcb03b2e113ba193838583df6",
     "environment": "production-compose",
-    "matches_current_assets": false,
+    "matches_current_assets": true,
     "query_count": 120,
-    "passed_case_count": 6,
-    "direct_top_three_coverage": 0.03333333333333333,
+    "passed_case_count": 5,
+    "direct_top_three_coverage": 0.0,
     "paraphrase_combined_top_three_coverage": 0.0,
-    "unsupported_boundary_answers": 3,
-    "exact_openable_citation_snapshots": 0.17777777777777778,
-    "provider_timeout_count": 4,
-    "provider_rate_limited_count": 84
+    "boundary_correct_refusal_count": 5,
+    "unsupported_boundary_answers": 16,
+    "boundary_provider_unavailable_count": 9,
+    "openable_citation_urls": 0.6,
+    "exact_provider_prompt_snapshot_coverage": 0.0,
+    "provider_timeout_count": 5,
+    "provider_rate_limited_count": 32,
+    "withdrawn_entry_count": 30,
+    "active_entry_count_after_withdrawal": 0,
+    "knowledge_map_entry_count_after_withdrawal": 0
   }
 }
