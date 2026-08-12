@@ -79,7 +79,8 @@ class GenerationPrompt:
 
 def _evidence_region(item: AnswerEvidence, *, index: int) -> dict[str, str]:
     if item.is_agent_entry():
-        return item.to_public_citation(f"S{index}")
+        citation = item.to_public_citation(f"S{index}")
+        return citation
     return {
         "title": item.title,
         "publication_version": item.publication_version,

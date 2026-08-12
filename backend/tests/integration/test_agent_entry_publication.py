@@ -210,6 +210,7 @@ def test_agent_entry_is_retrievable_through_authenticated_chat_only_after_publis
                 "publication_version": "v1",
                 "review_date": "2026-08-12",
                 "excerpt": "# Decision Question 什么时候应该优先使用 deterministic workflow 而不是 Agent？",
+                "snapshot_id": source["snapshot_id"],
             }
             assert "score" not in source
             assert "retrieval_source" not in source
@@ -218,6 +219,7 @@ def test_agent_entry_is_retrievable_through_authenticated_chat_only_after_publis
             assert llm.prompts
             prompt_source = json.loads(llm.prompts[-1])["evidence_sources"][0]
             assert prompt_source["excerpt"] == source["excerpt"]
+            assert prompt_source["snapshot_id"] == source["snapshot_id"]
 
             streamed_chat = client.post(
                 "/api/v1/chat/stream",
@@ -239,6 +241,12 @@ def test_agent_entry_is_retrievable_through_authenticated_chat_only_after_publis
             history_messages = _extract_data(history.json())["messages"]
             history_assistant = next(item for item in history_messages if item["type"] == "assistant")
             assert history_assistant["evidence_summary"] == stream_summary
+            stream_snapshot_ids = stream_summary["provider_prompt_snapshot_ids"]
+            assert stream_snapshot_ids
+            assert all(len(snapshot_id) == 64 for snapshot_id in stream_snapshot_ids)
+            assert stream_snapshot_ids == [
+                item["snapshot_id"] for item in stream_summary["sources"]
+            ]
 
             invalid_upload = client.post(
                 "/api/v1/documents/upload",

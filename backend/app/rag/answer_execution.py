@@ -147,6 +147,7 @@ class EvidenceGatedAnswerExecutor:
             "provider_attempts": list(runtime_result.get("provider_attempts") or []),
             "fallback_hops": int(runtime_result.get("fallback_hops") or 0),
             "timing_ms": runtime_result.get("timing_ms") or {},
+            "provider_prompt_snapshot_ids": list(runtime_result.get("provider_prompt_snapshot_ids") or []),
         }
         return trace
 
@@ -240,7 +241,6 @@ class EvidenceGatedAnswerExecutor:
                 session_id=session_id,
                 question=normalized_question,
             )
-
         retrieval_started = perf_counter()
         runtime_result = await self._runner.run(
             request_id=request_id,
@@ -290,6 +290,7 @@ class EvidenceGatedAnswerExecutor:
                 text = self._GENERATION_UNAVAILABLE_REPLY
 
         runtime_result["gate"] = {"passed": gate_passed, "reason": gate_reason}
+        runtime_result["provider_prompt_snapshot_ids"] = [item.snapshot_id for item in evidence]
         runtime_result["timing_ms"] = {
             "retrieval_ms": retrieval_ms,
             "generation_provider_ms": generation_provider_ms,

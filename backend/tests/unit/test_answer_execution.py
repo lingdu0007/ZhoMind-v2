@@ -175,6 +175,7 @@ def test_evidence_gated_answer_uses_one_bounded_snapshot_everywhere() -> None:
     }
     assert [item["content_preview"] for item in trace["evidence"]] == snapshots
     assert [source["excerpt"] for source in outcome.evidence_summary()["sources"]] == snapshots
+    assert all(len(item["snapshot_id"]) == 64 for item in trace["evidence"])
     with pytest.raises(TypeError):
         outcome.runtime["final_provider"] = "other-provider"
 
@@ -263,6 +264,7 @@ def test_agent_answer_requires_decision_summary_and_projects_public_source_citat
         "publication_version": "v2",
         "review_date": "2026-08-12",
         "excerpt": "已知路径应由 deterministic workflow 控制。",
+        "snapshot_id": outcome.evidence[0].snapshot_id,
     }
     assert "source_id" not in source
     assert "score" not in source

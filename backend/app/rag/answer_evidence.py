@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -91,6 +93,28 @@ def _agent_metadata_is_eligible(metadata: Mapping[str, object]) -> bool:
 def _normalize_excerpt(value: str, *, max_chars: int) -> str:
     text = re.sub(r"\s+", " ", value).strip()
     return text[:max_chars]
+
+
+def evidence_snapshot_id(
+    *,
+    title: str,
+    publication_version: str,
+    excerpt: str,
+) -> str:
+    """Return the stable identity for one provider-visible evidence snapshot.
+
+    The identity binds the exact normalized excerpt to its published source
+    identity and citation metadata.  It is intentionally independent of the
+    citation marker (``S1``), which is a presentation detail that can change
+    when retrieval order changes.
+    """
+    payload = {
+        "title": title.strip(),
+        "publication_version": publication_version.strip(),
+        "excerpt": excerpt,
+    }
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -189,6 +213,7 @@ class AnswerEvidence:
             "chunk_index": self.chunk_index,
             "content_preview": self.excerpt,
             "metadata": dict(self.metadata_items),
+            "snapshot_id": self.snapshot_id,
         }
         if self.retrieval_source is not None:
             record["retrieval_source"] = self.retrieval_source
@@ -201,19 +226,31 @@ class AnswerEvidence:
             "source_id": self.source_id,
             "metadata": dict(self.metadata_items),
             "excerpt": self.excerpt,
+            "snapshot_id": self.snapshot_id,
         }
+
+    @property
+    def snapshot_id(self) -> str:
+        return evidence_snapshot_id(
+            title=self.title,
+            publication_version=self.publication_version,
+            excerpt=self.excerpt,
+        )
 
     def is_agent_entry(self) -> bool:
         return isinstance(dict(self.metadata_items).get("entry_id"), str)
 
     def to_public_citation(self, citation_id: str) -> dict[str, str]:
         metadata = dict(self.metadata_items)
-        return {
+        citation = {
             "citation_id": citation_id,
             **{key: metadata[key] for key in _AGENT_CITATION_KEYS if key in metadata},
             "publication_version": self.publication_version,
             "excerpt": self.excerpt,
         }
+        if self.is_agent_entry():
+            citation["snapshot_id"] = self.snapshot_id
+        return citation
 
 
 def select_answer_evidence(
@@ -262,6 +299,8 @@ def evidence_summary_from_trace(rag_trace: object) -> dict[str, Any]:
                 **{key: source_metadata[key] for key in _AGENT_CITATION_KEYS if key in source_metadata},
                 "publication_version": source_metadata.get("publication_version") or f"v{item.get('generation', 1)}",
             }
+            if isinstance(item.get("snapshot_id"), str) and item["snapshot_id"].strip():
+                citation["snapshot_id"] = item["snapshot_id"].strip()
             if item.get("withdrawn") is True:
                 citation["withdrawal_notice"] = "This source has been withdrawn."
             else:
@@ -294,4 +333,23 @@ def evidence_summary_from_trace(rag_trace: object) -> dict[str, Any]:
         coverage = "sufficient"
     else:
         coverage = "unavailable"
-    return {"coverage": coverage, "source_count": len(sources), "sources": sources}
+    summary: dict[str, Any] = {"coverage": coverage, "source_count": len(sources), "sources": sources}
+    agent_sources = [source for source in sources if isinstance(source.get("entry_id"), str)]
+    if agent_sources:
+        canonical_snapshot_ids = []
+        for item in evidence_items:
+            if not isinstance(item, Mapping):
+                continue
+            metadata = item.get("metadata")
+            if not isinstance(metadata, Mapping) or not isinstance(metadata.get("entry_id"), str):
+                continue
+            canonical_snapshot_ids.append(
+                evidence_snapshot_id(
+                    title=str(metadata.get("title") or ""),
+                    publication_version=str(metadata.get("publication_version") or f"v{item.get('generation', 1)}"),
+                    excerpt=str(item.get("content_preview") or item.get("content") or ""),
+                )
+            )
+        if canonical_snapshot_ids == [source.get("snapshot_id") for source in agent_sources]:
+            summary["provider_prompt_snapshot_ids"] = canonical_snapshot_ids
+    return summary
