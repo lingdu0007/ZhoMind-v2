@@ -78,6 +78,11 @@ class DenseIndexService:
         vectors = await embedding_provider.embed([chunk.content for chunk in chunks])
         if len(vectors) != len(chunks):
             raise ValueError("embedding provider returned mismatched vector count")
+        for vector in vectors:
+            if len(vector) != contract.dimension:
+                raise ValueError(
+                    f"embedding provider returned vector dimension {len(vector)}; expected {contract.dimension}"
+                )
 
         rows = [
             {
@@ -139,6 +144,7 @@ class DenseIndexService:
                 api_key=self._settings.embedding_api_key,
                 base_url=self._settings.embedding_base_url_normalized,
                 model=self._settings.embedding_model_normalized,
+                dimensions=contract.dimension,
             )
         return self._embedding_provider
 

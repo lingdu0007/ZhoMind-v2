@@ -769,6 +769,7 @@ def _run_evaluate_profile(args: argparse.Namespace) -> int:
         api_key=settings.embedding_api_key,
         base_url=settings.embedding_base_url_normalized,
         model=settings.embedding_model_normalized,
+        dimensions=contract.dimension,
     )
     modes = ("sparse_bm25", "dense", "hybrid_rrf") if args.mode == "all" else (args.mode,)
     manifest = asyncio.run(

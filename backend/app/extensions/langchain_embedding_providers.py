@@ -7,7 +7,7 @@ from pydantic import SecretStr
 
 
 class OpenAIEmbeddingProvider:
-    def __init__(self, *, api_key: str, base_url: str, model: str) -> None:
+    def __init__(self, *, api_key: str, base_url: str, model: str, dimensions: int) -> None:
         # langchain-openai accepts a plain string at runtime and wraps it in a
         # SecretStr; its stubs annotate `SecretStr | None`, so cast narrows the
         # type without changing the runtime argument.
@@ -15,6 +15,7 @@ class OpenAIEmbeddingProvider:
             api_key=cast(SecretStr, api_key),
             base_url=base_url,
             model=model,
+            dimensions=dimensions,
             tiktoken_enabled=False,
         )
 

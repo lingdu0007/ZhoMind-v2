@@ -108,6 +108,7 @@ def get_extension_registry() -> ExtensionRegistry:
                 api_key=settings.embedding_api_key,
                 base_url=settings.embedding_base_url_normalized,
                 model=settings.embedding_model_normalized,
+                dimensions=settings.dense_embedding_dim,
             ),
         )
 

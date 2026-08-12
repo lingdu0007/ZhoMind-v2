@@ -183,6 +183,27 @@ def test_dense_index_service_embeds_chunks_and_upserts_generation_rows() -> None
     asyncio.run(_run())
 
 
+def test_dense_index_service_rejects_vectors_outside_declared_dimension() -> None:
+    async def _run() -> None:
+        settings = _dense_settings(DENSE_EMBEDDING_DIM=3)
+        document_index = _FakeDocumentIndex()
+        service = DenseIndexService(
+            settings=settings,
+            embedding_provider=_FakeEmbeddingProvider(vectors=[[0.1, 0.2]]),
+            document_index=document_index,
+        )
+        chunks = [
+            DocumentChunk(document_id="doc-1", generation=2, chunk_index=0, content="alpha", chunk_metadata={}),
+        ]
+
+        with pytest.raises(ValueError, match="embedding provider returned vector dimension 2; expected 3"):
+            await service.index_candidate_generation(document_id="doc-1", generation=2, chunks=chunks)
+
+        assert document_index.upsert_calls == []
+
+    asyncio.run(_run())
+
+
 def test_dense_index_service_skips_indexing_when_contract_is_inactive() -> None:
     async def _run() -> None:
         settings = _dense_settings(EMBEDDING_API_KEY="")
@@ -262,12 +283,13 @@ def test_dense_index_service_default_embedding_provider_resolution_uses_service_
             async def embed(self, texts: list[str]) -> list[list[float]]:
                 return [[0.1, 0.2, 0.3, 0.4, 0.5] for _ in texts]
 
-        def _provider_factory(*, api_key: str, base_url: str, model: str):
+        def _provider_factory(*, api_key: str, base_url: str, model: str, dimensions: int):
             constructed_provider.update(
                 {
                     "api_key": api_key,
                     "base_url": base_url,
                     "model": model,
+                    "dimensions": dimensions,
                 }
             )
             return _ResolvedEmbeddingProvider()
@@ -289,6 +311,7 @@ def test_dense_index_service_default_embedding_provider_resolution_uses_service_
             "api_key": "settings-key",
             "base_url": "https://settings.example.com/v1",
             "model": "settings-model",
+            "dimensions": 5,
         }
 
     asyncio.run(_run())
@@ -527,6 +550,7 @@ def test_openai_embedding_provider_disables_tiktoken(monkeypatch) -> None:
             api_key="emb-key",
             base_url="https://emb.example.com/v1",
             model="text-embedding-3-large",
+            dimensions=2,
         )
 
         vectors = await provider.embed(["alpha", "beta"])
@@ -535,6 +559,7 @@ def test_openai_embedding_provider_disables_tiktoken(monkeypatch) -> None:
         assert constructed["api_key"] == "emb-key"
         assert constructed["base_url"] == "https://emb.example.com/v1"
         assert constructed["model"] == "text-embedding-3-large"
+        assert constructed["dimensions"] == 2
         assert constructed["tiktoken_enabled"] is False
 
     asyncio.run(_run())
