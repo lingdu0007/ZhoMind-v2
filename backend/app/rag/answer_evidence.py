@@ -311,6 +311,8 @@ def evidence_summary_from_trace(rag_trace: object) -> dict[str, Any]:
             }
             if item.get("withdrawn") is True:
                 citation["withdrawal_notice"] = "This source has been withdrawn."
+                if isinstance(item.get("snapshot_id"), str) and item["snapshot_id"].strip():
+                    citation["snapshot_id"] = item["snapshot_id"].strip()
             else:
                 excerpt = str(item.get("content_preview") or item.get("content") or "")
                 if not excerpt:

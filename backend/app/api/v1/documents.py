@@ -31,6 +31,7 @@ from app.infra.redis import get_redis_client
 from app.model.chat import ChatMessage
 from app.model.document import Document, DocumentChunk, DocumentJob
 from app.operations.limits import MAX_PUBLISHED_SOURCES, MAX_UPLOAD_BYTES
+from app.rag.answer_evidence import evidence_snapshot_id
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 _job_dispatcher = DocumentJobDispatcher()
@@ -468,6 +469,15 @@ async def _tombstone_document(session: AsyncSession, *, document: Document) -> N
         for item in evidence:
             if not isinstance(item, dict) or item.get("document_id") != document.id:
                 continue
+            metadata = item.get("metadata")
+            excerpt = item.get("content_preview") or item.get("content")
+            if isinstance(metadata, dict) and isinstance(metadata.get("entry_id"), str) and isinstance(excerpt, str):
+                item["snapshot_id"] = evidence_snapshot_id(
+                    title=str(metadata.get("title") or ""),
+                    publication_version=str(metadata.get("publication_version") or f"v{item.get('generation', 1)}"),
+                    excerpt=excerpt,
+                    citation_metadata=metadata,
+                )
             item.pop("content_preview", None)
             item.pop("content", None)
             item["withdrawn"] = True

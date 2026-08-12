@@ -17,6 +17,7 @@ from app.main import app
 from app.model.base import Base
 from app.model.chat import ChatMessage, ChatSession
 from app.model.document import Document, DocumentChunk, DocumentJob
+from app.rag.answer_evidence import evidence_snapshot_id
 from tests.support.auth import create_authenticated_test_token
 
 
@@ -562,7 +563,19 @@ def test_withdrawal_removes_future_source_and_redacts_historical_excerpt() -> No
                                     "chunk_id": "withdrawn-chunk",
                                     "document_id": "withdrawn-document",
                                     "content_preview": "This excerpt must not remain visible.",
-                                    "metadata": {"title": "withdrawn.md", "publication_version": "v1"},
+                                    "metadata": {
+                                        "title": "withdrawn.md",
+                                        "publication_version": "v1",
+                                        "entry_id": "pae-withdrawn-001",
+                                        "entry_title": "Withdrawn entry",
+                                        "domain": "workflow-vs-agent",
+                                        "section_id": "stable-principle",
+                                        "source_title": "Public source",
+                                        "source_authority": "Example authority",
+                                        "source_url": "https://example.com/withdrawn",
+                                        "source_version": "v1",
+                                        "review_date": "2026-08-12",
+                                    },
                                 }
                             ],
                         },
@@ -606,9 +619,34 @@ def test_withdrawal_removes_future_source_and_redacts_historical_excerpt() -> No
             assert history.status_code == 200
             source = _extract_data(history.json())["messages"][0]["evidence_summary"]["sources"][0]
             assert source == {
-                "source_id": "withdrawn-chunk",
-                "metadata": {"title": "withdrawn.md", "publication_version": "v1"},
+                "citation_id": "S1",
+                "entry_id": "pae-withdrawn-001",
+                "entry_title": "Withdrawn entry",
+                "domain": "workflow-vs-agent",
+                "section_id": "stable-principle",
+                "source_title": "Public source",
+                "source_authority": "Example authority",
+                "source_url": "https://example.com/withdrawn",
+                "source_version": "v1",
+                "review_date": "2026-08-12",
+                "publication_version": "v1",
                 "withdrawal_notice": "This source has been withdrawn.",
+                "snapshot_id": evidence_snapshot_id(
+                    title="withdrawn.md",
+                    publication_version="v1",
+                    excerpt="This excerpt must not remain visible.",
+                    citation_metadata={
+                        "entry_id": "pae-withdrawn-001",
+                        "entry_title": "Withdrawn entry",
+                        "domain": "workflow-vs-agent",
+                        "section_id": "stable-principle",
+                        "source_title": "Public source",
+                        "source_authority": "Example authority",
+                        "source_url": "https://example.com/withdrawn",
+                        "source_version": "v1",
+                        "review_date": "2026-08-12",
+                    },
+                ),
             }
     finally:
         app.dependency_overrides.clear()
