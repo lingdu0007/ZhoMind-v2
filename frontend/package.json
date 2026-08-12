@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test:unit": "node --test tests/chat-state.test.mjs tests/evidence-summary.test.mjs tests/path-config.test.mjs tests/sse-parser.test.mjs",
-    "test:browser:base": "npm run build && node --test --test-concurrency=1 tests/auth-entry-shell.test.mjs tests/conversation-workspace.test.mjs tests/knowledge-map.test.mjs tests/knowledge-feedback.test.mjs tests/indexing-jobs-workspace.test.mjs tests/document-library-workspace.test.mjs tests/production-acceptance.test.mjs",
+    "test:browser:base": "npm run build && node --test --test-concurrency=1 tests/auth-entry-shell.test.mjs tests/conversation-workspace.test.mjs tests/knowledge-map.test.mjs tests/knowledge-feedback.test.mjs tests/interviewer-walkthrough.test.mjs tests/indexing-jobs-workspace.test.mjs tests/document-library-workspace.test.mjs tests/production-acceptance.test.mjs",
     "test:browser:settings": "npm run build && node --test tests/system-settings-draft.test.mjs",
     "test:browser": "npm run test:browser:base && npm run test:browser:settings",
     "test": "npm run test:unit && npm run test:browser"

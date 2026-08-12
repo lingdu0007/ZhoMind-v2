@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 import uvicorn
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.documents import parsers
 from app.extensions.registry import get_extension_registry
 from app.infra.db import SessionLocal, engine
 from app.infra.redis import get_redis_client
@@ -49,6 +50,12 @@ class _InMemoryRedis:
             self._values.pop(key, None)
             self._hashes.pop(key, None)
         return deleted
+
+    async def scan_iter(self, *, match: str):
+        prefix = match.removesuffix("*")
+        for key in [*self._values, *self._hashes]:
+            if key.startswith(prefix):
+                yield key
 
 
 class _DeterministicLlm:
@@ -435,6 +442,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    allowed_source_url = os.getenv("BROWSER_ACCEPTANCE_PUBLIC_SOURCE_URL", "").strip()
+    if allowed_source_url:
+        def probe_acceptance_source(url: str) -> None:
+            if url != allowed_source_url:
+                raise OSError("source URL is outside the browser acceptance allowlist")
+
+        parsers._probe_public_source = probe_acceptance_source
     settings_runtime._runtime = _DeterministicSettingsRuntime()
     asyncio.run(_create_schema())
     asyncio.run(_seed_test_data())
