@@ -26,6 +26,10 @@ export const normalizeSSEFrame = (frame) => {
     return { type: 'content', content: payload?.content || payload?.delta || '' };
   }
 
+  if (eventName === 'answer_identity') {
+    return { type: 'answer_identity', answer_id: payload?.answer_id || '' };
+  }
+
   if (eventName === 'evidence_summary') {
     return { type: 'evidence_summary', evidence_summary: payload?.evidence_summary ?? payload };
   }
@@ -50,6 +54,9 @@ export const normalizeSSEFrame = (frame) => {
   if (payload && typeof payload === 'object') {
     if (payload.type === 'done') return { type: 'done' };
     if (payload.type === 'content') return { type: 'content', content: payload.content || payload.delta || '' };
+    if (payload.type === 'answer_identity') {
+      return { type: 'answer_identity', answer_id: payload.answer_id || '' };
+    }
     if (payload.type === 'evidence_summary') {
       return { type: 'evidence_summary', evidence_summary: payload.evidence_summary ?? payload.data ?? payload };
     }

@@ -31,6 +31,7 @@ export const useChatStore = defineStore('chat', {
       this.activeSessionId = sessionId;
       const rawMessages = data?.messages || data?.items || data?.data || [];
       this.messages = rawMessages.map((item) => ({
+        id: item?.id || '',
         role: item?.type === 'user' ? 'user' : 'assistant',
         content: item?.content || '',
         timestamp: item?.timestamp,
@@ -70,6 +71,7 @@ export const useChatStore = defineStore('chat', {
       this.messages.push({ role: 'user', content: question });
       const assistantIndex = this.messages.length;
       this.messages.push({
+        id: '',
         role: 'assistant',
         content: '',
         evidence_summary: null,
@@ -96,6 +98,12 @@ export const useChatStore = defineStore('chat', {
             token: options?.token || ''
           },
           {
+            onAnswerIdentity: (answerId) => {
+              const assistantMsg = getAssistantMsg();
+              if (!assistantMsg) return;
+              assistantMsg.id = answerId || '';
+              this.streamTick += 1;
+            },
             onContent: (chunk) => {
               const assistantMsg = getAssistantMsg();
               if (!assistantMsg) return;

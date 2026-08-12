@@ -18,6 +18,16 @@
         <RouterLink
           v-if="authStore.isAdmin"
           class="workbench-shell__nav-item"
+          to="/reviews"
+          title="知识复核"
+          aria-label="知识复核"
+        >
+          <ListChecks :size="20" aria-hidden="true" />
+          <span>知识复核</span>
+        </RouterLink>
+        <RouterLink
+          v-if="authStore.isAdmin"
+          class="workbench-shell__nav-item"
           to="/documents"
           title="文档库"
           aria-label="文档库"
@@ -66,7 +76,7 @@
 <script setup>
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { BookOpen, ClipboardList, LibraryBig, LogOut, MessageCircle, Settings2 } from 'lucide-vue-next';
+import { BookOpen, ClipboardList, LibraryBig, ListChecks, LogOut, MessageCircle, Settings2 } from 'lucide-vue-next';
 import { clearProtectedSession } from './protected-session';
 import { useAuthStore } from '../store/auth';
 

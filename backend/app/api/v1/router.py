@@ -4,6 +4,7 @@ from app.api.v1.auth import router as auth_router
 from app.api.v1.chat import router as chat_router
 from app.api.v1.documents import router as documents_router
 from app.api.v1.health import router as health_router
+from app.api.v1.knowledge_feedback import router as knowledge_feedback_router
 from app.api.v1.knowledge_map import router as knowledge_map_router
 from app.api.v1.members import router as members_router
 from app.api.v1.operations import router as operations_router
@@ -13,6 +14,7 @@ from app.api.v1.settings import router as settings_router
 router = APIRouter()
 router.include_router(health_router)
 router.include_router(knowledge_map_router)
+router.include_router(knowledge_feedback_router)
 router.include_router(auth_router)
 router.include_router(members_router)
 router.include_router(operations_router)

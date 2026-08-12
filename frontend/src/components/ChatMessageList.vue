@@ -47,6 +47,7 @@
         </ul>
         <p v-else class="evidence-summary__empty">没有可供核对的来源摘录。</p>
       </section>
+      <KnowledgeFeedback v-if="msg.role === 'assistant' && !msg.streaming && !msg.failed" :message="msg" />
       <RetrievalDiagnostics v-if="showDiagnostics && msg.retrieval_diagnostics" :diagnostics="msg.retrieval_diagnostics" />
     </article>
   </section>
@@ -55,6 +56,7 @@
 <script setup>
 import { nextTick, ref, watch } from 'vue';
 import { getEvidenceCoverageLabel, getEvidenceSourceLabel } from '../app/evidence-summary';
+import KnowledgeFeedback from './KnowledgeFeedback.vue';
 import RetrievalDiagnostics from './RetrievalDiagnostics.vue';
 
 const listRef = ref(null);

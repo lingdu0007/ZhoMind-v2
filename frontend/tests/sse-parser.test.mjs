@@ -48,6 +48,12 @@ test('parse an Evidence Summary frame as structured answer support', () => {
   });
 });
 
+test('parse an answer identity without treating it as generated content', () => {
+  const events = collectEvents(['event: answer_identity\ndata: {"answer_id":"answer-123"}\n\n']);
+
+  assert.deepEqual(events, [{ type: 'answer_identity', answer_id: 'answer-123' }]);
+});
+
 test('parse a role-scoped Retrieval Diagnostics frame as structured administrator data', () => {
   const [event] = collectEvents([
     'event: retrieval_diagnostics\n',

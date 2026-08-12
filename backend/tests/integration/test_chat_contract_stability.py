@@ -192,6 +192,9 @@ def test_knowledge_user_chat_projection_excludes_retrieval_diagnostics(monkeypat
                 json={"message": "流式没有检索证据的问题", "session_id": "evidence_projection_s2"},
             )
             assert stream_response.status_code == 200
+            answer_identity = _extract_sse_event_data(stream_response.text, "answer_identity")
+            assert answer_identity is not None
+            assert isinstance(json.loads(answer_identity)["answer_id"], str)
             assert "event: evidence_summary" in stream_response.text
             assert "event: rag_step" not in stream_response.text
             assert "event: trace" not in stream_response.text

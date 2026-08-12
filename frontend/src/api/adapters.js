@@ -43,6 +43,24 @@ export const apiAdapter = {
     const { data } = await http.get(`/knowledge-map/${encodeURIComponent(entryId)}`);
     return unwrapData(data);
   },
+  async submitKnowledgeFeedback(payload) {
+    const { data } = await http.post('/knowledge-feedback', payload);
+    return unwrapData(data);
+  },
+  async deleteKnowledgeFeedback(signalId) {
+    const { data } = await http.delete(`/knowledge-feedback/${encodeURIComponent(signalId)}`);
+    return unwrapData(data);
+  },
+
+  // Knowledge review queue (admin)
+  async listKnowledgeReviewQueue() {
+    const { data } = await http.get('/knowledge-review-queue');
+    return unwrapData(data);
+  },
+  async classifyKnowledgeReviewItem(itemId, payload) {
+    const { data } = await http.patch(`/knowledge-review-queue/${encodeURIComponent(itemId)}`, payload);
+    return unwrapData(data);
+  },
 
   // Documents (admin)
   async listDocuments(params) {
@@ -165,6 +183,11 @@ export const streamChat = async ({ message, session_id, signal, token }, handler
 
     if (event.type === 'content') {
       handlers.onContent?.(event.content || event.delta || '');
+      return;
+    }
+
+    if (event.type === 'answer_identity') {
+      handlers.onAnswerIdentity?.(event.answer_id || '');
       return;
     }
 

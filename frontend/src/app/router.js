@@ -3,6 +3,7 @@ import { createRouter, createWebHistory } from 'vue-router';
 import AuthEntryPage from '../pages/AuthEntryPage.vue';
 import ChatPage from '../pages/ChatPage.vue';
 import KnowledgeMapPage from '../pages/KnowledgeMapPage.vue';
+import KnowledgeReviewPage from '../pages/KnowledgeReviewPage.vue';
 import UploadPage from '../pages/UploadPage.vue';
 import IndexingJobsPage from '../pages/IndexingJobsPage.vue';
 import ConfigPage from '../pages/ConfigPage.vue';
@@ -14,6 +15,7 @@ const routes = [
   { path: '/auth', name: 'authentication-entry', component: AuthEntryPage, meta: { public: true } },
   { path: '/chat', name: 'chat', component: ChatPage, meta: { requiresAuth: true } },
   { path: '/knowledge', name: 'knowledge-map', component: KnowledgeMapPage, meta: { requiresAuth: true } },
+  { path: '/reviews', name: 'knowledge-review', component: KnowledgeReviewPage, meta: { requiresAuth: true, requiresAdmin: true } },
   { path: '/documents', name: 'documents', component: UploadPage, meta: { requiresAuth: true, requiresAdmin: true } },
   { path: '/jobs', name: 'indexing-jobs', component: IndexingJobsPage, meta: { requiresAuth: true, requiresAdmin: true } },
   {
