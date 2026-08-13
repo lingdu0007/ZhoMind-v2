@@ -29,7 +29,9 @@ def test_production_claim_resolver_profile_is_explicitly_hash_pinned_and_read_on
     compose = yaml.safe_load((repository_root / "deploy" / "production" / "compose.yml").read_text(encoding="utf-8"))
     backend = compose["services"]["backend"]
 
-    assert backend["environment"]["CLAIM_RESOLVER_PROFILE_PATH"] == "${CLAIM_RESOLVER_PROFILE_PATH:-}"
+    assert backend["environment"]["CLAIM_RESOLVER_PROFILE_PATH"] == (
+        "${CLAIM_RESOLVER_PROFILE_HOST_PATH:+/run/secrets/claim-resolver-profile.json}"
+    )
     assert backend["environment"]["CLAIM_RESOLVER_PROFILE_SHA256"] == "${CLAIM_RESOLVER_PROFILE_SHA256:-}"
     assert {
         "type": "bind",
