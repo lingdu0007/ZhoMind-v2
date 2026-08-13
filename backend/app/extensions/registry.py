@@ -1,10 +1,13 @@
 from dataclasses import dataclass, field
 from functools import lru_cache
+from pathlib import Path
 
 from app.extensions.generation_factory import build_generation_provider
 from app.extensions.langchain_embedding_providers import OpenAIEmbeddingProvider
 from app.rag.claim_evidence import ClaimResolver
+from app.rag.dense_contract import build_embedding_contract_fingerprint
 from app.rag.interfaces import EmbeddingProvider, LlmProvider, RelevanceJudge, Reranker, Retriever
+from app.rag.semantic_claim_resolver import SemanticClaimResolverArtifactError, load_semantic_claim_resolver_file
 from app.settings.runtime import get_runtime_settings
 from app.tasks.interfaces import InMemoryTaskBackend, TaskBackend, create_inmemory_task_backend
 
@@ -120,6 +123,26 @@ def get_extension_registry() -> ExtensionRegistry:
                 dimensions=settings.dense_embedding_dim,
             ),
         )
+
+    resolver_path = settings.claim_resolver_profile_path.strip()
+    resolver_sha256 = settings.claim_resolver_profile_sha256.strip()
+    if bool(resolver_path) != bool(resolver_sha256):
+        raise SemanticClaimResolverArtifactError(
+            "CLAIM_RESOLVER_PROFILE_PATH and CLAIM_RESOLVER_PROFILE_SHA256 must be configured together"
+        )
+    if resolver_path:
+        embedding_provider = registry.get_embedding("embedding-default")
+        if embedding_provider is None:
+            raise SemanticClaimResolverArtifactError("claim resolver requires the active embedding provider")
+        resolver = load_semantic_claim_resolver_file(
+            Path(resolver_path),
+            expected_sha256=resolver_sha256,
+            embedding_provider=embedding_provider,
+            active_embedding_model=settings.embedding_model_normalized,
+            active_embedding_dimension=settings.dense_embedding_dim,
+            active_embedding_contract_fingerprint=build_embedding_contract_fingerprint(settings),
+        )
+        registry.register_claim_resolver("chat-default-claim-resolver", resolver)
 
     registry.register_task_backend("inmemory", create_inmemory_task_backend())
     return registry

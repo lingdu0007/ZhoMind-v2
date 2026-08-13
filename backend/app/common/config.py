@@ -36,6 +36,8 @@ class Settings(BaseSettings):
         ge=1,
         le=4000,
     )
+    claim_resolver_profile_path: str = Field("", alias="CLAIM_RESOLVER_PROFILE_PATH")
+    claim_resolver_profile_sha256: str = Field("", alias="CLAIM_RESOLVER_PROFILE_SHA256")
 
     # LLM / ARK
     ark_api_key: str = Field("", alias="ARK_API_KEY")

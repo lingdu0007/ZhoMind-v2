@@ -410,6 +410,21 @@ class ClaimEvidenceGate:
             "required_evidence_links": [],
             "covered_snapshot_ids": [],
         }
+        artifact_identity = {
+            key: value
+            for key, value in {
+                "resolver_profile_sha256": getattr(self._resolver, "profile_sha256", None),
+                "calibration_set_sha256": getattr(self._resolver, "calibration_set_sha256", None),
+                "calibration_report_sha256": getattr(self._resolver, "calibration_report_sha256", None),
+                "embedding_contract_fingerprint": getattr(
+                    self._resolver,
+                    "embedding_contract_fingerprint",
+                    None,
+                ),
+            }.items()
+            if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+        }
+        audit.update(artifact_identity)
         try:
             resolution = await self._resolver.resolve(question, contracts)
         except Exception:

@@ -20,6 +20,8 @@ def test_settings_defaults() -> None:
     assert settings.runtime_retrieval_top_k == 5
     assert settings.runtime_answer_evidence_max_items == 3
     assert settings.runtime_answer_evidence_max_chars_per_source == 160
+    assert settings.claim_resolver_profile_path == ""
+    assert settings.claim_resolver_profile_sha256 == ""
 
 
 def test_ok_response_shape() -> None:
@@ -49,6 +51,8 @@ def test_settings_rag_fields_from_env_aliases() -> None:
         RAG_DEFAULT_LLM_PROVIDER="provider-x",
         RUNTIME_ANSWER_EVIDENCE_MAX_ITEMS=4,
         RUNTIME_ANSWER_EVIDENCE_MAX_CHARS_PER_SOURCE=240,
+        CLAIM_RESOLVER_PROFILE_PATH="/run/secrets/claim-resolver-profile.json",
+        CLAIM_RESOLVER_PROFILE_SHA256="a" * 64,
     )
     assert settings.rag_graph_alias == "experimental_graph"
     assert settings.rag_enable_tools is True
@@ -58,6 +62,8 @@ def test_settings_rag_fields_from_env_aliases() -> None:
     assert settings.rag_default_llm_provider == "provider-x"
     assert settings.runtime_answer_evidence_max_items == 4
     assert settings.runtime_answer_evidence_max_chars_per_source == 240
+    assert settings.claim_resolver_profile_path == "/run/secrets/claim-resolver-profile.json"
+    assert settings.claim_resolver_profile_sha256 == "a" * 64
 
 
 def test_document_pipeline_settings_aliases() -> None:

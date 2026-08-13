@@ -9,6 +9,7 @@ from app.common.config import get_settings
 from app.common.exceptions import register_exception_handlers
 from app.common.logger import configure_logging
 from app.common.request_id import RequestIdMiddleware
+from app.extensions.registry import get_extension_registry
 from app.infra.db import SessionLocal
 from app.operations.events import OperationalEventService
 from app.operations.middleware import OperationalEventMiddleware
@@ -46,6 +47,9 @@ async def lifespan(application: FastAPI):
     except (OSError, SQLAlchemyError):
         # The settings tables may not exist before migrations have run.
         pass
+    # Resolver artifacts are process-owned. A configured but untrusted profile
+    # must fail startup instead of silently degrading on the first chat request.
+    get_extension_registry()
     try:
         async with session_factory() as session:
             settings = get_settings()
