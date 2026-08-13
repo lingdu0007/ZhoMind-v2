@@ -1054,6 +1054,90 @@ def test_process_job_persists_dense_readiness_on_candidate_without_publishing() 
     asyncio.run(_run())
 
 
+def test_write_candidate_chunks_persists_reviewed_claim_evidence_metadata() -> None:
+    async def _run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        contract_json = '{"claims":[{"claim_id":"claim-control-topology"}]}'
+
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+
+            async with session_factory() as session:
+                document = Document(
+                    filename="reviewed-agent.md",
+                    file_type="md",
+                    file_size=1,
+                    status="pending",
+                    chunk_strategy="agent",
+                    latest_requested_generation=1,
+                )
+                session.add(document)
+                await session.flush()
+                job = DocumentJob(
+                    document_id=document.id,
+                    build_generation=1,
+                    requested_chunk_strategy="agent",
+                    status="running",
+                    stage="chunking",
+                    progress=90,
+                    message="writing candidate document chunks",
+                )
+                session.add(job)
+                await session.commit()
+
+                service = DocumentBuildService(session)
+
+                async def _owned(
+                    self: DocumentBuildService,
+                    *,
+                    document: Document,
+                    job: DocumentJob,
+                ) -> bool:
+                    return True
+
+                service._touch_heartbeat_if_owned = MethodType(_owned, service)
+                wrote = await service._write_candidate_chunks(
+                    document=document,
+                    job=job,
+                    generation=1,
+                    chunks=[
+                        ChunkRecord(
+                            chunk_index=0,
+                            content="# Stable Principle\n\nReviewed claim evidence.",
+                            metadata={
+                                "entry_id": "pae-workflow-contract-001",
+                                "section_id": "stable-principle",
+                                "source_id": "source-workflow",
+                                "claim_evidence_contract": contract_json,
+                                "claim_evidence_contract_sha256": "a" * 64,
+                            },
+                        )
+                    ],
+                )
+
+                assert wrote is True
+                persisted = await session.scalar(
+                    select(DocumentChunk).where(
+                        DocumentChunk.document_id == document.id,
+                        DocumentChunk.generation == 1,
+                    )
+                )
+                assert persisted is not None
+                assert persisted.chunk_metadata == {
+                    "entry_id": "pae-workflow-contract-001",
+                    "section_id": "stable-principle",
+                    "source_id": "source-workflow",
+                    "claim_evidence_contract": contract_json,
+                    "claim_evidence_contract_sha256": "a" * 64,
+                }
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
+
+
 def test_process_job_retries_latest_generation_when_blocked_by_older_owner() -> None:
     async def _run() -> None:
         document = Document(

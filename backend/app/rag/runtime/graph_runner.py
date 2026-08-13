@@ -1,5 +1,6 @@
 from typing import Any
 
+from app.rag.claim_evidence import ClaimResolver
 from app.rag.interfaces import RelevanceJudge, Reranker, Retriever
 from app.rag.memory.inmemory_store import InMemorySessionStore, InMemoryUserStore
 from app.rag.memory.policies import ConservativeMemoryWritePolicy
@@ -37,6 +38,7 @@ class RagGraphRunner:
         retriever: Retriever | None = None,
         reranker: Reranker | None = None,
         judge: RelevanceJudge | None = None,
+        claim_resolver: ClaimResolver | None = None,
         retrieval_top_k: int | None = None,
         evidence_top_k: int = 3,
         evidence_excerpt_chars: int = 160,
@@ -50,6 +52,7 @@ class RagGraphRunner:
         self.retriever = retriever
         self.reranker = reranker
         self.judge = judge
+        self.claim_resolver = claim_resolver
         self.enable_tools = settings.rag_enable_tools if enable_tools is None else enable_tools
         self.tool_max_calls = settings.rag_tool_max_calls if tool_max_calls is None else tool_max_calls
         self.tool_max_parallel = settings.rag_tool_max_parallel if tool_max_parallel is None else tool_max_parallel
@@ -84,7 +87,7 @@ class RagGraphRunner:
         self._retrieve_node = RetrieveNode(self._retriever_adapter)
         self._fusion_node = FusionNode()
         self._rerank_node = RerankNode(self._reranker_adapter)
-        self._verify_node = VerifyNode(self._judge_adapter)
+        self._verify_node = VerifyNode(self._judge_adapter, claim_resolver=self.claim_resolver)
         self._context_pack_node = ContextPackNode(
             top_k=evidence_top_k,
             max_excerpt_chars=evidence_excerpt_chars,
@@ -236,6 +239,7 @@ class RagGraphRunner:
             "answer": state["answer"],
             "steps": state["trace_steps"],
             "gate": state["gate_result"],
+            "claim_evidence_audit": state.get("claim_evidence_audit") or {},
             "answer_evidence": state["evidence_pack"],
             "candidates_reranked": state["candidates_reranked"],
             "retrieved": state["candidates_fused"],

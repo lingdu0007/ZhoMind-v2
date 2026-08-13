@@ -11,6 +11,7 @@ from app.extensions.provider_router import ProviderRouter
 from app.extensions.registry import get_extension_registry
 from app.rag.answer_evidence import evidence_summary_from_trace
 from app.rag.answer_execution import EvidenceGatedAnswerExecutor
+from app.rag.claim_evidence import ClaimResolver
 from app.rag.interfaces import RelevanceJudge, Reranker, Retriever
 from app.repository.chat_repository import ChatRepository
 from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
@@ -19,6 +20,7 @@ from app.settings.runtime import get_runtime_settings
 CHAT_RETRIEVER_PROVIDER = "chat-default-retriever"
 CHAT_RERANK_PROVIDER = "chat-default-reranker"
 CHAT_JUDGE_PROVIDER = "chat-default-judge"
+CHAT_CLAIM_RESOLVER_PROVIDER = "chat-default-claim-resolver"
 DIAGNOSTIC_MAX_TIMELINE_STEPS = 16
 DIAGNOSTIC_MAX_PROVIDER_ERRORS = 5
 DIAGNOSTIC_MAX_TRACE_PREVIEW_CHARS = 1600
@@ -123,6 +125,9 @@ class ChatService:
             return provider, CHAT_JUDGE_PROVIDER
 
         return None, "unconfigured-agent-evidence-gate"
+
+    def _resolve_claim_resolver(self) -> ClaimResolver | None:
+        return get_extension_registry().get_claim_resolver(CHAT_CLAIM_RESOLVER_PROVIDER)
 
     def _provider_router(self) -> ProviderRouter:
         return ProviderRouter(providers=get_extension_registry().llm_providers)
@@ -444,11 +449,13 @@ class ChatService:
         retriever, retriever_name = self._resolve_retriever()
         reranker, reranker_name = self._resolve_reranker()
         judge, judge_name = self._resolve_judge()
+        claim_resolver = self._resolve_claim_resolver()
 
         executor = EvidenceGatedAnswerExecutor(
             retriever=retriever,
             reranker=reranker,
             judge=judge,
+            claim_resolver=claim_resolver,
             provider_router=provider_router,
             primary_provider=generation_settings.rag_primary_llm_provider,
             retriever_name=retriever_name,

@@ -31,6 +31,18 @@ _CITATION_METADATA_KEYS = (
     "document_name",
     "path",
 )
+_GATE_METADATA_KEYS = (
+    "entry_id",
+    "section_id",
+    "review_status",
+    "evidence_conflict",
+    "source_id",
+    "source_availability",
+    "source_review_date",
+    "source_freshness_days",
+    "claim_evidence_contract",
+    "claim_evidence_contract_sha256",
+)
 _AGENT_CITATION_KEYS = (
     "entry_id",
     "entry_title",
@@ -197,11 +209,17 @@ class AnswerEvidence:
             for key in _CITATION_METADATA_KEYS
             if isinstance(metadata.get(key), str) and str(metadata[key]).strip()
         }
+        gate_metadata = {
+            key: str(metadata[key]).strip()
+            for key in _GATE_METADATA_KEYS
+            if isinstance(metadata.get(key), (str, int, float)) and str(metadata[key]).strip()
+        }
         if isinstance(metadata.get("entry_id"), str):
             for legacy_location_key in ("filename", "source_file", "source", "document_name", "path"):
                 citation_metadata.pop(legacy_location_key, None)
         citation_metadata["title"] = title
         citation_metadata["publication_version"] = publication_version
+        citation_metadata.update(gate_metadata)
         return cls(
             source_id=source_id,
             document_id=document_id,

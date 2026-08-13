@@ -1,4 +1,5 @@
 from app.rag.answer_evidence import select_answer_evidence
+from app.rag.claim_evidence import ClaimEvidenceGate, ClaimResolver
 from app.rag.dense_contract import dense_mode_active
 from app.rag.runtime.provider_adapters import JudgeAdapter, RerankerAdapter, RetrieverAdapter
 from app.rag.runtime.state import ProviderTraceDetail, RagStateDict
@@ -161,8 +162,9 @@ class RerankNode:
 
 
 class VerifyNode:
-    def __init__(self, judge: JudgeAdapter) -> None:
+    def __init__(self, judge: JudgeAdapter, *, claim_resolver: ClaimResolver | None = None) -> None:
         self.judge = judge
+        self.claim_gate = ClaimEvidenceGate(resolver=claim_resolver) if claim_resolver is not None else None
 
     async def run(self, state: RagStateDict) -> RagStateDict:
         if state["evidence_pack"]:
@@ -172,11 +174,33 @@ class VerifyNode:
                 for item in state["evidence_pack"]
             )
             if has_agent_evidence:
-                passed = False
-                reason = "reject_evidence_gate_unavailable"
+                if self.claim_gate is None:
+                    passed = False
+                    reason = "reject_evidence_gate_unavailable"
+                    state["claim_evidence_audit"] = {
+                        "contract_count": 0,
+                        "passed": passed,
+                        "reason": reason,
+                    }
+                else:
+                    from app.rag.answer_evidence import AnswerEvidence
+
+                    evidence = tuple(
+                        item
+                        for record in state["evidence_pack"]
+                        if (item := AnswerEvidence.from_candidate(record, max_excerpt_chars=1200)) is not None
+                    )
+                    decision = await self.claim_gate.evaluate(state["query_norm"], evidence)
+                    passed = decision.passed
+                    reason = decision.reason
+                    state["claim_evidence_audit"] = {
+                        **decision.audit,
+                        "passed": decision.passed,
+                        "reason": decision.reason,
+                    }
                 exec_detail = {
-                    "provider": self.judge.provider_name,
-                    "fallback_used": True,
+                    "provider": "claim-evidence-gate",
+                    "fallback_used": False,
                     "error": None,
                 }
             else:

@@ -9,6 +9,7 @@ from typing import Any
 
 from app.extensions.provider_router import ProviderRouter
 from app.rag.answer_evidence import AnswerEvidence, evidence_summary_from_trace
+from app.rag.claim_evidence import ClaimResolver
 from app.rag.interfaces import RelevanceJudge, Reranker, Retriever
 from app.rag.prompt_regions import build_generation_prompt, validate_agent_response
 from app.rag.runtime.graph_runner import RagGraphRunner
@@ -106,11 +107,13 @@ class EvidenceGatedAnswerExecutor:
         retrieval_top_k: int,
         max_evidence_items: int,
         max_excerpt_chars: int,
+        claim_resolver: ClaimResolver | None = None,
     ) -> None:
         self._runner = RagGraphRunner(
             retriever=retriever,
             reranker=reranker,
             judge=judge,
+            claim_resolver=claim_resolver,
             retrieval_top_k=retrieval_top_k,
             evidence_top_k=max_evidence_items,
             evidence_excerpt_chars=max_excerpt_chars,
@@ -149,6 +152,7 @@ class EvidenceGatedAnswerExecutor:
             "timing_ms": runtime_result.get("timing_ms") or {},
             "provider_prompt_snapshot_ids": list(runtime_result.get("provider_prompt_snapshot_ids") or []),
             "provider_generation_envelope": runtime_result.get("provider_generation_envelope"),
+            "claim_evidence_audit": runtime_result.get("claim_evidence_audit") or {},
         }
         return trace
 

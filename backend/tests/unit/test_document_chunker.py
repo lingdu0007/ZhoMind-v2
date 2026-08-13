@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import is_dataclass
 
 import pytest
@@ -99,3 +100,53 @@ def test_agent_chunking_preserves_sections_code_blocks_and_entry_identity() -> N
     )
     assert sum(code_block in chunk.content for chunk in chunks) == 1
     assert all("```python" not in chunk.content or "```" in chunk.content.removeprefix("```python") for chunk in chunks)
+
+
+def test_agent_chunking_binds_each_reviewed_section_to_its_contract_source_snapshot() -> None:
+    contract = {
+        "claims": [
+            {"evidence": [{"section_id": "decision-question", "source_id": "source-workflow"}]},
+            {"evidence": [{"section_id": "recommendation", "source_id": "source-agent"}]},
+        ]
+    }
+    parsed = ParsedDocument(
+        source_file="workflow.md",
+        file_type="md",
+        text="# Decision Question\n\nKnown paths.\n\n## Recommendation\n\nBound local Agent work.",
+        metadata={
+            "entry_id": "pae-workflow-contract-001",
+            "title": "Reviewed claim contract",
+            "domain": "workflow-vs-agent",
+            "claim_evidence_contract": json.dumps(contract),
+            "claim_evidence_contract_sha256": "a" * 64,
+            "sources": [
+                {
+                    "source_id": "source-workflow",
+                    "title": "Workflow source",
+                    "authority": "Authority A",
+                    "url": "https://example.com/workflow",
+                    "version": "v1",
+                    "availability": "verified",
+                    "review_date": "2026-08-13",
+                    "freshness_days": 90,
+                },
+                {
+                    "source_id": "source-agent",
+                    "title": "Agent source",
+                    "authority": "Authority B",
+                    "url": "https://example.com/agent",
+                    "version": "v2",
+                    "availability": "verified",
+                    "review_date": "2026-08-13",
+                    "freshness_days": 90,
+                },
+            ],
+        },
+    )
+
+    chunks = chunk_document(parsed, strategy="agent")
+    source_by_section = {chunk.metadata["section_id"]: chunk.metadata["source_id"] for chunk in chunks}
+
+    assert source_by_section == {"decision-question": "source-workflow", "recommendation": "source-agent"}
+    assert {chunk.metadata["source_title"] for chunk in chunks} == {"Workflow source", "Agent source"}
+    assert all(chunk.metadata["claim_evidence_contract_sha256"] == "a" * 64 for chunk in chunks)

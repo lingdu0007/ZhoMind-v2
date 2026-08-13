@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -122,8 +123,32 @@ def _split_agent_section(section: _MarkdownSection) -> list[str]:
 
 def _agent_chunk_metadata(parsed_document: ParsedDocument, *, section: _MarkdownSection) -> dict[str, Any]:
     metadata = parsed_document.metadata
-    sources = metadata.get("sources") if isinstance(metadata.get("sources"), list) else []
-    primary_source = sources[0] if sources and isinstance(sources[0], dict) else {}
+    raw_sources = metadata.get("sources")
+    sources = [source for source in raw_sources if isinstance(source, dict)] if isinstance(raw_sources, list) else []
+    sources_by_id = {
+        str(source.get("source_id")): source
+        for source in sources
+        if isinstance(source, dict) and isinstance(source.get("source_id"), str)
+    }
+    section_source_id: str | None = None
+    raw_contract = metadata.get("claim_evidence_contract")
+    if isinstance(raw_contract, str):
+        try:
+            contract = json.loads(raw_contract)
+            linked_source_ids = {
+                str(link["source_id"])
+                for claim in contract.get("claims", [])
+                if isinstance(claim, dict)
+                for link in claim.get("evidence", [])
+                if isinstance(link, dict) and link.get("section_id") == section.section_id and isinstance(link.get("source_id"), str)
+            }
+            if len(linked_source_ids) == 1:
+                section_source_id = next(iter(linked_source_ids))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            section_source_id = None
+    primary_source = sources_by_id.get(section_source_id or "")
+    if primary_source is None:
+        primary_source = sources[0] if sources and isinstance(sources[0], dict) else {}
     return {
         "source_file": parsed_document.source_file,
         "strategy": "agent",
@@ -141,9 +166,14 @@ def _agent_chunk_metadata(parsed_document: ParsedDocument, *, section: _Markdown
         "source_url": primary_source.get("url"),
         "source_version": primary_source.get("version"),
         "source_availability": primary_source.get("availability"),
+        "source_id": primary_source.get("source_id"),
+        "source_review_date": primary_source.get("review_date", metadata.get("review_date")),
+        "source_freshness_days": primary_source.get("freshness_days", 90),
         "evidence_conflict": metadata.get("evidence_conflict"),
         "approved_summary": metadata.get("approved_summary"),
         "suggested_query": metadata.get("suggested_query"),
+        "claim_evidence_contract": metadata.get("claim_evidence_contract"),
+        "claim_evidence_contract_sha256": metadata.get("claim_evidence_contract_sha256"),
     }
 
 

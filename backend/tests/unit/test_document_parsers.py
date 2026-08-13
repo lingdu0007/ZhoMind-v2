@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import is_dataclass
 
 import pytest
@@ -102,6 +103,7 @@ entry_id: pae-workflow-001
 title: Prefer deterministic workflows when the path is known
 domain: workflow-vs-agent
 review_status: approved
+evidence_conflict: none
 applicable_versions:
   - framework-neutral
 review_date: 2026-08-12
@@ -116,6 +118,51 @@ sources:
 
 When should a deterministic workflow be preferred over an Agent?
 """
+
+_CLAIM_EVIDENCE_CONTRACT = {
+    "schema_version": 1,
+    "review_id": "editorial-review-20260813-parser",
+    "review_revision": "2026-08-13.1",
+    "conflict_state": "none",
+    "unknown_state": "none",
+    "resolver": {
+        "resolver_id": "calibrated-semantic-profile-v1",
+        "calibration_id": "semantic-profile-calibration-20260813",
+        "calibration_version": "2026-08-13",
+        "minimum_confidence": 0.32,
+    },
+    "claims": [
+        {
+            "claim_id": "claim-control-topology",
+            "scope": "Known execution paths with explicit termination conditions.",
+            "evidence": [{"section_id": "decision-question", "source_id": "source-workflow"}],
+        }
+    ],
+}
+_VALID_CONTRACT_AGENT_ENTRY = (
+    "---\n"
+    "entry_id: pae-workflow-contract-001\n"
+    "title: Reviewed claim contract\n"
+    "domain: workflow-vs-agent\n"
+    "review_status: approved\n"
+    "evidence_conflict: none\n"
+    "applicable_versions:\n"
+    "  - framework-neutral\n"
+    "review_date: 2026-08-13\n"
+    "sources:\n"
+    "  - source_id: source-workflow\n"
+    "    title: Building Effective Agents\n"
+    "    authority: Anthropic\n"
+    "    url: https://www.anthropic.com/research/building-effective-agents\n"
+    "    version: 2024-12-19\n"
+    "    availability: verified\n"
+    "    review_date: 2026-08-13\n"
+    "    freshness_days: 90\n"
+    f"claim_evidence_contract: {json.dumps(_CLAIM_EVIDENCE_CONTRACT)}\n"
+    "---\n"
+    "# Decision Question\n\n"
+    "When should a deterministic workflow be preferred over an Agent?\n"
+).encode()
 
 
 def test_parse_agent_entry_extracts_valid_front_matter_from_body() -> None:
@@ -135,6 +182,65 @@ def test_parse_agent_entry_extracts_valid_front_matter_from_body() -> None:
             "availability": "verified",
         }
     ]
+
+
+def test_parse_agent_entry_normalizes_reviewed_claim_evidence_contract() -> None:
+    parsed = parse_agent_entry("contract.md", _VALID_CONTRACT_AGENT_ENTRY, source_probe=lambda _url: None)
+
+    contract = json.loads(parsed.metadata["claim_evidence_contract"])
+    assert contract == _CLAIM_EVIDENCE_CONTRACT
+    assert len(parsed.metadata["claim_evidence_contract_sha256"]) == 64
+    assert parsed.metadata["sources"][0]["source_id"] == "source-workflow"
+
+
+def test_parse_agent_entry_rejects_claim_evidence_contract_with_unknown_source_identity() -> None:
+    content = _VALID_CONTRACT_AGENT_ENTRY.replace(
+        b'"source_id": "source-workflow"',
+        b'"source_id": "source-unknown"',
+        1,
+    )
+
+    with pytest.raises(AppError) as exc_info:
+        parse_agent_entry("contract.md", content, source_probe=lambda _url: None)
+
+    assert exc_info.value.code == "AGENT_ENTRY_CLAIM_EVIDENCE_CONTRACT_INVALID"
+    assert exc_info.value.detail == {"reason": "claim_evidence_contract references unknown source_id ['source-unknown']"}
+
+
+def test_parse_agent_entry_rejects_claim_evidence_contract_with_unknown_section_identity() -> None:
+    contract = json.dumps(
+        {
+            **_CLAIM_EVIDENCE_CONTRACT,
+            "claims": [
+                {
+                    **_CLAIM_EVIDENCE_CONTRACT["claims"][0],
+                    "evidence": [{"section_id": "missing-section", "source_id": "source-workflow"}],
+                }
+            ],
+        }
+    )
+    content = _VALID_CONTRACT_AGENT_ENTRY.replace(
+        f"claim_evidence_contract: {json.dumps(_CLAIM_EVIDENCE_CONTRACT)}".encode(),
+        f"claim_evidence_contract: {contract}".encode(),
+    )
+
+    with pytest.raises(AppError) as exc_info:
+        parse_agent_entry("contract.md", content, source_probe=lambda _url: None)
+
+    assert exc_info.value.code == "AGENT_ENTRY_CLAIM_EVIDENCE_CONTRACT_INVALID"
+    assert exc_info.value.detail == {"reason": "claim_evidence_contract references unknown section_id ['missing-section']"}
+
+
+def test_parse_agent_entry_rejects_claim_evidence_contract_without_explicit_conflict_state() -> None:
+    content = _VALID_CONTRACT_AGENT_ENTRY.replace(b"evidence_conflict: none\n", b"")
+
+    with pytest.raises(AppError) as exc_info:
+        parse_agent_entry("contract.md", content, source_probe=lambda _url: None)
+
+    assert exc_info.value.code == "AGENT_ENTRY_CLAIM_EVIDENCE_CONTRACT_INVALID"
+    assert exc_info.value.detail == {
+        "reason": "claim_evidence_contract requires evidence_conflict none or resolved"
+    }
 
 
 def test_parse_agent_entry_reports_all_missing_required_metadata_fields() -> None:

@@ -33,6 +33,7 @@ class RagStateDict(TypedDict):
     candidates_fused: list[dict]
     candidates_reranked: list[dict]
     gate_result: dict[str, Any]
+    claim_evidence_audit: dict[str, Any]
     evidence_pack: list[dict]
     answer: str
     memory_read_set: dict[str, Any]
@@ -65,6 +66,7 @@ class RagState:
             "candidates_fused": [],
             "candidates_reranked": [],
             "gate_result": {"passed": False, "reason": "not_checked"},
+            "claim_evidence_audit": {},
             "evidence_pack": [],
             "answer": "",
             "memory_read_set": {},

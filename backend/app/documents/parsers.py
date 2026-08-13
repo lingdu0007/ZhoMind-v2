@@ -20,6 +20,13 @@ except ModuleNotFoundError:  # pragma: no cover - environment-dependent fallback
 
 from app.common.exceptions import AppError
 from app.documents.types import ParsedDocument
+from app.rag.claim_evidence import (
+    ClaimEvidenceContractError,
+    parse_claim_evidence_contract,
+    validate_contract_entry_state,
+    validate_contract_sections,
+    validate_contract_sources,
+)
 
 _SUPPORTED_EXTENSIONS = {"txt", "md", "pdf"}
 _AGENT_ENTRY_REQUIRED_FIELDS = {
@@ -229,6 +236,23 @@ def parse_agent_entry(
                 validate_canonical_source_url(source["url"], source_probe=probe)
 
     body = "\n".join(lines[closing_index + 1 :]).lstrip()
+    raw_contract = normalized.get("claim_evidence_contract")
+    if raw_contract is not None:
+        try:
+            contract = parse_claim_evidence_contract(raw_contract)
+            validate_contract_sources(contract, sources)
+            validate_contract_sections(contract, body)
+            validate_contract_entry_state(normalized)
+        except ClaimEvidenceContractError as exc:
+            raise AppError(
+                status_code=400,
+                code="AGENT_ENTRY_CLAIM_EVIDENCE_CONTRACT_INVALID",
+                message="Agent entry claim-evidence contract is invalid",
+                detail={"reason": str(exc)},
+            ) from exc
+        normalized["claim_evidence_contract"] = contract.canonical_json
+        normalized["claim_evidence_contract_sha256"] = contract.sha256
+
     return ParsedDocument(
         source_file=parsed.source_file,
         file_type=parsed.file_type,

@@ -3,6 +3,7 @@ from functools import lru_cache
 
 from app.extensions.generation_factory import build_generation_provider
 from app.extensions.langchain_embedding_providers import OpenAIEmbeddingProvider
+from app.rag.claim_evidence import ClaimResolver
 from app.rag.interfaces import EmbeddingProvider, LlmProvider, RelevanceJudge, Reranker, Retriever
 from app.settings.runtime import get_runtime_settings
 from app.tasks.interfaces import InMemoryTaskBackend, TaskBackend, create_inmemory_task_backend
@@ -15,6 +16,7 @@ class ExtensionRegistry:
     rerank_providers: dict[str, Reranker] = field(default_factory=dict)
     retrievers: dict[str, Retriever] = field(default_factory=dict)
     judges: dict[str, RelevanceJudge] = field(default_factory=dict)
+    claim_resolvers: dict[str, ClaimResolver] = field(default_factory=dict)
     task_backends: dict[str, TaskBackend] = field(default_factory=dict)
     capabilities: dict[str, dict[str, dict]] = field(
         default_factory=lambda: {
@@ -56,6 +58,12 @@ class ExtensionRegistry:
     def get_judge(self, name: str) -> RelevanceJudge | None:
         return self.judges.get(name)
 
+    def register_claim_resolver(self, name: str, resolver: ClaimResolver) -> None:
+        self.claim_resolvers[name] = resolver
+
+    def get_claim_resolver(self, name: str) -> ClaimResolver | None:
+        return self.claim_resolvers.get(name)
+
     def register_task_backend(self, name: str, backend: TaskBackend) -> None:
         self.task_backends[name] = backend
 
@@ -81,7 +89,8 @@ class ExtensionRegistry:
 def get_extension_registry() -> ExtensionRegistry:
     registry = ExtensionRegistry()
     settings = get_runtime_settings()
-
+    # Agent evidence stays fail-closed until trusted process bootstrap registers
+    # an independently calibrated ClaimResolver.
     if settings.runtime_generation_settings_managed:
         generation_provider = build_generation_provider(settings)
         if generation_provider is not None:
