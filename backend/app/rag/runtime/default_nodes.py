@@ -193,6 +193,12 @@ class VerifyNode:
                     decision = await self.claim_gate.evaluate(state["query_norm"], evidence)
                     passed = decision.passed
                     reason = decision.reason
+                    if passed and decision.protected_evidence:
+                        # Generation and citations may only use the gated,
+                        # contract-linked evidence snapshots.
+                        state["evidence_pack"] = [
+                            item.to_record() for item in decision.protected_evidence
+                        ]
                     state["claim_evidence_audit"] = {
                         **decision.audit,
                         "passed": decision.passed,

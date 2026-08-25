@@ -261,6 +261,62 @@ def test_claim_evidence_gate_rejects_tampered_conflicting_unlinked_and_resolver_
     assert (resolver_result.passed, resolver_result.reason) == (False, "reject_claim_resolver_unavailable")
 
 
+def test_claim_evidence_gate_excludes_unlinked_evidence_and_answers_from_linked_support_only() -> None:
+    evidence = (
+        _evidence(
+            section_id="stable-principle",
+            source_id="source-workflow",
+            content="Known execution paths with fixed steps should use deterministic workflow control.",
+        ),
+        _evidence(
+            section_id="decision-question",
+            source_id="source-workflow",
+            content="When should a known execution path use deterministic workflow control?",
+        ),
+        _evidence(
+            section_id="recommendation",
+            source_id="source-agent",
+            content="A local Agent subtask needs explicit step, tool-call, latency, and cost budgets.",
+        ),
+    )
+
+    result = asyncio.run(
+        _gate().evaluate("Should known execution paths use a deterministic workflow?", evidence)
+    )
+
+    assert result.passed is True
+    assert result.reason == "sufficient_claim_evidence"
+    assert result.audit["excluded_evidence_counts"] == {"unlinked": 1, "without_contract": 0}
+    assert result.audit["protected_evidence_count"] == 2
+    assert sorted(
+        dict(item.metadata_items)["section_id"] for item in result.protected_evidence
+    ) == ["recommendation", "stable-principle"]
+    assert result.audit["covered_snapshot_ids"] == [
+        item.snapshot_id for item in result.protected_evidence if dict(item.metadata_items)["section_id"] == "stable-principle"
+    ]
+
+
+def test_is_unlinked_agent_evidence_classifies_contract_links_and_non_agent_evidence() -> None:
+    from app.rag.claim_evidence import is_unlinked_agent_evidence
+
+    linked = _evidence(
+        section_id="stable-principle",
+        source_id="source-workflow",
+        content="Known execution paths with fixed steps should use deterministic workflow control.",
+    )
+    unlinked = _evidence(
+        section_id="decision-question",
+        source_id="source-workflow",
+        content="When should a known execution path use deterministic workflow control?",
+    )
+    non_agent = {"section_id": "anywhere", "source_id": "anywhere"}
+
+    assert is_unlinked_agent_evidence(dict(linked.metadata_items)) is False
+    assert is_unlinked_agent_evidence(dict(unlinked.metadata_items)) is True
+    assert is_unlinked_agent_evidence(non_agent) is False
+    assert is_unlinked_agent_evidence({"entry_id": "pae-workflow-gate-001"}) is True
+
+
 def test_claim_evidence_gate_rejects_unreviewed_universal_variant_before_evidence_coverage() -> None:
     evidence = (
         _evidence(

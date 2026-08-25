@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from time import perf_counter
 from typing import Any
 
@@ -12,6 +13,7 @@ from app.common.config import Settings
 from app.extensions.registry import get_extension_registry
 from app.infra.milvus_document_index import MilvusDocumentIndex
 from app.model.document import Document, DocumentChunk
+from app.rag.claim_evidence import is_unlinked_agent_evidence
 from app.rag.dense_contract import (
     DenseEmbeddingContract,
     build_embedding_contract_fingerprint,
@@ -249,6 +251,11 @@ class MixedModeDocumentRetrieverService:
             score = self._score_chunk(query=query, content=chunk.content)
             if score <= self._settings.runtime_score_threshold:
                 continue
+            metadata = self._citation_metadata(chunk=chunk, document=document)
+            if is_unlinked_agent_evidence(metadata):
+                # Agent-entry sections outside the reviewed claim-evidence
+                # links can never become answer evidence.
+                continue
             ranked.append(
                 {
                     "chunk_id": chunk.id,
@@ -257,7 +264,7 @@ class MixedModeDocumentRetrieverService:
                     "chunk_index": chunk.chunk_index,
                     "score": round(score, 4),
                     "content_preview": chunk.content[:160],
-                    "metadata": self._citation_metadata(chunk=chunk, document=document),
+                    "metadata": metadata,
                     "retrieval_source": "lexical",
                     "answer_evidence_eligible": self._has_lexical_anchor(query, chunk.content),
                 }
@@ -355,6 +362,12 @@ class MixedModeDocumentRetrieverService:
             merged_key = (chunk.document_id, chunk.generation, chunk.chunk_index)
             if merged_key in seen:
                 continue
+            metadata = self._citation_metadata(chunk=chunk, document=document)
+            if is_unlinked_agent_evidence(metadata):
+                # Agent-entry sections outside the reviewed claim-evidence
+                # links can never become answer evidence; keep them out of the
+                # candidate pool before the top_k early-break.
+                continue
             seen.add(merged_key)
             hydrated.append(
                 {
@@ -364,7 +377,7 @@ class MixedModeDocumentRetrieverService:
                     "chunk_index": chunk.chunk_index,
                     "score": round(float(candidate.get("score") or 0.0), 4),
                     "content_preview": chunk.content[:160],
-                    "metadata": self._citation_metadata(chunk=chunk, document=document),
+                    "metadata": metadata,
                     "retrieval_source": "dense",
                     # Dense nearest-neighbor results remain diagnostic candidates. Only
                     # passages with a complete lexical anchor may enter answer evidence.
@@ -406,6 +419,12 @@ class MixedModeDocumentRetrieverService:
                 int(item.get("chunk_index") or 0),
             )
             if key in seen:
+                continue
+            metadata = item.get("metadata")
+            if is_unlinked_agent_evidence(metadata if isinstance(metadata, Mapping) else {}):
+                # Agent-entry sections outside the reviewed claim-evidence
+                # links can never become answer evidence, so they stay out of
+                # the candidate pool before the top_k truncation.
                 continue
             seen.add(key)
             merged.append(item)

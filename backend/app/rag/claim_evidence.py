@@ -299,6 +299,38 @@ class GateDecision:
     reason: str
     required_claims: tuple[ResolvedClaim, ...]
     audit: Mapping[str, object]
+    protected_evidence: tuple[AnswerEvidence, ...] = ()
+
+
+def is_unlinked_agent_evidence(metadata: Mapping[str, object]) -> bool:
+    """Return True only for agent-entry evidence outside its claim-evidence links.
+
+    Non-agent evidence is never affected. Agent-entry evidence counts as
+    unlinked when it carries no verifiable contract or when its
+    (section_id, source_id) pair is outside the reviewed links of that
+    contract; such passages can never become protected answer evidence.
+    """
+    if not isinstance(metadata, Mapping):
+        return False
+    entry_id = metadata.get("entry_id")
+    if not isinstance(entry_id, str) or not entry_id:
+        return False
+    raw_contract = metadata.get("claim_evidence_contract")
+    raw_hash = metadata.get("claim_evidence_contract_sha256")
+    if not isinstance(raw_contract, str) or not raw_contract or not isinstance(raw_hash, str) or not raw_hash:
+        return True
+    try:
+        contract = parse_claim_evidence_contract(json.loads(raw_contract))
+    except (json.JSONDecodeError, ClaimEvidenceContractError):
+        return True
+    if contract.sha256 != raw_hash:
+        return True
+    linked = {
+        (link.section_id, link.source_id)
+        for claim in contract.claims
+        for link in claim.evidence
+    }
+    return (metadata.get("section_id"), metadata.get("source_id")) not in linked
 
 
 class ClaimEvidenceGate:
@@ -355,10 +387,16 @@ class ClaimEvidenceGate:
     async def evaluate(self, question: str, evidence: tuple[AnswerEvidence, ...]) -> GateDecision:
         protected_evidence: list[tuple[AnswerEvidence, dict[str, str], ClaimEvidenceContract]] = []
         contracts: dict[str, ClaimEvidenceContract] = {}
+        excluded_unlinked = 0
+        excluded_unverified = 0
         for item in evidence:
             parsed = self._contract_for_evidence(item)
             if parsed is None:
-                return GateDecision(False, "reject_claim_contract_invalid", (), {"contract_count": 0})
+                # Evidence without a reviewable contract can never enter the
+                # protected answer evidence set; it is excluded instead of
+                # poisoning the whole request.
+                excluded_unverified += 1
+                continue
             contract, metadata = parsed
             entry_id = metadata.get("entry_id")
             if not entry_id or contract.conflict_state == "unresolved" or contract.unknown_state != "none":
@@ -373,10 +411,18 @@ class ClaimEvidenceGate:
                 for link in claim.evidence
             }
             if (metadata.get("section_id"), metadata.get("source_id")) not in expected_links:
-                return GateDecision(False, "reject_claim_evidence_unlinked", (), {"contract_count": len(contracts)})
+                # Sections outside the reviewed claim-evidence links stay out
+                # of the protected answer evidence set; the claim coverage
+                # checks below still fail closed when support is missing.
+                excluded_unlinked += 1
+                continue
             protected_evidence.append((item, metadata, contract))
 
-        if not contracts:
+        if not protected_evidence:
+            if excluded_unlinked:
+                return GateDecision(False, "reject_claim_evidence_unlinked", (), {"contract_count": len(contracts)})
+            if excluded_unverified:
+                return GateDecision(False, "reject_claim_contract_invalid", (), {"contract_count": 0})
             return GateDecision(False, "reject_claim_contract_missing", (), {"contract_count": 0})
         contract_audit = [
             {
@@ -409,6 +455,11 @@ class ClaimEvidenceGate:
             "required_claims": [],
             "required_evidence_links": [],
             "covered_snapshot_ids": [],
+            "excluded_evidence_counts": {
+                "unlinked": excluded_unlinked,
+                "without_contract": excluded_unverified,
+            },
+            "protected_evidence_count": len(protected_evidence),
         }
         artifact_identity = {
             key: value
@@ -511,4 +562,10 @@ class ClaimEvidenceGate:
                     return GateDecision(False, "reject_claim_evidence_stale", resolution.required_claims, audit)
                 covered_snapshot_ids.extend(item[0].snapshot_id for item in fresh_matches)
         audit["covered_snapshot_ids"] = list(dict.fromkeys(covered_snapshot_ids))
-        return GateDecision(True, "sufficient_claim_evidence", resolution.required_claims, audit)
+        return GateDecision(
+            True,
+            "sufficient_claim_evidence",
+            resolution.required_claims,
+            audit,
+            tuple(item for item, _metadata, _contract in protected_evidence),
+        )
