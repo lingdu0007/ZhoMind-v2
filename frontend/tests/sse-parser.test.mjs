@@ -78,3 +78,20 @@ test('fallback supports non-standard plain json line stream', () => {
   assert.equal(frames[0].content, 'hello');
   assert.equal(frames[1].content, ' world');
 });
+
+test('parse stage progress frames with stage and message fields', () => {
+  const frames = collectEvents([
+    'event: stage\n',
+    'data: {"stage":"retrieval","message":"正在检索知识库并核验证据…"}\n\n',
+    'event: stage\n',
+    'data: {"stage":"generating","message":"证据核验通过，正在生成回答…"}\n\n'
+  ]);
+
+  assert.deepEqual(
+    frames.map((item) => ({ type: item.type, stage: item.stage, message: item.message })),
+    [
+      { type: 'stage', stage: 'retrieval', message: '正在检索知识库并核验证据…' },
+      { type: 'stage', stage: 'generating', message: '证据核验通过，正在生成回答…' }
+    ]
+  );
+});

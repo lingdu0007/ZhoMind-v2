@@ -1,4 +1,7 @@
+import asyncio
 import json
+import logging
+from collections.abc import Awaitable, Callable
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -14,6 +17,8 @@ from app.operations.chat_capacity import get_chat_admission_gate
 from app.service.chat_service import ChatService
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+logger = logging.getLogger(__name__)
 
 
 def _ok(data: dict) -> dict:
@@ -61,7 +66,14 @@ def _record_operational_context(request: Request, result: dict) -> None:
     }
 
 
-async def _run_admitted_chat(service: ChatService, *, user_id: str, question: str, session_id: str | None) -> dict:
+async def _run_admitted_chat(
+    service: ChatService,
+    *,
+    user_id: str,
+    question: str,
+    session_id: str | None,
+    progress: Callable[[str, str], Awaitable[None]] | None = None,
+) -> dict:
     gate = get_chat_admission_gate()
     if not gate.try_admit():
         raise AppError(
@@ -70,7 +82,12 @@ async def _run_admitted_chat(service: ChatService, *, user_id: str, question: st
             message="the first-release concurrent chat limit has been reached",
         )
     try:
-        return await service.run_chat(user_id=user_id, question=question, session_id=session_id)
+        return await service.run_chat(
+            user_id=user_id,
+            question=question,
+            session_id=session_id,
+            progress=progress,
+        )
     finally:
         gate.release()
 
@@ -101,21 +118,66 @@ async def chat_stream(
     session: AsyncSession = Depends(get_db_session),
 ) -> StreamingResponse:
     service = ChatService(session)
-    result = await _run_admitted_chat(
-        service,
-        user_id=current_user.username,
-        question=payload.message,
-        session_id=payload.session_id,
-    )
-    _record_operational_context(request, result)
-    projected_message = service.project_message(result["message"], current_user.role)
+    progress_queue: asyncio.Queue[tuple[str, str] | None] = asyncio.Queue()
+
+    async def progress(stage: str, message: str) -> None:
+        await progress_queue.put((stage, message))
+
+    async def run_chat_with_progress() -> dict:
+        try:
+            return await _run_admitted_chat(
+                service,
+                user_id=current_user.username,
+                question=payload.message,
+                session_id=payload.session_id,
+                progress=progress,
+            )
+        finally:
+            await progress_queue.put(None)
+
+    chat_task = asyncio.create_task(run_chat_with_progress())
+    # Gate/provider context is produced while the body streams; ask the
+    # operational middleware to read request.state after the body completes.
+    request.state.defer_operational_event = True
+
+    def consume_task_result(task: asyncio.Task) -> None:
+        if task.done() and not task.cancelled():
+            task.exception()
 
     async def event_generator():
-        content = projected_message["content"]
+        try:
+            while True:
+                item = await progress_queue.get()
+                if item is None:
+                    break
+                stage, message = item
+                yield _sse_event("stage", {"stage": stage, "message": message})
+            result = await chat_task
+        except AppError as exc:
+            consume_task_result(chat_task)
+            yield _sse_event("error", {"code": exc.code, "message": exc.message})
+            yield _sse_event("done", "[DONE]")
+            return
+        except Exception:
+            logger.exception("chat stream failed")
+            consume_task_result(chat_task)
+            yield _sse_event("error", {"code": "CHAT_STREAM_FAILED", "message": "聊天流式处理失败，请稍后重试。"})
+            yield _sse_event("done", "[DONE]")
+            return
+        except BaseException:
+            # Client disconnect / shutdown: stop the background chat.
+            if not chat_task.done():
+                chat_task.cancel()
+            chat_task.add_done_callback(consume_task_result)
+            raise
+        consume_task_result(chat_task)
+        _record_operational_context(request, result)
+        projected_message = service.project_message(result["message"], current_user.role)
+
         yield _sse_event("answer_identity", {"answer_id": projected_message["id"]})
         if projected_message.get("outcome") is not None:
             yield _sse_event("outcome", {"outcome": projected_message["outcome"]})
-        for chunk in _chunk_text(content):
+        for chunk in _chunk_text(projected_message["content"]):
             yield _sse_event("content", {"content": chunk})
 
         if projected_message.get("evidence_summary") is not None:

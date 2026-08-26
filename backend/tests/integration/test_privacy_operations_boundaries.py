@@ -226,6 +226,31 @@ def test_chat_records_a_content_free_operational_event(client: TestClient) -> No
     }
 
 
+def test_chat_stream_records_a_deferred_operational_event(client: TestClient) -> None:
+    member_token = _register(client, username="stream-event-member")
+
+    stream_response = client.post(
+        "/api/v1/chat/stream",
+        headers={**_headers(member_token), "x-request-id": "stream-event-request-id"},
+        json={"message": "stream question excluded from operational events", "session_id": "stream-event-session"},
+    )
+
+    assert stream_response.status_code == 200
+    assert stream_response.headers["content-type"].startswith("text/event-stream")
+    assert "event: stage" in stream_response.text
+    assert "event: done" in stream_response.text
+
+    async def _events() -> list[OperationalEvent]:
+        async with client.app.state.test_auth_session_factory() as session:
+            return list((await session.scalars(select(OperationalEvent))).all())
+
+    events = asyncio.run(_events())
+    event = next(item for item in events if item.request_id == "stream-event-request-id")
+    assert event.route_outcome == "POST /api/v1/chat/stream:success"
+    assert event.gate_outcome == "rejected"
+    assert event.candidate_count == 0
+
+
 def test_any_request_purges_operational_events_after_thirty_days(client: TestClient) -> None:
     expired_at = datetime.now(UTC) - timedelta(days=31)
 

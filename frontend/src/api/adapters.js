@@ -191,6 +191,11 @@ export const streamChat = async ({ message, session_id, signal, token }, handler
       return;
     }
 
+    if (event.type === 'stage') {
+      handlers.onStage?.({ stage: event.stage || '', message: event.message || '' });
+      return;
+    }
+
     if (event.type === 'evidence_summary') {
       handlers.onEvidenceSummary?.(event.evidence_summary);
       return;

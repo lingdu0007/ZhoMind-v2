@@ -104,6 +104,14 @@ export const useChatStore = defineStore('chat', {
               assistantMsg.id = answerId || '';
               this.streamTick += 1;
             },
+            onStage: (stage) => {
+              const assistantMsg = getAssistantMsg();
+              if (!assistantMsg) return;
+              if (assistantMsg.isThinking && stage?.message) {
+                assistantMsg.status = stage.message;
+              }
+              this.streamTick += 1;
+            },
             onContent: (chunk) => {
               const assistantMsg = getAssistantMsg();
               if (!assistantMsg) return;

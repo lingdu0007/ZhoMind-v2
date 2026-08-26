@@ -38,6 +38,10 @@ export const normalizeSSEFrame = (frame) => {
     return { type: 'retrieval_diagnostics', retrieval_diagnostics: payload?.retrieval_diagnostics ?? payload };
   }
 
+  if (eventName === 'stage') {
+    return { type: 'stage', stage: payload?.stage || '', message: payload?.message ?? payload?.detail ?? '' };
+  }
+
   if (eventName === 'rag_step') {
     return { type: 'rag_step', data: payload?.step ?? payload };
   }
@@ -62,6 +66,9 @@ export const normalizeSSEFrame = (frame) => {
     }
     if (payload.type === 'retrieval_diagnostics') {
       return { type: 'retrieval_diagnostics', retrieval_diagnostics: payload.retrieval_diagnostics ?? payload.data ?? payload };
+    }
+    if (payload.type === 'stage') {
+      return { type: 'stage', stage: payload.stage || '', message: payload.message ?? payload.detail ?? '' };
     }
     if (payload.type === 'rag_step') return { type: 'rag_step', data: payload.step ?? payload.data ?? payload };
     if (payload.type === 'trace') return { type: 'trace', data: payload.trace ?? payload.data ?? payload };

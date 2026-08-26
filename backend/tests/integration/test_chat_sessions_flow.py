@@ -377,6 +377,9 @@ def test_chat_and_sessions_flow(monkeypatch) -> None:
             assert stream_response.status_code == 200
             assert stream_response.headers["content-type"].startswith("text/event-stream")
             text = stream_response.text
+            assert "event: stage" in text
+            assert '"stage": "retrieval"' in text
+            assert '"stage": "generating"' in text
             assert "event: content" in text
             assert "event: retrieval_diagnostics" in text
             assert "event: rag_step" not in text

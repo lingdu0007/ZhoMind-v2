@@ -2,6 +2,7 @@ import json
 import math
 import re
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from time import perf_counter
 
@@ -428,7 +429,13 @@ class ChatService:
             await self.session.commit()
         return deleted
 
-    async def run_chat(self, user_id: str, question: str, session_id: str | None) -> dict:
+    async def run_chat(
+        self,
+        user_id: str,
+        question: str,
+        session_id: str | None,
+        progress: Callable[[str, str], Awaitable[None]] | None = None,
+    ) -> dict:
         # Capture generation dependencies at request admission. A later provider
         # replacement only affects requests admitted after its atomic cutover.
         generation_settings = get_runtime_settings()
@@ -470,6 +477,7 @@ class ChatService:
             user_id=user_id,
             session_id=session.id,
             question=normalized_question,
+            progress=progress,
         )
         rag_trace = outcome.to_rag_trace()
 

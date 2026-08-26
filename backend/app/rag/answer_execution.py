@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from time import perf_counter
@@ -238,6 +238,7 @@ class EvidenceGatedAnswerExecutor:
         user_id: str,
         session_id: str,
         question: str,
+        progress: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> AnswerExecutionOutcome:
         normalized_question = question.strip()
         if self._is_smalltalk(normalized_question):
@@ -246,6 +247,8 @@ class EvidenceGatedAnswerExecutor:
                 session_id=session_id,
                 question=normalized_question,
             )
+        if progress is not None:
+            await progress("retrieval", "正在检索知识库并核验证据…")
         retrieval_started = perf_counter()
         runtime_result = await self._runner.run(
             request_id=request_id,
@@ -277,6 +280,8 @@ class EvidenceGatedAnswerExecutor:
             if not gate_reason.startswith("reject_"):
                 gate_reason = "reject_insufficient_evidence"
         else:
+            if progress is not None:
+                await progress("generating", "证据核验通过，正在生成回答（深度生成约需 1~5 分钟）…")
             generation_prompt = build_generation_prompt(normalized_question, evidence)
             generation_started = perf_counter()
             provider_result = await self._provider_router.complete(

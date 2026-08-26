@@ -132,6 +132,9 @@ def test_administrator_chat_response_contract_projects_bounded_retrieval_diagnos
             streamed = json.loads(diagnostics_data)["retrieval_diagnostics"]
             assert streamed["evidence_gate"]["reason"] == "reject_insufficient_evidence"
             assert [item["step"] for item in streamed["timeline"]] == [item["step"] for item in diagnostics["timeline"]]
+            assert "event: stage" in stream_resp.text
+            assert '"stage": "retrieval"' in stream_resp.text
+            assert '"stage": "generating"' not in stream_resp.text
             assert "event: rag_step" not in stream_resp.text
             assert "event: trace" not in stream_resp.text
     finally:

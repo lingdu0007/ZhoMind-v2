@@ -14,7 +14,7 @@
     >
       <header class="msg-head">
         <span class="role" :class="msg.role">{{ msg.role === 'user' ? '你' : '助手' }}</span>
-        <span v-if="msg.isThinking" class="status-dot" role="status">正在检索与生成回答</span>
+        <span v-if="msg.isThinking" class="status-dot" role="status">{{ msg.status || '正在检索与生成回答' }}</span>
         <span v-else-if="msg.streaming" class="status-dot" role="status">正在生成回答</span>
         <span v-else-if="msg.status" class="status-text" :class="statusClass(msg.status)" role="status">{{ msg.status }}</span>
       </header>
