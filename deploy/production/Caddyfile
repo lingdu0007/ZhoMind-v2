@@ -1,5 +1,11 @@
 {$DEPLOY_CADDY_SITE_ADDRESS} {
-    encode zstd gzip
+    # API responses stay uncompressed so Server-Sent Events (chat stage
+    # progress) are flushed to the client immediately instead of being
+    # buffered by the zstd/gzip encoder.
+    @api path_regexp api ^/api/(.*)$
+    @not_api not path /api/*
+
+    encode @not_api zstd gzip
 
     header {
         -Server
@@ -9,10 +15,11 @@
         Strict-Transport-Security "max-age=31536000; includeSubDomains"
     }
 
-    @api path_regexp api ^/api/(.*)$
     handle @api {
         rewrite @api /api/v1/{re.api.1}
-        reverse_proxy backend:8000
+        reverse_proxy backend:8000 {
+            flush_interval -1
+        }
     }
 
     handle {
