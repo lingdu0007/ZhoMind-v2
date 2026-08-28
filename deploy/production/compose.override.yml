@@ -1,0 +1,9 @@
+services:
+  backend:
+    dns:
+      - 223.5.5.5
+      - 119.29.29.29
+    environment:
+      HF_HOME: /app/data/hf-cache
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
