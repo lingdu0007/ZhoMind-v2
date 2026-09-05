@@ -13,6 +13,10 @@ export const apiAdapter = {
     const { data } = await http.post('/auth/login', payload);
     return unwrapData(data);
   },
+  async logout() {
+    const { data } = await http.post('/auth/logout');
+    return unwrapData(data);
+  },
   async getCurrentUser() {
     const { data } = await http.get('/auth/me');
     return unwrapData(data);

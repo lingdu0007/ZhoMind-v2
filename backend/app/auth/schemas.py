@@ -42,6 +42,7 @@ class TeamInvitationData(BaseModel):
     id: UUID
     expires_at: datetime
     revoked_at: datetime | None
+    consumed_at: datetime | None
     created_at: datetime
 
 
@@ -55,3 +56,14 @@ class MemberData(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+
+
+class IdentityAuditEventData(BaseModel):
+    id: str
+    action: str
+    outcome: str
+    reason: str
+    actor_identity: str
+    target_identity: str
+    reference_identity: str
+    occurred_at: datetime

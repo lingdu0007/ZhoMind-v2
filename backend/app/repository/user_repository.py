@@ -23,6 +23,12 @@ class UserRepository:
         result = await self.session.execute(select(User.id).where(User.is_bootstrap_administrator.is_(True)).limit(1))
         return result.scalar_one_or_none() is not None
 
+    async def get_bootstrap_administrator(self) -> User | None:
+        result = await self.session.execute(
+            select(User).where(User.is_bootstrap_administrator.is_(True)).order_by(User.created_at.asc()).limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def list_members(self) -> list[User]:
         result = await self.session.execute(select(User).order_by(User.created_at.asc(), User.username.asc()))
         return list(result.scalars())

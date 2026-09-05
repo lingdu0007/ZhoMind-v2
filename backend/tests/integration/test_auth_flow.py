@@ -16,6 +16,7 @@ from app.model.base import Base
 class _InMemoryRedis:
     def __init__(self) -> None:
         self.hashes: dict[str, dict[str, str]] = {}
+        self.delete_error: Exception | None = None
 
     async def hset(self, key: str, mapping: dict[str, str]) -> None:
         self.hashes[key] = {str(k): str(v) for k, v in mapping.items()}
@@ -25,6 +26,16 @@ class _InMemoryRedis:
 
     async def exists(self, key: str) -> int:
         return 1 if key in self.hashes else 0
+
+    async def delete(self, *keys: str) -> int:
+        if self.delete_error is not None:
+            raise self.delete_error
+        removed = 0
+        for key in keys:
+            if key in self.hashes:
+                del self.hashes[key]
+                removed += 1
+        return removed
 
 
 @pytest.fixture
@@ -157,3 +168,38 @@ def test_me_rejects_when_redis_session_missing(client: TestClient) -> None:
     body = me_response.json()
     assert body["code"] == "AUTH_INVALID_TOKEN"
     assert "request_id" in body
+
+
+def test_logout_revokes_only_the_current_bearer_session(client: TestClient) -> None:
+    registration = _register_knowledge_user(client, "logout-member")
+    first_token = registration.json()["data"]["access_token"]
+    second_login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "logout-member", "password": "secret-123"},
+    )
+    assert second_login.status_code == 200
+    second_token = second_login.json()["data"]["access_token"]
+
+    logout = client.post("/api/v1/auth/logout", headers={"Authorization": f"Bearer {first_token}"})
+
+    assert logout.status_code == 200
+    assert client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {first_token}"}).status_code == 401
+    assert client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {second_token}"}).status_code == 200
+
+
+def test_logout_persists_a_pending_audit_event_before_a_session_store_failure(client: TestClient) -> None:
+    registration = _register_knowledge_user(client, "logout-audit-member")
+    token = registration.json()["data"]["access_token"]
+    client.app.state.test_redis.delete_error = ConnectionError("redis unavailable")
+
+    with pytest.raises(ConnectionError, match="redis unavailable"):
+        client.post("/api/v1/auth/logout", headers={"Authorization": f"Bearer {token}"})
+
+    client.app.state.test_redis.delete_error = None
+    audit = client.get("/api/v1/members/identity-audit", headers=_bootstrap_headers(client))
+
+    assert audit.status_code == 200
+    assert ("logout", "pending", "session_revocation_pending") in {
+        (event["action"], event["outcome"], event["reason"])
+        for event in audit.json()["data"]
+    }

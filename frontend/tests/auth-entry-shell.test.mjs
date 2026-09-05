@@ -50,6 +50,10 @@ test('a stored token refreshes the server role before rejecting an administrator
 
   await page.getByRole('button', { name: '退出登录' }).click();
   await page.waitForURL(/\/auth$/);
+  const staleTokenResponse = await fetch(`${api.baseUrl}/auth/me`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  assert.equal(staleTokenResponse.status, 401);
   assert.deepEqual(
     await page.evaluate(() => ({
       token: localStorage.getItem('access_token'),
@@ -60,6 +64,75 @@ test('a stored token refreshes the server role before rejecting an administrator
   );
   assert.equal(await page.getByRole('navigation').count(), 0);
   assert.equal(await page.getByRole('heading', { name: '对话工作区' }).count(), 0);
+});
+
+test('a failed logout request never leaves a protected browser session visible', { timeout: 30000 }, async (t) => {
+  const { page, baseUrl, api } = await startWorkbench(t, {});
+  const token = await registerKnowledgeUserViaApi(api, 'logout-network-failure');
+
+  await page.addInitScript(({ storedToken }) => {
+    localStorage.setItem('access_token', storedToken);
+  }, { storedToken: token });
+  await page.goto(`${baseUrl}chat`);
+  await page.getByRole('heading', { name: '对话工作区' }).waitFor();
+
+  await page.route('**/auth/logout', (route) => route.abort('failed'));
+  await page.getByRole('button', { name: '退出登录' }).click();
+
+  await page.waitForURL(/\/auth$/);
+  assert.equal(await page.getByRole('navigation').count(), 0);
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      token: localStorage.getItem('access_token'),
+      username: localStorage.getItem('username'),
+      role: localStorage.getItem('role')
+    })),
+    { token: null, username: null, role: null }
+  );
+  const serverSession = await fetch(`${api.baseUrl}/auth/me`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  assert.equal(serverSession.status, 200);
+});
+
+test('a deactivated stale browser session is expelled when a protected request receives 401', { timeout: 30000 }, async (t) => {
+  const { page, baseUrl, api } = await startWorkbench(t, {});
+  const token = await registerKnowledgeUserViaApi(api, 'stale-browser-member');
+
+  await page.addInitScript(({ storedToken }) => {
+    localStorage.setItem('access_token', storedToken);
+  }, { storedToken: token });
+  await page.goto(`${baseUrl}chat`);
+  await page.getByRole('heading', { name: '对话工作区' }).waitFor();
+
+  const administratorLogin = await fetch(`${api.baseUrl}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'operator', password: 'safe-password' })
+  });
+  assert.equal(administratorLogin.status, 200);
+  const administratorToken = (await administratorLogin.json()).data.access_token;
+  const deactivation = await fetch(`${api.baseUrl}/members/stale-browser-member/deactivate`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${administratorToken}` }
+  });
+  assert.equal(deactivation.status, 200);
+
+  await page.goto(`${baseUrl}knowledge`);
+  await page.waitForURL(/\/auth$/);
+  assert.equal(await page.getByRole('navigation').count(), 0);
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      token: localStorage.getItem('access_token'),
+      username: localStorage.getItem('username'),
+      role: localStorage.getItem('role')
+    })),
+    { token: null, username: null, role: null }
+  );
+  const staleBearer = await fetch(`${api.baseUrl}/auth/me`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  assert.equal(staleBearer.status, 401);
 });
 
 test('sign-in has no role selector and keeps form input after a specific authentication error', { timeout: 30000 }, async (t) => {

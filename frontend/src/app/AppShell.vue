@@ -92,8 +92,14 @@ const accessMessage = computed(() => {
 });
 
 const signOut = async () => {
-  clearProtectedSession();
-  await router.replace({ name: 'authentication-entry' });
+  try {
+    await authStore.logout();
+  } catch {
+    // A failed revocation must never leave an authorized workbench visible.
+  } finally {
+    clearProtectedSession();
+    await router.replace({ name: 'authentication-entry' });
+  }
 };
 </script>
 

@@ -1,3 +1,4 @@
+from app.model.canonical import CanonicalEventModel, CanonicalRecordModel
 from app.model.chat import ChatMessage, ChatSession
 from app.model.document import Document, DocumentChunk, DocumentJob
 from app.model.knowledge_feedback import KnowledgeFeedbackSignal, ReviewWorkItem
@@ -15,6 +16,8 @@ __all__ = [
     "OperationalEvent",
     "ChatSession",
     "ChatMessage",
+    "CanonicalRecordModel",
+    "CanonicalEventModel",
     "SystemSettingsDraft",
     "SystemSettingsState",
 ]

@@ -4,12 +4,19 @@ from fastapi import APIRouter, Depends
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.schemas import CreatedTeamInvitationData, CreateTeamInvitationRequest, MemberData, TeamInvitationData
+from app.auth.schemas import (
+    CreatedTeamInvitationData,
+    CreateTeamInvitationRequest,
+    IdentityAuditEventData,
+    MemberData,
+    TeamInvitationData,
+)
 from app.common.deps import require_admin
 from app.common.request_id import get_request_id
 from app.common.responses import ok_response
 from app.infra.db import get_db_session
 from app.infra.redis import get_redis_client
+from app.service.identity_audit_service import IdentityAuditService
 from app.service.member_admission_service import MemberAdmissionService
 
 router = APIRouter(prefix="/members", tags=["members"])
@@ -30,6 +37,7 @@ def _invitation_data(invitation) -> TeamInvitationData:
         id=invitation.id,
         expires_at=invitation.expires_at,
         revoked_at=invitation.revoked_at,
+        consumed_at=invitation.consumed_at,
         created_at=invitation.created_at,
     )
 
@@ -67,7 +75,7 @@ async def revoke_invitation(
     session: AsyncSession = Depends(get_db_session),
     redis: Redis = Depends(get_redis_client),
 ) -> dict:
-    invitation = await MemberAdmissionService(session, redis).revoke_invitation(invitation_id)
+    invitation = await MemberAdmissionService(session, redis).revoke_invitation(administrator, invitation_id)
     return ok_response(data=_invitation_data(invitation).model_dump(mode="json"), request_id=get_request_id())
 
 
@@ -82,6 +90,17 @@ async def list_members(
     return ok_response(data=data, request_id=get_request_id())
 
 
+@router.get("/identity-audit")
+async def list_identity_audit(
+    administrator=Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    del administrator
+    events = await IdentityAuditService(session).list_events()
+    data = [IdentityAuditEventData(**event).model_dump(mode="json") for event in events]
+    return ok_response(data=data, request_id=get_request_id())
+
+
 @router.post("/{username}/promote")
 async def promote_member(
     username: str,
@@ -89,7 +108,7 @@ async def promote_member(
     session: AsyncSession = Depends(get_db_session),
     redis: Redis = Depends(get_redis_client),
 ) -> dict:
-    member = await MemberAdmissionService(session, redis).promote_member(username)
+    member = await MemberAdmissionService(session, redis).promote_member(administrator, username)
     return ok_response(data=_member_data(member).model_dump(mode="json"), request_id=get_request_id())
 
 
@@ -100,5 +119,5 @@ async def deactivate_member(
     session: AsyncSession = Depends(get_db_session),
     redis: Redis = Depends(get_redis_client),
 ) -> dict:
-    member = await MemberAdmissionService(session, redis).deactivate_member(username)
+    member = await MemberAdmissionService(session, redis).deactivate_member(administrator, username)
     return ok_response(data=_member_data(member).model_dump(mode="json"), request_id=get_request_id())

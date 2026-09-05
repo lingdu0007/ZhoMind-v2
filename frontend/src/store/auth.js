@@ -63,6 +63,9 @@ export const useAuthStore = defineStore('auth', {
     async register(payload) {
       return this.authenticate(apiAdapter.register, payload);
     },
+    async logout() {
+      await apiAdapter.logout();
+    },
     async authenticate(request, payload) {
       this.loading = true;
       try {

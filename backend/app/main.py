@@ -42,25 +42,21 @@ async def lifespan(application: FastAPI):
     await _purge_expired_records(session_factory)
     retention_task = asyncio.create_task(_retention_loop(session_factory), name="conversation-retention-cleanup")
     try:
-        async with session_factory() as session:
-            await SystemSettingsDraftService(session).restore_active_application()
-    except (OSError, SQLAlchemyError):
-        # The settings tables may not exist before migrations have run.
-        pass
-    # Resolver artifacts are process-owned. A configured but untrusted profile
-    # must fail startup instead of silently degrading on the first chat request.
-    get_extension_registry()
-    try:
+        try:
+            async with session_factory() as session:
+                await SystemSettingsDraftService(session).restore_active_application()
+        except (OSError, SQLAlchemyError):
+            # The settings tables may not exist before migrations have run.
+            pass
+        # Resolver artifacts are process-owned. A configured but untrusted profile
+        # must fail startup instead of silently degrading on the first chat request.
+        get_extension_registry()
         async with session_factory() as session:
             settings = get_settings()
             await MemberAdmissionService(session, redis=None).create_bootstrap_administrator(
                 username=settings.bootstrap_admin_username,
                 password=settings.bootstrap_admin_password,
             )
-    except (OSError, SQLAlchemyError):
-        # The users table may not exist before migrations have run.
-        pass
-    try:
         yield
     finally:
         retention_task.cancel()
