@@ -8,6 +8,22 @@ ZhoMind-v2 是一个首发版本的 Team-Shared Knowledge Base 应用，处理�
 
 该截图来自现有中文 application entry 的有界 static render：不包含 private content、credentials、host information、raw diagnostics 或 production data。
 
+## 规范文档
+
+请使用下列文档实施和审阅工作，而不是在每张 ticket 中重复长期有效的产品规则：
+
+- [Agent Instructions](AGENTS.md) 规定必须遵循的实施、migration、privacy、
+  verification 与交付纪律。
+- [Canonical Product Contracts](docs/contracts/canonical-product-contracts.zh-CN.md)
+  定义稳定的产品 identity、state、authority、data boundary、audit shape、
+  compatibility 与 product-path requirement。其中的 Pilot 身份权威与审计部分
+  约束 admission、role、session 和身份 audit。
+- [ADR 0001](docs/adr/0001-server-derived-pilot-identity-and-audit.zh-CN.md)
+  记录已接受的服务端派生 Pilot 身份决策及其 migration 后果。
+
+Ticket 定义范围与验收证据，但必须保持这些 contract；若要改变它们，必须在同一变更
+中显式更新对应 ADR 及其中文镜像。
+
 ## Portfolio Release
 
 已接受的 runtime source candidate 为 `91753f1c1ff6fc07bc262dfa50fb719a63210e0b`。其经过审阅、非敏感的 [Public Evidence Bundle](public-evidence/releases/portfolio-release-candidate-01/REPORT.zh-CN.md) 名为 `portfolio-release-candidate-01`；[manifest](public-evidence/releases/portfolio-release-candidate-01/manifest.json) 将 run identities、冻结的 corpus/query hashes、artifact hashes 与 declared limits 绑定到该 source revision。release artifact revision 是包含该已检查 bundle 和双语 release materials 的 Git commit；tag 前它必须等于本地 `main`、authoritative remote `main` 与 tag target。source revision 必须是该 artifact revision 的 ancestor，因为 generated bundle 不能 self-reference 添加它的 commit hash。

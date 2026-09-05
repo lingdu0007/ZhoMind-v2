@@ -8,6 +8,26 @@ ZhoMind-v2 is a first-release, team-shared knowledge-base application for the po
 
 The screenshot is a bounded static render of the existing Chinese application entry: it uses no private content, credentials, host information, raw diagnostics, or production data.
 
+## Normative Documentation
+
+Use the following documents to implement and review work without restating
+long-lived product rules in every ticket:
+
+- [Agent instructions](AGENTS.md) define the mandatory implementation,
+  migration, privacy, verification, and delivery discipline.
+- [Canonical Product Contracts](docs/contracts/canonical-product-contracts.md)
+  define stable product identities, states, authority, data boundaries, audit
+  shapes, compatibility, and product-path requirements. Its Pilot Identity
+  Authority And Audit section governs admission, roles, sessions, and identity
+  audit.
+- [ADR 0001](docs/adr/0001-server-derived-pilot-identity-and-audit.md)
+  records the accepted server-derived Pilot identity decision and its migration
+  consequences.
+
+Tickets define scope and acceptance evidence. They must preserve these
+contracts, or change them explicitly through the governing ADR and its
+Chinese mirror.
+
 ## Portfolio Release
 
 The accepted runtime source candidate is `91753f1c1ff6fc07bc262dfa50fb719a63210e0b`. Its reviewed, non-sensitive [Public Evidence Bundle](public-evidence/releases/portfolio-release-candidate-01/REPORT.md) is `portfolio-release-candidate-01`; the [manifest](public-evidence/releases/portfolio-release-candidate-01/manifest.json) binds run identities, frozen corpus/query hashes, artifact hashes, and declared limits to that source revision. The release artifact revision is the Git commit that contains this checked bundle and the bilingual release materials; before tagging, it must equal local `main`, the authoritative remote `main`, and the tag target. The source revision must be an ancestor of that artifact revision, because a generated bundle cannot self-reference the hash of the commit that adds it.

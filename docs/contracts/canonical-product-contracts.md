@@ -1,6 +1,6 @@
 # Canonical Product Contracts
 
-Status: additive foundation for tickets 13 and 14
+Status: normative product contract; additive foundation for tickets 13 and 14
 
 ## Purpose
 
@@ -9,6 +9,10 @@ closed state vocabularies, immutable records, and append-only events without
 reinterpreting or deleting existing runtime rows. It is intentionally separate
 from the legacy `documents`, `document_jobs`, `chat_messages`, and feedback
 tables during migration.
+
+This document is normative for the product rules it defines. Tickets must
+preserve those rules or update the governing ADR and this English canonical
+document with its Chinese mirror in the same change.
 
 ## Identity
 
