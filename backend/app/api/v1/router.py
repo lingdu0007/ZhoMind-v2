@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from app.api.v1.acceptance import router as acceptance_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.chat import router as chat_router
 from app.api.v1.documents import router as documents_router
@@ -15,6 +16,7 @@ router = APIRouter()
 router.include_router(health_router)
 router.include_router(knowledge_map_router)
 router.include_router(knowledge_feedback_router)
+router.include_router(acceptance_router)
 router.include_router(auth_router)
 router.include_router(members_router)
 router.include_router(operations_router)

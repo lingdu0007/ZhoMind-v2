@@ -44,9 +44,30 @@ def test_all_required_identity_kinds_are_stable_and_round_trip() -> None:
         StableIdentityKind.EVIDENCE_SNAPSHOT,
         StableIdentityKind.MAINTENANCE_ITEM,
         StableIdentityKind.DELIVERY_ACCEPTANCE_RECORD,
+        StableIdentityKind.COLLECTION,
+        StableIdentityKind.CAPABILITY,
+        StableIdentityKind.CONFIGURATION,
+        StableIdentityKind.CONCURRENCY,
+        StableIdentityKind.CORPUS,
+        StableIdentityKind.DATA_BOUNDARY,
+        StableIdentityKind.DEPLOYMENT,
+        StableIdentityKind.EDITORIAL_REVISION,
+        StableIdentityKind.EMBEDDING_PROFILE,
+        StableIdentityKind.HOST,
+        StableIdentityKind.MIGRATION,
+        StableIdentityKind.OBJECTIVE,
+        StableIdentityKind.PRODUCT_PATH,
+        StableIdentityKind.PRODUCT_REVISION,
+        StableIdentityKind.PROMPT_ENVELOPE,
+        StableIdentityKind.PROVIDER_ROUTE,
+        StableIdentityKind.PUBLIC_CLAIM,
+        StableIdentityKind.RETRIEVAL_PROFILE,
+        StableIdentityKind.USER_BOUNDARY,
     }
     identity = StableIdentity(StableIdentityKind.ENTRY, "entry-001")
     assert StableIdentity.from_stable_id(identity.stable_id) == identity
+    deployment = StableIdentity.from_stable_id("deployment:pilot-target-20260905")
+    assert deployment.kind is StableIdentityKind.DEPLOYMENT
 
 
 def test_illegal_transitions_are_rejected() -> None:

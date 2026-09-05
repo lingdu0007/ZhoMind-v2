@@ -37,6 +37,25 @@ class StableIdentityKind(_ValueEnum):
     EVIDENCE_SNAPSHOT = "evidence_snapshot"
     MAINTENANCE_ITEM = "maintenance_item"
     DELIVERY_ACCEPTANCE_RECORD = "delivery_acceptance_record"
+    COLLECTION = "collection"
+    CAPABILITY = "capability"
+    CONFIGURATION = "configuration"
+    CONCURRENCY = "concurrency"
+    CORPUS = "corpus"
+    DATA_BOUNDARY = "data_boundary"
+    DEPLOYMENT = "deployment"
+    EDITORIAL_REVISION = "editorial_revision"
+    EMBEDDING_PROFILE = "embedding_profile"
+    HOST = "host"
+    MIGRATION = "migration"
+    OBJECTIVE = "objective"
+    PRODUCT_PATH = "product_path"
+    PRODUCT_REVISION = "product_revision"
+    PROMPT_ENVELOPE = "prompt_envelope"
+    PROVIDER_ROUTE = "provider_route"
+    PUBLIC_CLAIM = "public_claim"
+    RETRIEVAL_PROFILE = "retrieval_profile"
+    USER_BOUNDARY = "user_boundary"
 
 
 class EntryLifecycleState(_ValueEnum):
@@ -215,7 +234,9 @@ _TRANSITIONS: dict[type[Enum], dict[str, frozenset[str]]] = {
     },
     DeliveryAcceptanceStage: {
         DeliveryAcceptanceStage.LOCAL_DEVELOPMENT.value: frozenset({DeliveryAcceptanceStage.EDITORIAL_PREVIEW.value}),
-        DeliveryAcceptanceStage.EDITORIAL_PREVIEW.value: frozenset({DeliveryAcceptanceStage.LIMITED_TEAM_PILOT.value}),
+        DeliveryAcceptanceStage.EDITORIAL_PREVIEW.value: frozenset(
+            {DeliveryAcceptanceStage.LIMITED_TEAM_PILOT.value, DeliveryAcceptanceStage.DAILY_USE_RELEASE.value}
+        ),
         DeliveryAcceptanceStage.LIMITED_TEAM_PILOT.value: frozenset({DeliveryAcceptanceStage.DAILY_USE_RELEASE.value}),
         DeliveryAcceptanceStage.DAILY_USE_RELEASE.value: frozenset({DeliveryAcceptanceStage.PUBLIC_EVIDENCE_RELEASE.value}),
         DeliveryAcceptanceStage.PUBLIC_EVIDENCE_RELEASE.value: frozenset(),

@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import JSON, DateTime, Index, Integer, String, event
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.model.base import Base
 
@@ -68,3 +68,13 @@ def _reject_canonical_event_update(_mapper, _connection, _target: CanonicalEvent
 @event.listens_for(CanonicalEventModel, "before_delete")
 def _reject_canonical_event_delete(_mapper, _connection, _target: CanonicalEventModel) -> None:
     raise ValueError("canonical events are append-only")
+
+
+@event.listens_for(Session, "do_orm_execute")
+def _reject_canonical_bulk_mutation(orm_execute_state) -> None:
+    """Prevent bulk DML from bypassing canonical mapper-level guards."""
+    if not (orm_execute_state.is_update or orm_execute_state.is_delete):
+        return
+    mapper = orm_execute_state.bind_mapper
+    if mapper is not None and mapper.class_ in {CanonicalRecordModel, CanonicalEventModel}:
+        raise ValueError("canonical records and events cannot be updated or deleted")

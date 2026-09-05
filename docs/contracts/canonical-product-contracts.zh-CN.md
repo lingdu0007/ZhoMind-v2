@@ -1,6 +1,6 @@
 # 规范化产品契约
 
-状态：规范性产品契约；ticket 13 与 14 的增量基础
+状态：规范性产品契约；ticket 13、14 与 15 的增量基础
 
 ## 目的
 
@@ -17,8 +17,13 @@
 业务 kind 包括：`member`、`team_invitation`、`admission_attempt`、`entry`、
 `source`、`bundle`、`bundle_item`、`build_generation`、`candidate`、
 `published_knowledge_version`、`answer_execution`、`evidence_set`、
-`evidence_snapshot`、`maintenance_item` 和 `delivery_acceptance_record`。
-标识不可变。标题、文件名、代次编号、分数或当前 `latest` 指针都不是标识。
+`evidence_snapshot`、`maintenance_item`、`delivery_acceptance_record`、
+`collection`、`capability`、`configuration`、`concurrency`、`corpus`、
+`data_boundary`、`deployment`、`editorial_revision`、`embedding_profile`、
+`host`、`migration`、`objective`、`product_path`、`product_revision`、
+`prompt_envelope`、`provider_route`、`public_claim`、`retrieval_profile` 和
+`user_boundary`。标识不可变。标题、文件名、代次编号、分数、环境标签或当前
+`latest` 指针都不是标识。
 
 ## 状态与事件
 

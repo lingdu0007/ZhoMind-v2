@@ -1,6 +1,6 @@
 # Canonical Product Contracts
 
-Status: normative product contract; additive foundation for tickets 13 and 14
+Status: normative product contract; additive foundation for tickets 13, 14, and 15
 
 ## Purpose
 
@@ -21,9 +21,14 @@ document with its Chinese mirror in the same change.
 `member`, `team_invitation`, `admission_attempt`, `entry`, `source`, `bundle`,
 `bundle_item`, `build_generation`, `candidate`,
 `published_knowledge_version`, `answer_execution`, `evidence_set`,
-`evidence_snapshot`, `maintenance_item`, and `delivery_acceptance_record`.
-Identity values are immutable. A title, filename, generation number, score, or
-current `latest` pointer is not an identity.
+`evidence_snapshot`, `maintenance_item`, `delivery_acceptance_record`,
+`collection`, `capability`, `configuration`, `concurrency`, `corpus`,
+`data_boundary`, `deployment`, `editorial_revision`, `embedding_profile`,
+`host`, `migration`, `objective`, `product_path`, `product_revision`,
+`prompt_envelope`, `provider_route`, `public_claim`, `retrieval_profile`, and
+`user_boundary`. Identity values are immutable. A title, filename, generation
+number, score, environment label, or current `latest` pointer is not an
+identity.
 
 ## State And Events
 

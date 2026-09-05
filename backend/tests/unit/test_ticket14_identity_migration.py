@@ -34,6 +34,29 @@ def test_ticket14_tail_migration_fails_closed_for_legacy_active_invitations(
             created_at DATETIME,
             FOREIGN KEY(created_by_user_id) REFERENCES users(id)
         );
+        CREATE TABLE canonical_records (
+            stable_id VARCHAR(192) NOT NULL PRIMARY KEY,
+            identity_kind VARCHAR(48) NOT NULL,
+            identity_value VARCHAR(160) NOT NULL,
+            state VARCHAR(96) NOT NULL,
+            record_class VARCHAR(32) NOT NULL,
+            schema_version INTEGER NOT NULL DEFAULT 1,
+            payload JSON NOT NULL,
+            legacy_type VARCHAR(48),
+            legacy_id VARCHAR(192),
+            created_at DATETIME NOT NULL
+        );
+        CREATE TABLE canonical_events (
+            id VARCHAR(64) NOT NULL PRIMARY KEY,
+            aggregate_id VARCHAR(192) NOT NULL,
+            aggregate_kind VARCHAR(48) NOT NULL,
+            event_type VARCHAR(48) NOT NULL,
+            from_state VARCHAR(96),
+            to_state VARCHAR(96) NOT NULL,
+            payload JSON NOT NULL,
+            occurred_at DATETIME NOT NULL,
+            recorded_by VARCHAR(192)
+        );
         CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL);
         INSERT INTO users VALUES (
             '00000000000000000000000000000001',
@@ -103,4 +126,4 @@ def test_ticket14_tail_migration_fails_closed_for_legacy_active_invitations(
     assert invitations["active-legacy"] == ("2026-01-02 03:04:05", None)
     assert invitations["expired-legacy"] == (None, None)
     assert invitations["revoked-legacy"] == (None, None)
-    assert revision == ("20260905_0015",)
+    assert revision == ("20260905_0016",)
