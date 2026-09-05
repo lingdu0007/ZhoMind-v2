@@ -14,7 +14,12 @@ from app.contracts.canonical import (
     CanonicalEventType,
     CanonicalRecord,
     CanonicalRecordClass,
+    CoveragePosition,
+    EditorialRevisionChangeKind,
     EntryLifecycleState,
+    KnowledgeAssuranceLevel,
+    KnowledgeSourceTier,
+    SourceAccessScope,
     StableIdentity,
     StableIdentityKind,
     compatibility_read_projection,
@@ -77,6 +82,32 @@ def test_illegal_transitions_are_rejected() -> None:
         validate_transition(EntryLifecycleState, "draft", "published")
     with pytest.raises(ValueError, match="illegal"):
         validate_transition(AnswerExecutionState, "completed", "running")
+
+
+def test_editorial_authority_vocabulary_is_closed_and_canonical() -> None:
+    assert {position.value for position in CoveragePosition} == {
+        "rag_source_admission_and_chunking",
+        "sparse_dense_hybrid_and_reranking_choices",
+        "evidence_sufficiency_refusal_and_acceptance",
+        "tools_and_mcp_permissions_and_failure_behavior",
+        "agent_context_state_and_memory",
+        "orchestration_retry_human_intervention_and_side_effects",
+        "provider_failure_and_observability",
+        "prompt_injection_isolation_and_security",
+    }
+    assert {level.value for level in KnowledgeAssuranceLevel} == {
+        "source_grounded",
+        "claim_linked",
+        "release_assured",
+    }
+    assert {tier.value for tier in KnowledgeSourceTier} == {
+        "primary_evidence_source",
+        "reproducible_engineering_evidence",
+        "secondary_discovery_source",
+        "bounded_internal_case",
+    }
+    assert {scope.value for scope in SourceAccessScope} == {"public", "controlled_internal"}
+    assert {kind.value for kind in EditorialRevisionChangeKind} == {"material", "wording_only"}
 
 
 def test_record_and_event_serialization_preserve_identity_and_state() -> None:

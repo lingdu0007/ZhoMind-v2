@@ -23,6 +23,9 @@ long-lived product rules in every ticket:
 - [ADR 0001](docs/adr/0001-server-derived-pilot-identity-and-audit.md)
   records the accepted server-derived Pilot identity decision and its migration
   consequences.
+- [ADR 0002](docs/adr/0002-private-editorial-repository-authority.md)
+  records the private editorial authority boundary, maintainer source
+  verification, and deterministic export decision.
 
 Tickets define scope and acceptance evidence. They must preserve these
 contracts, or change them explicitly through the governing ADR and its

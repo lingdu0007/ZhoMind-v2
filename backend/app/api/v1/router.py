@@ -4,6 +4,7 @@ from app.api.v1.acceptance import router as acceptance_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.chat import router as chat_router
 from app.api.v1.documents import router as documents_router
+from app.api.v1.editorial import router as editorial_router
 from app.api.v1.health import router as health_router
 from app.api.v1.knowledge_feedback import router as knowledge_feedback_router
 from app.api.v1.knowledge_map import router as knowledge_map_router
@@ -23,4 +24,5 @@ router.include_router(operations_router)
 router.include_router(chat_router)
 router.include_router(sessions_router)
 router.include_router(documents_router)
+router.include_router(editorial_router)
 router.include_router(settings_router)

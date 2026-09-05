@@ -68,6 +68,42 @@ class EntryLifecycleState(_ValueEnum):
     WITHDRAWN = "withdrawn"
 
 
+class CoveragePosition(_ValueEnum):
+    RAG_SOURCE_ADMISSION_AND_CHUNKING = "rag_source_admission_and_chunking"
+    SPARSE_DENSE_HYBRID_AND_RERANKING_CHOICES = "sparse_dense_hybrid_and_reranking_choices"
+    EVIDENCE_SUFFICIENCY_REFUSAL_AND_ACCEPTANCE = "evidence_sufficiency_refusal_and_acceptance"
+    TOOLS_AND_MCP_PERMISSIONS_AND_FAILURE_BEHAVIOR = "tools_and_mcp_permissions_and_failure_behavior"
+    AGENT_CONTEXT_STATE_AND_MEMORY = "agent_context_state_and_memory"
+    ORCHESTRATION_RETRY_HUMAN_INTERVENTION_AND_SIDE_EFFECTS = (
+        "orchestration_retry_human_intervention_and_side_effects"
+    )
+    PROVIDER_FAILURE_AND_OBSERVABILITY = "provider_failure_and_observability"
+    PROMPT_INJECTION_ISOLATION_AND_SECURITY = "prompt_injection_isolation_and_security"
+
+
+class KnowledgeAssuranceLevel(_ValueEnum):
+    SOURCE_GROUNDED = "source_grounded"
+    CLAIM_LINKED = "claim_linked"
+    RELEASE_ASSURED = "release_assured"
+
+
+class KnowledgeSourceTier(_ValueEnum):
+    PRIMARY_EVIDENCE_SOURCE = "primary_evidence_source"
+    REPRODUCIBLE_ENGINEERING_EVIDENCE = "reproducible_engineering_evidence"
+    SECONDARY_DISCOVERY_SOURCE = "secondary_discovery_source"
+    BOUNDED_INTERNAL_CASE = "bounded_internal_case"
+
+
+class SourceAccessScope(_ValueEnum):
+    PUBLIC = "public"
+    CONTROLLED_INTERNAL = "controlled_internal"
+
+
+class EditorialRevisionChangeKind(_ValueEnum):
+    MATERIAL = "material"
+    WORDING_ONLY = "wording_only"
+
+
 class SourceAvailabilityState(_ValueEnum):
     VERIFIED_USABLE = "verified_usable"
     CHANGED_OR_UNREACHABLE_AWAITING_REVIEW = "changed_or_unreachable_awaiting_review"

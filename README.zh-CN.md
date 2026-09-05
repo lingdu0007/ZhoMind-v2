@@ -20,6 +20,9 @@ ZhoMind-v2 是一个首发版本的 Team-Shared Knowledge Base 应用，处理�
   约束 admission、role、session 和身份 audit。
 - [ADR 0001](docs/adr/0001-server-derived-pilot-identity-and-audit.zh-CN.md)
   记录已接受的服务端派生 Pilot 身份决策及其 migration 后果。
+- [ADR 0002](docs/adr/0002-private-editorial-repository-authority.zh-CN.md)
+  记录私有 editorial authority 边界、Maintainer source verification 与确定性
+  export 决策。
 
 Ticket 定义范围与验收证据，但必须保持这些 contract；若要改变它们，必须在同一变更
 中显式更新对应 ADR 及其中文镜像。
