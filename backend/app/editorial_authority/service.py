@@ -825,6 +825,61 @@ class EditorialAuthorityService:
             "artifact": artifact,
         }
 
+    async def verify_approved_export(self, artifact: object, artifact_sha256: str) -> dict[str, Any]:
+        """Read and verify an approved export without creating an export audit event."""
+
+        if not isinstance(artifact, dict):
+            raise AppError(
+                status_code=422,
+                code="EDITORIAL_EXPORT_NOT_APPROVED",
+                message="reviewed bundle item must contain an editorial export object",
+            )
+        findings = editorial_export_safety_findings(artifact)
+        if findings:
+            raise AppError(
+                status_code=422,
+                code="EDITORIAL_EXPORT_UNSAFE",
+                message="editorial export contains credentials or an automatic-publication instruction",
+                detail={"findings": findings},
+            )
+
+        entry_id = artifact.get("entry_id")
+        entry_identity = artifact.get("entry_identity")
+        revision_identity = artifact.get("editorial_revision_identity")
+        if (
+            not isinstance(entry_id, str)
+            or not isinstance(entry_identity, str)
+            or not isinstance(revision_identity, str)
+            or entry_identity != StableIdentity(StableIdentityKind.ENTRY, entry_id).stable_id
+        ):
+            raise AppError(
+                status_code=422,
+                code="EDITORIAL_EXPORT_NOT_APPROVED",
+                message="editorial export identity is incomplete or inconsistent",
+            )
+
+        reconstructed = await self.reconstruct_export(entry_id, revision_identity)
+        if reconstructed["artifact_sha256"] != artifact_sha256 or reconstructed["artifact"] != artifact:
+            raise AppError(
+                status_code=409,
+                code="EDITORIAL_EXPORT_NOT_APPROVED",
+                message="bundle item does not match the retained approved editorial export",
+                detail={"entry_id": entry_id, "editorial_revision_identity": revision_identity},
+            )
+
+        entry_payload = artifact.get("entry")
+        try:
+            draft = CreateEditorialEntryRequest.model_validate(entry_payload)
+        except ValidationError as exc:
+            raise AppError(
+                status_code=422,
+                code="EDITORIAL_EXPORT_NOT_APPROVED",
+                message="retained editorial export entry cannot be validated",
+            ) from exc
+        await self._verified_source_snapshot(draft, action="bundle intake")
+        await self._release_assurance_snapshot(draft)
+        return reconstructed["artifact"]
+
     async def get_projection(self, entry_id: str) -> dict[str, Any]:
         entry, events = await self._entry_and_events(entry_id)
         entry_payload = self._payload(entry)

@@ -117,6 +117,7 @@ class BundleIntakeState(_ValueEnum):
     VALIDATED = "validated"
     PROCESSING = "processing"
     COMPLETED = "completed"
+    COMPLETED_WITH_REJECTIONS = "completed_with_rejections"
 
 
 class BuildJobStage(_ValueEnum):
@@ -230,10 +231,15 @@ _TRANSITIONS: dict[type[Enum], dict[str, frozenset[str]]] = {
         ),
         BundleIntakeState.VALIDATED.value: frozenset({BundleIntakeState.PROCESSING.value}),
         BundleIntakeState.PROCESSING.value: frozenset(
-            {BundleIntakeState.COMPLETED.value, BundleIntakeState.REJECTED.value}
+            {
+                BundleIntakeState.COMPLETED.value,
+                BundleIntakeState.COMPLETED_WITH_REJECTIONS.value,
+                BundleIntakeState.REJECTED.value,
+            }
         ),
         BundleIntakeState.REJECTED.value: frozenset(),
         BundleIntakeState.COMPLETED.value: frozenset(),
+        BundleIntakeState.COMPLETED_WITH_REJECTIONS.value: frozenset(),
     },
     EvidenceSetState: {
         EvidenceSetState.PLANNED.value: frozenset({EvidenceSetState.FROZEN.value}),

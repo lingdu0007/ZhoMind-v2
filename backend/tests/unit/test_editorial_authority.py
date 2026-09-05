@@ -27,6 +27,7 @@ from app.editorial_authority.service import EditorialAuthorityService, evaluate_
 from app.model.canonical import CanonicalEventModel, CanonicalRecordModel
 from app.model.document import Document
 from app.model.user import User
+from app.reviewed_bundles.verifier import CanonicalEditorialExportVerifier
 
 
 async def test_author_can_save_private_draft_but_incomplete_entry_cannot_collect_evidence(db_session) -> None:
@@ -382,6 +383,47 @@ async def test_distinct_reviewer_approves_private_revision_and_admin_exports_det
     assert exported["artifact"] == reconstructed["artifact"]
     assert "automatic_publication" not in exported["artifact"]
     assert await db_session.scalar(select(func.count()).select_from(Document)) == 0
+
+
+async def test_bundle_intake_verifier_reads_only_the_retained_approved_export_and_current_source_authority(
+    db_session,
+) -> None:
+    author = User(username="author", password_hash="hash", role="user", is_active=True)
+    reviewer = User(username="reviewer", password_hash="hash", role="user", is_active=True)
+    maintainer = User(username="maintainer", password_hash="hash", role="user", is_active=True)
+    administrator = User(username="administrator", password_hash="hash", role="admin", is_active=True)
+    db_session.add_all([author, reviewer, maintainer, administrator])
+    await db_session.commit()
+
+    authority = EditorialAuthorityService(db_session)
+    draft = await authority.create_draft(_review_ready_entry(), author)
+    await _prepare_editorial_review(authority, draft["entry_id"], author, maintainer)
+    await authority.approve_current_revision(draft["entry_id"], reviewer)
+    exported = await authority.export_approved_revision(draft["entry_id"], administrator)
+    events_before = await db_session.scalar(select(func.count()).select_from(CanonicalEventModel))
+
+    verified = await CanonicalEditorialExportVerifier(db_session).verify(
+        exported["artifact"],
+        exported["artifact_sha256"],
+    )
+
+    assert verified == exported["artifact"]
+    assert await db_session.scalar(select(func.count()).select_from(CanonicalEventModel)) == events_before
+
+    await authority.record_source_availability(
+        draft["entry_id"],
+        "source-rag-admission-001",
+        "unavailable_for_new_evidence",
+        maintainer,
+    )
+
+    with pytest.raises(AppError) as exc_info:
+        await CanonicalEditorialExportVerifier(db_session).verify(
+            exported["artifact"],
+            exported["artifact_sha256"],
+        )
+
+    assert exc_info.value.code == "EDITORIAL_SOURCE_UNAVAILABLE"
 
 
 async def test_export_snapshot_rejects_source_definitions_not_bound_to_the_approved_revision(db_session) -> None:

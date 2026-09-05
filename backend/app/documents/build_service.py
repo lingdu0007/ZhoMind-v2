@@ -461,7 +461,10 @@ class DocumentBuildService:
     async def _delete_candidate_generation_assets(self, *, document_id: str, generation: int | None) -> Exception | None:
         await self._delete_candidate_generation(document_id=document_id, generation=generation)
         try:
-            await self._dense_index_service.delete_candidate_generation(document_id=document_id, generation=generation)
+            await self._dense_index_service.delete_document_generation_current_fingerprint(
+                document_id=document_id,
+                generation=generation,
+            )
         except Exception as exc:
             return exc
         return None

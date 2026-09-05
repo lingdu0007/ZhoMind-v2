@@ -1,8 +1,11 @@
 import asyncio
+import inspect
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.router import router as api_v1_router
 from app.common.config import get_settings
@@ -10,9 +13,10 @@ from app.common.exceptions import register_exception_handlers
 from app.common.logger import configure_logging
 from app.common.request_id import RequestIdMiddleware
 from app.extensions.registry import get_extension_registry
-from app.infra.db import SessionLocal
+from app.infra.db import SessionLocal, get_db_session
 from app.operations.events import OperationalEventService
 from app.operations.middleware import OperationalEventMiddleware
+from app.reviewed_bundles.runtime import candidate_build_runtime
 from app.service.member_admission_service import MemberAdmissionService
 from app.settings.service import SystemSettingsDraftService
 
@@ -36,9 +40,53 @@ async def _retention_loop(session_factory) -> None:
         await _purge_expired_records(session_factory)
 
 
+async def _recover_candidate_builds(session_factory) -> None:
+    try:
+        await candidate_build_runtime.recover(session_factory)
+    except SQLAlchemyError as exc:
+        if _candidate_tables_are_not_migrated(exc):
+            return
+        raise
+
+
+def _lifespan_session_factory(application: FastAPI):
+    override = application.dependency_overrides.get(get_db_session)
+    if override is None:
+        return getattr(application.state, "settings_session_factory", SessionLocal)
+
+    @asynccontextmanager
+    async def override_session_scope() -> AsyncIterator[AsyncSession]:
+        value = override()
+        if inspect.isasyncgen(value):
+            try:
+                yield _require_lifespan_session(await anext(value))
+            finally:
+                await value.aclose()
+            return
+        session = _require_lifespan_session(await value if inspect.isawaitable(value) else value)
+        try:
+            yield session
+        finally:
+            await session.close()
+
+    return override_session_scope
+
+
+def _require_lifespan_session(value: object) -> AsyncSession:
+    if not isinstance(value, AsyncSession):
+        raise TypeError("get_db_session override must provide an AsyncSession")
+    return value
+
+
+def _candidate_tables_are_not_migrated(error: SQLAlchemyError) -> bool:
+    message = str(error).lower()
+    missing_table = "no such table" in message or "does not exist" in message
+    return missing_table and ("candidate_build_jobs" in message or "candidate_build_chunks" in message)
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    session_factory = getattr(application.state, "settings_session_factory", SessionLocal)
+    session_factory = _lifespan_session_factory(application)
     await _purge_expired_records(session_factory)
     retention_task = asyncio.create_task(_retention_loop(session_factory), name="conversation-retention-cleanup")
     try:
@@ -57,6 +105,7 @@ async def lifespan(application: FastAPI):
                 username=settings.bootstrap_admin_username,
                 password=settings.bootstrap_admin_password,
             )
+        await _recover_candidate_builds(session_factory)
         yield
     finally:
         retention_task.cancel()

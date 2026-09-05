@@ -65,6 +65,18 @@ def test_canonical_immutability_tail_migration_rejects_database_rewrites(
             )
         }
         revision = migrated.execute("SELECT version_num FROM alembic_version").fetchone()
+        candidate_job_columns = {
+            row[1] for row in migrated.execute("PRAGMA table_info(candidate_build_jobs)")
+        }
+        candidate_chunk_columns = {
+            row[1] for row in migrated.execute("PRAGMA table_info(candidate_build_chunks)")
+        }
+        candidate_job_indexes = {
+            row[1] for row in migrated.execute("PRAGMA index_list(candidate_build_jobs)")
+        }
+        candidate_chunk_indexes = {
+            row[1] for row in migrated.execute("PRAGMA index_list(candidate_build_chunks)")
+        }
         migrated.execute(
             """
             INSERT INTO canonical_records (
@@ -98,6 +110,56 @@ def test_canonical_immutability_tail_migration_rejects_database_rewrites(
             )
             """
         )
+        migrated.execute(
+            """
+            INSERT INTO candidate_build_jobs (
+                id, bundle_id, bundle_item_id, entry_identity, document_identity,
+                requested_generation, editorial_source_revision, input_sha256,
+                chunk_strategy, embedding_configuration, status, stage, progress,
+                attempt, allowed_next_action, derived_cleanup_pending, created_at,
+                updated_at
+            ) VALUES (
+                'candidate-migration-job',
+                'bundle:migration-test',
+                'bundle_item:migration-test',
+                'entry:migration-test',
+                'runtime-document:migration-test',
+                1,
+                'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                '{}',
+                '{}',
+                'queued',
+                'queued',
+                0,
+                1,
+                'dispatch_candidate_build',
+                0,
+                '2026-09-05 00:00:00',
+                '2026-09-05 00:00:00'
+            )
+            """
+        )
+        migrated.execute(
+            """
+            INSERT INTO candidate_build_chunks (
+                id, job_id, candidate_id, document_identity, generation, attempt,
+                chunk_index, content, content_sha256, metadata, created_at
+            ) VALUES (
+                'candidate-migration-chunk',
+                'candidate-migration-job',
+                'candidate:migration-test',
+                'runtime-document:migration-test',
+                1,
+                1,
+                0,
+                'immutable candidate chunk',
+                'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+                '{}',
+                '2026-09-05 00:00:00'
+            )
+            """
+        )
         migrated.commit()
         with pytest.raises(sqlite3.IntegrityError, match="immutable"):
             migrated.execute(
@@ -108,6 +170,60 @@ def test_canonical_immutability_tail_migration_rejects_database_rewrites(
         with pytest.raises(sqlite3.IntegrityError, match="immutable"):
             migrated.execute("DELETE FROM canonical_events WHERE id = 'migration-test-event'")
         migrated.rollback()
+        with pytest.raises(sqlite3.IntegrityError):
+            migrated.execute(
+                """
+                INSERT INTO candidate_build_jobs (
+                    id, bundle_id, bundle_item_id, entry_identity, document_identity,
+                    requested_generation, editorial_source_revision, input_sha256,
+                    chunk_strategy, embedding_configuration, status, stage, progress,
+                    attempt, allowed_next_action, derived_cleanup_pending, created_at,
+                    updated_at
+                ) VALUES (
+                    'candidate-migration-job-duplicate',
+                    'bundle:migration-test-duplicate',
+                    'bundle_item:migration-test-duplicate',
+                    'entry:migration-test',
+                    'runtime-document:migration-test',
+                    1,
+                    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                    '{}',
+                    '{}',
+                    'queued',
+                    'queued',
+                    0,
+                    1,
+                    'dispatch_candidate_build',
+                    0,
+                    '2026-09-05 00:00:00',
+                    '2026-09-05 00:00:00'
+                )
+                """
+            )
+        migrated.rollback()
+        with pytest.raises(sqlite3.IntegrityError):
+            migrated.execute(
+                """
+                INSERT INTO candidate_build_chunks (
+                    id, job_id, candidate_id, document_identity, generation, attempt,
+                    chunk_index, content, content_sha256, metadata, created_at
+                ) VALUES (
+                    'candidate-migration-chunk-duplicate',
+                    'candidate-migration-job',
+                    'candidate:migration-test',
+                    'runtime-document:migration-test',
+                    1,
+                    1,
+                    0,
+                    'immutable candidate chunk duplicate',
+                    'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+                    '{}',
+                    '2026-09-05 00:00:00'
+                )
+                """
+            )
+        migrated.rollback()
     finally:
         migrated.close()
 
@@ -117,4 +233,38 @@ def test_canonical_immutability_tail_migration_rejects_database_rewrites(
         "canonical_records_immutable_delete",
         "canonical_records_immutable_update",
     }
-    assert revision == ("20260905_0016",)
+    assert {
+        "id",
+        "bundle_id",
+        "bundle_item_id",
+        "entry_identity",
+        "requested_generation",
+        "status",
+        "stage",
+        "attempt",
+        "dispatched_at",
+        "lease_owner",
+        "lease_expires_at",
+    }.issubset(candidate_job_columns)
+    assert {
+        "id",
+        "job_id",
+        "candidate_id",
+        "generation",
+        "attempt",
+        "chunk_index",
+        "content",
+        "content_sha256",
+        "metadata",
+    }.issubset(candidate_chunk_columns)
+    assert {
+        "ix_candidate_build_jobs_bundle_id",
+        "ix_candidate_build_jobs_bundle_item_id",
+        "ix_candidate_build_jobs_entry_identity",
+    }.issubset(candidate_job_indexes)
+    assert {
+        "ix_candidate_build_chunks_job_id",
+        "ix_candidate_build_chunks_candidate_id",
+        "ix_candidate_build_chunks_candidate",
+    }.issubset(candidate_chunk_indexes)
+    assert revision == ("20260905_0017",)

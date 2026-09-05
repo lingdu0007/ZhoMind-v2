@@ -2,18 +2,36 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Awaitable
-from contextlib import suppress
+import threading
+from collections.abc import AsyncIterator, Awaitable
+from contextlib import asynccontextmanager, suppress
 
 from app.common.exceptions import AppError
 from app.operations.limits import MAX_DOCUMENT_BUILD_WORKERS
+
+
+class DocumentBuildWorkerSlots:
+    def __init__(self, capacity: int = MAX_DOCUMENT_BUILD_WORKERS) -> None:
+        self._semaphore = threading.BoundedSemaphore(capacity)
+
+    @asynccontextmanager
+    async def acquire(self) -> AsyncIterator[None]:
+        while not self._semaphore.acquire(blocking=False):
+            await asyncio.sleep(0.01)
+        try:
+            yield
+        finally:
+            self._semaphore.release()
+
+
+_shared_worker_slots = DocumentBuildWorkerSlots()
 
 
 class DocumentJobDispatcher:
     def __init__(self) -> None:
         self._tasks: dict[str, tuple[asyncio.Task[None], Awaitable[None]]] = {}
         self._lock = asyncio.Lock()
-        self._worker_slots = asyncio.Semaphore(MAX_DOCUMENT_BUILD_WORKERS)
+        self._worker_slots = _shared_worker_slots
 
     async def enqueue(self, job_id: str, coro: Awaitable[None]) -> str:
         async with self._lock:
@@ -50,7 +68,7 @@ class DocumentJobDispatcher:
 
     async def _run(self, *, job_id: str, coro: Awaitable[None]) -> None:
         try:
-            async with self._worker_slots:
+            async with self._worker_slots.acquire():
                 await coro
         except asyncio.CancelledError:
             raise

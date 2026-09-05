@@ -162,6 +162,156 @@ explicit `schema_version` 1; no prior editorial schema exists to migrate, and a
 future incompatible version must add an explicit migration before it is
 accepted.
 
+## Reviewed Release Bundle Intake And Candidate Build
+
+A System Administrator imports only an immutable
+`reviewed_release_bundle/v1` manifest. The manifest retains its stable bundle
+identity, schema version, editorial source revision, UTC export time,
+bundle-level SHA-256, every bundle-item SHA-256, and the explicit item
+operation: `create`, `replace`, `no_op`, or `proposed_withdrawal`. Bundle
+integrity is fail-closed before any bundle item, job, or Candidate is
+persisted: unsupported schemas, malformed identities or timestamps, hashes,
+credentials, automatic-publication instructions, duplicate item identities,
+and conflicting entry operations reject the entire bundle. Re-importing the
+same bundle identity with the same bundle hash is idempotent; the same identity
+with a different hash is a conflict. The manifest editorial source revision
+must equal every item's approved-export `revision_sha256`; a bundle-item hash
+is the canonical hash of exactly its stable item identity, operation, artifact
+hash, and artifact. Schema version must be a JSON integer rather than a
+boolean, and every manifest, bundle, and item identity must be a JSON string:
+intake never coerces an identity or numeric value into an accepted input. A
+whole-bundle integrity rejection or immutable bundle/item identity collision
+records only a bounded, content-free canonical import audit against a fresh
+immutable `admission_attempt` record and its append-only event; it never leaves
+a partial item or job, an unsafe rejected manifest copy, or a rejected
+`bundle`, `bundle_item`, or `build_generation` aggregate.
+Concurrent Candidate-generation allocation contention rereads the winning
+generation and makes a bounded retry of the same immutable intake; exhaustion
+returns a retry-required result with no admitted intake records rather than
+misclassifying a distinct valid bundle as a bundle-identity conflict.
+
+The bundle and every item are immutable canonical records. A valid
+`editorial_export/v1` is verified by reconstructing the exact retained
+approved export from the Private Editorial Repository and comparing its
+SHA-256 and full artifact. That read-only verification also checks current
+source availability and Release-Assured authority facts. Source usability comes
+only from those verifier-reconstructed retained authority facts, never an
+author-declared `availability` value inside the artifact. Verification creates
+no export audit event and never writes private editorial records. Metadata,
+approval, role snapshot, source, assurance, access, chunking, or acceptance
+failures are item-local `rejected` results with a structured blocking field and
+allowed next action; independent valid items remain admitted. `no_op` and
+`proposed_withdrawal` remain immutable, visible operation plans and create no
+Candidate Build, publication, replacement, or withdrawal side effect.
+
+The immutable bundle record remains `received`; its intake state is reconstructed
+from the append-only `received -> validating -> validated -> processing ->
+completed` or `completed_with_rejections` event trail. The immutable bundle
+snapshot retains whether intake rejected any individual item. A bundle with
+admitted Candidate work stays `processing` until every Candidate Build is
+`candidate_ready` or `superseded`; failed, canceled, or interrupted jobs keep
+it `processing`. A bundle with no Candidate Build completes its explicit
+operation plan immediately after processing only when no item was rejected.
+Otherwise, and after mixed valid/rejected Candidate work finishes, it reaches
+`completed_with_rejections`, never a complete batch success. An item-local
+rejection therefore does not block independent valid siblings or collapse into
+a whole-bundle integrity rejection. Bundle completion locks the bundle aggregate
+before it reconstructs the current intake state and child-job statuses, which
+serializes the terminal aggregate decision.
+
+Every admitted `create` or `replace` item creates one recoverable Candidate
+Build job and an immutable `build_generation` input record. They retain bundle,
+bundle-item, entry, runtime-document, requested-generation, editorial-source
+revision, input-hash, chunk-strategy, and non-secret effective embedding
+configuration identities. Import plans that work but does not enqueue or start
+it: its initial allowed next action is `dispatch_candidate_build`. Only an
+explicit System Administrator dispatch may set durable `dispatched_at`, append
+a current-attempt `dispatched` event recorded by the administrator's
+`member:` identity, and enqueue the queued job; an explicit administrator
+retry appends `retry_dispatched` with the same current-attempt authority and
+establishes `cancel_or_await_candidate_build` for its new attempt. Runtime
+enqueue and startup recovery authorize a queued job only from that append-only
+administrator event for its current attempt, never from mutable
+`dispatched_at` alone.
+Before a worker, retry, recovery, cleanup, or
+completion creates, indexes, deletes, or finalizes Candidate-derived data, it
+reconstructs the immutable canonical records and checks every mutable job
+binding against them; a mismatch fails closed without using or deleting the
+Candidate-derived data. Completion repeats approved-export, source, and
+Release-Assured authority verification after indexing and immediately before
+Candidate persistence. Candidate Build storage is separate from legacy
+`documents` and `document_chunks`; its Candidate chunks and dense vectors are
+derived data and are unavailable to ordinary retrieval. Candidate and legacy
+document workers acquire the same process-wide bounded build-worker capacity,
+so additional dispatchers cannot multiply the configured concurrency. The frozen Candidate
+embedding configuration contains only configuration schema, active flag, model,
+and dimension plus their non-secret fingerprint: it never retains an endpoint,
+user info, query parameter, credential, or secret. Candidate vector operations
+use that frozen Candidate fingerprint and therefore a Candidate-specific
+collection, never the active normal-retrieval collection. The configuration
+must still match the active non-secret configuration when a worker starts; a
+mismatch fails the job rather than silently building under a different
+configuration. Derived-vector cleanup uses the frozen fingerprint rather than
+whichever embedding profile is active at cleanup time; a cleanup backend failure
+requires reconciliation before retry. An inactive frozen configuration has no
+Candidate vector collection: cleanup without a frozen Candidate fingerprint
+does not query or delete any collection and never falls back to the active
+normal-retrieval fingerprint.
+
+The closed build-stage vocabulary is `queued -> parsing -> chunking ->
+indexing`; terminal outcome is a separate job status and terminal state:
+`candidate_ready`, `failed`, `canceled`, `interrupted_retryable`, or
+`superseded`. A stage never becomes a terminal marker, and a
+`candidate_ready` Candidate is still not published. A worker may mutate a
+running job only while its exact owned attempt, exact lease owner, and
+unexpired lease all match; a stale worker cannot finalize a Candidate, mark a
+terminal result, or clean up derived data. A stage transition precedes the
+work represented by that stage, so parsing and chunking timing remains
+truthful: `parsing` validates and reads the approved export before `chunking`
+uses only the parsed artifact. While external indexing is awaited, the worker
+renews its exact owner/attempt lease through a conditional persisted update and
+races the indexing coroutine against those heartbeats. If renewal fails or
+another owner or attempt has replaced it, the worker cancels and awaits its
+indexing coroutine before it stops without a terminal mutation or derived-data
+cleanup. A recovery owner later locks and rechecks the expired job before it
+alone persists its `interrupted_retryable` stale-worker fence with
+`derived_cleanup_pending`, commits that fence, and only then reconciles
+matching frozen inputs. Parser,
+chunking, authority/source, indexing, cancellation, cleanup, and enqueue
+failures record a bounded structured reason. Every append-only Candidate job event snapshots
+the frozen editorial source revision, input SHA-256, `failure_reason` (when
+any), and `allowed_next_action`, so retry's mutable reset cannot erase
+prior-attempt diagnostics; a retry blocked by invalid immutable inputs or
+unreconciled derived data also appends its blocking event. An administrator
+cancellation request succeeds only when worker cancel dispatch confirms
+receipt; a false no-task result, like an exception, is a durable
+`CANDIDATE_CANCELLATION_REQUEST_FAILED` job with `derived_cleanup_pending` and
+reconciliation before retry, never a successful cancellation. Retry either
+uses the exact frozen accepted inputs with a new attempt or requires a new
+bundle when those immutable inputs no longer verify. Retry, startup requeue,
+and runtime enqueue lock and refresh current persisted job facts before
+determining eligibility. Each recovery selection locks and rechecks the current
+queued, running, or cleanup-pending job immediately before its mutation.
+Startup requeues only valid queued work with durable administrator dispatch
+evidence for its current attempt, never a mutable dispatch timestamp alone,
+appending `requeued_on_startup` only while that refreshed job remains
+queued or running; it marks a missing or expired running lease, or one owned by
+another runtime instance, interrupted and retryable. Queue-dispatch failure is
+itself a durable failed job, not a silent drop.
+
+Admitting a newer generation supersedes an older unfinished or
+`candidate_ready` Candidate for the same entry. The older immutable Candidate
+record remains historical evidence, while its job projection records that it is
+not publishable. Superseding unfinished running or interrupted work retains a
+durable `derived_cleanup_pending` obligation. Startup scans terminal jobs with
+that obligation and reconciles their Candidate chunks and vectors only after a
+fresh frozen-input match; a mismatch preserves those assets and keeps the
+obligation recoverable rather than deleting data under an unverified binding.
+Intake, retry, recovery, cleanup, supersession, and Candidate completion never
+create or change a Published Knowledge Version, a legacy published generation,
+or a runtime publication pointer. Candidate inspection, publication,
+replacement switching, and withdrawal remain later responsibilities.
+
 ## Pilot Identity Authority And Audit
 
 The current `users` row is the authorization fact: protected handlers require
@@ -216,7 +366,7 @@ administrator issues a new invitation for any pending admission.
 | --- | --- | --- | --- |
 | 14 | User, invitation, and Redis session admission/authority paths | Member/invitation identities and content-free identity audit events | One-time invitation consumption, database-derived role checks, and append-only identity audit are used by every pilot identity path |
 | 16 | Markdown/front-matter authoring and runtime document copies | Private Editorial Repository entry, revision, source, and deterministic `editorial_export/v1` authority | T02 consumes only reviewed immutable exports and no authoritative editorial write remains on legacy/runtime rows |
-| 17 | Upload and batch build dispatch | Reviewed Release Bundle, bundle item, build generation | Reviewed bundles are the only recurring intake and legacy jobs are terminally projected |
+| 17 | Upload and batch build dispatch | Reviewed Release Bundle, bundle item, build generation, recoverable Candidate Build | Reviewed bundles are the only new authority-bearing intake; Candidate work has no publication side effect and legacy publication paths remain compatibility-only |
 | 20 | `ChatMessage.rag_trace` and answer inference | Answer execution, conditions, evidence set, snapshot | Every answer persists the closed canonical outcome |
 | 21 | HTTP, SSE and history adapters | Canonical execution projection | All surfaces read one canonical execution |
 | 24 | Candidate inspection and publication | Candidate and Published Knowledge Version | Publication checks canonical generation, hash and acceptance identities |

@@ -88,7 +88,7 @@ class _DenseIndexSpy:
             raise self.error
         return self.result
 
-    async def delete_candidate_generation(self, *, document_id: str, generation: int) -> None:
+    async def delete_document_generation_current_fingerprint(self, *, document_id: str, generation: int) -> None:
         self.delete_calls.append((document_id, generation))
         if self.delete_error is not None:
             raise self.delete_error
@@ -973,7 +973,7 @@ def test_process_job_persists_dense_readiness_on_candidate_without_publishing() 
             ) -> DenseIndexResult:
                 return DenseIndexResult(active=True, fingerprint="fp-123")
 
-            async def delete_candidate_generation(self, *, document_id: str, generation: int | None) -> None:
+            async def delete_document_generation_current_fingerprint(self, *, document_id: str, generation: int | None) -> None:
                 return None
 
         try:

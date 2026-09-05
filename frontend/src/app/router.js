@@ -6,6 +6,7 @@ import KnowledgeMapPage from '../pages/KnowledgeMapPage.vue';
 import KnowledgeReviewPage from '../pages/KnowledgeReviewPage.vue';
 import UploadPage from '../pages/UploadPage.vue';
 import IndexingJobsPage from '../pages/IndexingJobsPage.vue';
+import ReviewedBundlesPage from '../pages/ReviewedBundlesPage.vue';
 import ConfigPage from '../pages/ConfigPage.vue';
 import { clearProtectedSession } from './protected-session';
 import { useAuthStore } from '../store/auth';
@@ -18,6 +19,12 @@ const routes = [
   { path: '/reviews', name: 'knowledge-review', component: KnowledgeReviewPage, meta: { requiresAuth: true, requiresAdmin: true } },
   { path: '/documents', name: 'documents', component: UploadPage, meta: { requiresAuth: true, requiresAdmin: true } },
   { path: '/jobs', name: 'indexing-jobs', component: IndexingJobsPage, meta: { requiresAuth: true, requiresAdmin: true } },
+  {
+    path: '/reviewed-bundles',
+    name: 'reviewed-bundles',
+    component: ReviewedBundlesPage,
+    meta: { requiresAuth: true, requiresAdmin: true }
+  },
   {
     path: '/config',
     name: 'config',

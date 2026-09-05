@@ -46,6 +46,16 @@
           <span>构建任务</span>
         </RouterLink>
         <RouterLink
+          v-if="authStore.isAdmin"
+          class="workbench-shell__nav-item workbench-shell__nav-item--reviewed-bundles"
+          to="/reviewed-bundles"
+          title="Reviewed Release Bundles"
+          aria-label="Reviewed Release Bundles"
+        >
+          <PackageCheck :size="20" aria-hidden="true" />
+          <span>Reviewed Release Bundles</span>
+        </RouterLink>
+        <RouterLink
           v-if="authStore.canAccessSystemSettings"
           class="workbench-shell__nav-item"
           to="/config"
@@ -76,7 +86,7 @@
 <script setup>
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { BookOpen, ClipboardList, LibraryBig, ListChecks, LogOut, MessageCircle, Settings2 } from 'lucide-vue-next';
+import { BookOpen, ClipboardList, LibraryBig, ListChecks, LogOut, MessageCircle, PackageCheck, Settings2 } from 'lucide-vue-next';
 import { clearProtectedSession } from './protected-session';
 import { useAuthStore } from '../store/auth';
 
@@ -252,6 +262,10 @@ const signOut = async () => {
     margin-left: auto;
     flex-direction: row;
     gap: 4px;
+  }
+
+  .workbench-shell__nav-item--reviewed-bundles {
+    display: none;
   }
 
   .workbench-shell__identity {

@@ -116,6 +116,36 @@ export const apiAdapter = {
     return unwrapData(data);
   },
 
+  // Reviewed Release Bundles and isolated Candidate Builds (admin)
+  async listReviewedReleaseBundles() {
+    const { data } = await http.get('/reviewed-release-bundles');
+    return unwrapData(data);
+  },
+  async importReviewedReleaseBundle(manifest) {
+    const { data } = await http.post('/reviewed-release-bundles/import', manifest);
+    return unwrapData(data);
+  },
+  async getReviewedReleaseBundle(bundleId) {
+    const { data } = await http.get(`/reviewed-release-bundles/${encodeURIComponent(bundleId)}`);
+    return unwrapData(data);
+  },
+  async getReviewedBundleJob(jobId) {
+    const { data } = await http.get(`/reviewed-release-bundles/jobs/${encodeURIComponent(jobId)}`);
+    return unwrapData(data);
+  },
+  async dispatchReviewedBundleJob(jobId) {
+    const { data } = await http.post(`/reviewed-release-bundles/jobs/${encodeURIComponent(jobId)}/dispatch`);
+    return unwrapData(data);
+  },
+  async retryReviewedBundleJob(jobId) {
+    const { data } = await http.post(`/reviewed-release-bundles/jobs/${encodeURIComponent(jobId)}/retry`);
+    return unwrapData(data);
+  },
+  async cancelReviewedBundleJob(jobId) {
+    const { data } = await http.post(`/reviewed-release-bundles/jobs/${encodeURIComponent(jobId)}/cancel`);
+    return unwrapData(data);
+  },
+
   // System Settings (admin, application-gated)
   async getSystemSettingsDraft() {
     const { data } = await http.get('/settings/draft');

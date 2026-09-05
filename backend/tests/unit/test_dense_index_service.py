@@ -237,13 +237,61 @@ def test_dense_index_service_deletes_candidate_vectors_for_generation() -> None:
             embedding_provider=_FakeEmbeddingProvider(vectors=[]),
             document_index=document_index,
         )
-        fingerprint = build_embedding_contract_fingerprint(settings)
+        fingerprint = "candidate-fingerprint-001"
 
-        await service.delete_candidate_generation(document_id="doc-1", generation=2)
+        await service.delete_candidate_generation(
+            document_id="doc-1",
+            generation=2,
+            embedding_fingerprint=fingerprint,
+        )
 
         assert document_index.delete_calls == [
             (build_milvus_collection_name(fingerprint), "doc-1", 2),
         ]
+
+    asyncio.run(_run())
+
+
+def test_dense_index_service_deletes_document_build_vectors_for_the_current_fingerprint() -> None:
+    async def _run() -> None:
+        settings = _dense_settings()
+        document_index = _FakeDocumentIndex()
+        service = DenseIndexService(
+            settings=settings,
+            embedding_provider=_FakeEmbeddingProvider(vectors=[]),
+            document_index=document_index,
+        )
+        fingerprint = build_embedding_contract_fingerprint(settings)
+
+        await service.delete_document_generation_current_fingerprint(
+            document_id="doc-1",
+            generation=2,
+        )
+
+        assert document_index.delete_calls == [
+            (build_milvus_collection_name(fingerprint), "doc-1", 2),
+        ]
+
+    asyncio.run(_run())
+
+
+def test_dense_index_service_never_falls_back_to_the_active_retrieval_collection_for_candidate_cleanup() -> None:
+    async def _run() -> None:
+        settings = _dense_settings()
+        document_index = _FakeDocumentIndex()
+        service = DenseIndexService(
+            settings=settings,
+            embedding_provider=_FakeEmbeddingProvider(vectors=[]),
+            document_index=document_index,
+        )
+
+        await service.delete_candidate_generation(
+            document_id="doc-1",
+            generation=2,
+            embedding_fingerprint=None,
+        )
+
+        assert document_index.delete_calls == []
 
     asyncio.run(_run())
 

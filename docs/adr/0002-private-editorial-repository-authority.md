@@ -4,6 +4,8 @@ Status: Accepted
 
 Date: 2026-09-05
 
+Updated: 2026-09-06
+
 ## Context
 
 The product needs a retained editorial authority before Reviewed Release Bundle
@@ -76,15 +78,112 @@ authority boundary and make later reconstruction unauditable.
   The export is not a bundle, does not invoke intake, and cannot write a
   Candidate, published knowledge version, runtime document, or deployment
   copy.
+- Let T02 consume an export only by read-only reconstruction from this
+  repository. A `reviewed_release_bundle/v1` item must exactly match the
+  retained approved artifact and its hash. The manifest source revision equals
+  every artifact revision hash, and the item hash covers its stable identity,
+  operation, artifact hash, and artifact. Intake accepts no type coercion:
+  `schema_version` is a JSON integer rather than a boolean and identities are
+  JSON strings. It then rechecks current source and Release-Assured authority
+  without appending an export audit event. A failed whole-bundle integrity
+  check or immutable identity collision records only a bounded content-free
+  audit against a fresh `admission_attempt`, never a rejected bundle, item, or
+  build-generation record. Its immutable bundle, item, and build-generation
+  records may create a separate recoverable Candidate Build job, but import
+  only plans it. An explicit System Administrator dispatch is the only action
+  that records durable `dispatched_at`, appends a `dispatched` event with the
+  current attempt and administrator `member:` identity, and makes queued work
+  eligible for enqueue or startup recovery; an explicit retry appends
+  `retry_dispatched` with that same current-attempt authority and establishes
+  `cancel_or_await_candidate_build` for its new attempt. Runtime enqueue and
+  startup recovery require that append-only evidence for the current queued
+  attempt, never mutable `dispatched_at` alone. Concurrent Candidate-generation
+  allocation contention rereads the winner and retries the same immutable
+  intake within a bounded attempt budget; exhaustion returns retry-required
+  without admitted intake records instead of treating a distinct valid bundle
+  as an immutable identity conflict. The bundle advances by append-only `received`, `validating`,
+  `validated`, `processing`, and either `completed` or
+  `completed_with_rejections` events. Its immutable snapshot retains whether
+  any item was rejected, so mixed valid/rejected work is never represented as
+  complete batch success. It waits in processing while a valid Candidate job is
+  non-terminal. Every
+  worker, retry, recovery, derived write, vector call,
+  Candidate finalization, and cleanup path reconstructs and re-matches frozen
+  inputs before use. Candidate finalization repeats approved-export, source,
+  and Release-Assured authority verification after indexing and immediately
+  before Candidate persistence. Candidate embeddings use a fingerprint over configuration
+  schema, active flag, model, and dimension only, so their Candidate-specific
+  collection is separate from normal runtime retrieval and contains no endpoint
+  or secret. An inactive frozen configuration has no Candidate vector
+  collection; cleanup without its frozen Candidate fingerprint does not query
+  or delete any collection and never falls back to the normal retrieval
+  fingerprint. Build stages are closed (`queued`, `parsing`, `chunking`,
+  `indexing`); terminal status is separate and a worker must prove its exact
+  attempt, owner, and unexpired lease before mutating a running job. Candidate
+  and legacy document jobs acquire one process-wide bounded build-worker slot
+  pool, so separate dispatchers cannot multiply configured concurrency. A newer
+  generation supersedes unfinished work without erasing historical evidence;
+  unverified or failed cleanup remains a durable pending obligation and may
+  delete only after a fresh frozen-input match. Neither intake nor the worker
+  may write back to private editorial authority, legacy runtime document rows,
+  or any published knowledge pointer. A Candidate remains an isolated derived
+  result; Candidate inspection, publication, replacement, and withdrawal are
+  not T02 responsibilities.
+- Treat Candidate Build recovery and concurrency as a durable authority
+  boundary. Source usability at intake comes only from verifier-reconstructed
+  retained authority facts, never an artifact Author's `availability` value.
+  Bundle completion locks the bundle aggregate before reconstructing its state
+  and child-job statuses. `parsing` validates and reads an approved export
+  before `chunking` consumes only parsed data. While external indexing is
+  awaited, the worker conditionally renews its exact owner/attempt lease and
+  races those heartbeats against the indexing coroutine. A renewal failure or
+  replacement cancels and awaits that coroutine before the worker stops without
+  a terminal mutation or derived-data cleanup; a recovery owner locks and rechecks the
+  expired job, persists the interrupted stale-worker fence with
+  `derived_cleanup_pending`, commits it, and only then reconciles matching frozen
+  inputs. Candidate job events snapshot frozen editorial source revision, input
+  hash, structured failure reason, and allowed next action. Recovery locks and
+  rechecks each selected queued, running, or cleanup-pending job immediately
+  before mutation. These paths cannot create or change a Published Knowledge
+  Version or publication pointer.
 
 ## Consequences
 
-T01 now has a durable, access-controlled editorial authority and can prove a
-revision/export hash from retained data. T02 must consume the export through
-its own immutable Reviewed Release Bundle intake contract; T03 Candidate Build
-and T04 publication remain separate responsibilities. Source availability is
-already authoritative for fail-closed eligibility, while later publication and
-maintenance paths must consume that retained evidence rather than infer it
-from a runtime copy. Release-Assured references fail closed unless their
-canonical records are appropriate authority records and the frozen
-delivery-acceptance record actively covers the exact editorial authority.
+The Private Editorial Repository remains a durable, access-controlled
+editorial authority and can prove a revision/export hash from retained data.
+T02 consumes it through immutable Reviewed Release Bundle intake and
+recoverable Candidate Build records, while T04 publication remains separate.
+The bundle verifier rechecks current authority but never backfills or rewrites
+private editorial records. Source availability is already authoritative for
+fail-closed eligibility, while later publication and maintenance paths must
+consume that retained evidence rather than infer it from a runtime copy.
+Recovery requeues only queued jobs with durable administrator-dispatch
+evidence for their current attempt, never a mutable timestamp alone, appending
+`requeued_on_startup` on successful requeue; it treats
+missing, expired, and prior-runtime-owned candidate leases as interrupted work
+and must reconcile derived data before retry. This preserves the same authority
+boundary across process restart without granting recovery any publication
+capability. Recovery and runtime enqueue lock and refresh the current persisted
+job before deciding eligibility, and recovery locks and rechecks every selected
+queued, running, or cleanup-pending job immediately before mutation. It records
+a successful requeue only while that current job remains queued or running.
+Each append-only Candidate job event snapshots frozen editorial source revision,
+input hash, structured failure reason, and allowed next action, so a retry
+cannot erase the prior attempt's audit. Stage transitions occur before the work
+they name: `parsing` validates and reads the approved export before `chunking`
+uses parsed data. External indexing conditionally renews the exact worker
+lease and races that heartbeat with the indexing coroutine; a worker that
+cannot renew cancels and awaits the coroutine before stopping without terminal
+mutation or cleanup, and fenced recovery later owns the interrupted/retryable
+transition and any matching-input reconciliation after its fence is committed.
+An administrator cancellation request succeeds only after worker control
+confirms receipt. A false no-task result or an exception is a durable failed
+Candidate with a structured reason and pending derived-data reconciliation,
+never a successful cancellation.
+Recovery must never let a stale worker or an input mismatch turn a Candidate
+into a terminal success, erase unverified derived data, or move a Published
+Knowledge Version. Superseded unfinished work carries an explicit cleanup
+obligation until a matching-input reconciliation has succeeded.
+Release-Assured references fail closed unless their canonical records are
+appropriate authority records and the frozen delivery-acceptance record
+actively covers the exact editorial authority.

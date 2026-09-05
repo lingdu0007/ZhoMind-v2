@@ -63,6 +63,7 @@ class DenseIndexService:
         document_id: str,
         generation: int,
         chunks: list[DocumentChunk],
+        embedding_fingerprint: str | None = None,
     ) -> DenseIndexResult:
         contract = DenseEmbeddingContract.from_settings(self._settings)
         if not contract.active:
@@ -71,7 +72,7 @@ class DenseIndexService:
         embedding_provider = self._require_embedding_provider()
         document_index = self._require_document_index()
 
-        fingerprint = build_embedding_contract_fingerprint(self._settings)
+        fingerprint = embedding_fingerprint or build_embedding_contract_fingerprint(self._settings)
         collection_name = build_milvus_collection_name(fingerprint)
         await document_index.ensure_collection(collection_name=collection_name, dimension=contract.dimension)
 
@@ -98,7 +99,42 @@ class DenseIndexService:
         await document_index.upsert_generation(collection_name=collection_name, rows=rows)
         return DenseIndexResult(active=True, fingerprint=fingerprint)
 
-    async def delete_candidate_generation(self, *, document_id: str, generation: int | None) -> None:
+    async def delete_candidate_generation(
+        self,
+        *,
+        document_id: str,
+        generation: int | None,
+        embedding_fingerprint: str | None = None,
+    ) -> None:
+        if generation is None or embedding_fingerprint is None:
+            return
+        if not self._settings.milvus_uri_normalized:
+            raise AppError(
+                status_code=503,
+                code="DENSE_INDEX_BACKEND_UNAVAILABLE",
+                message="dense Candidate cleanup cannot reach the configured vector index",
+            )
+
+        document_index = self._resolve_document_index()
+        if document_index is None:
+            raise AppError(
+                status_code=503,
+                code="DENSE_INDEX_BACKEND_UNAVAILABLE",
+                message="dense Candidate cleanup cannot reach the configured vector index",
+            )
+
+        await document_index.delete_generation(
+            collection_name=build_milvus_collection_name(embedding_fingerprint),
+            document_id=document_id,
+            generation=generation,
+        )
+
+    async def delete_document_generation_current_fingerprint(
+        self,
+        *,
+        document_id: str,
+        generation: int | None,
+    ) -> None:
         if generation is None:
             return
         contract = DenseEmbeddingContract.from_settings(self._settings)
