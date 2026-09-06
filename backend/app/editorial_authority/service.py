@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-import hashlib
-import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, NoReturn
 
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.canonical_json import canonical_json_sha256
 from app.common.exceptions import AppError
 from app.contracts.canonical import (
     AcceptanceStatus,
@@ -609,7 +611,7 @@ class EditorialAuthorityService:
                 detail={"availability": availability},
             ) from exc
 
-        entry, events = await self._entry_and_events(entry_id)
+        entry, events = await self._entry_and_events(entry_id, for_update=True)
         entry_payload = self._payload(entry)
         actor_identity = await IdentityAuditService(self.session).ensure_member_record(
             actor,
@@ -641,7 +643,8 @@ class EditorialAuthorityService:
                 detail={"source_id": source_id},
             )
         source_identity = StableIdentity(StableIdentityKind.SOURCE, source_id)
-        source_record = await self.session.get(CanonicalRecordModel, source_identity.stable_id)
+        locked_records = await self._lock_canonical_records({source_identity.stable_id})
+        source_record = locked_records.get(source_identity.stable_id)
         if source_record is None:
             raise AppError(
                 status_code=409,
@@ -880,6 +883,18 @@ class EditorialAuthorityService:
         await self._release_assurance_snapshot(draft)
         return reconstructed["artifact"]
 
+    @asynccontextmanager
+    async def verify_approved_export_for_candidate_finalization(
+        self,
+        artifact: object,
+        artifact_sha256: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Hold current authority facts stable through Candidate persistence."""
+
+        await self._acquire_candidate_finalization_fence()
+        await self._lock_canonical_records(self._candidate_finalization_authority_record_ids(artifact))
+        yield await self.verify_approved_export(artifact, artifact_sha256)
+
     async def get_projection(self, entry_id: str) -> dict[str, Any]:
         entry, events = await self._entry_and_events(entry_id)
         entry_payload = self._payload(entry)
@@ -923,9 +938,21 @@ class EditorialAuthorityService:
             "answer_eligible": eligibility["answer_eligible"],
         }
 
-    async def _entry_and_events(self, entry_id: str) -> tuple[CanonicalRecordModel, list[CanonicalEventModel]]:
+    async def _entry_and_events(
+        self,
+        entry_id: str,
+        *,
+        for_update: bool = False,
+    ) -> tuple[CanonicalRecordModel, list[CanonicalEventModel]]:
         identity = StableIdentity(StableIdentityKind.ENTRY, entry_id)
-        entry = await self.session.get(CanonicalRecordModel, identity.stable_id)
+        if for_update:
+            entry = await self.session.scalar(
+                select(CanonicalRecordModel)
+                .where(CanonicalRecordModel.stable_id == identity.stable_id)
+                .with_for_update()
+            )
+        else:
+            entry = await self.session.get(CanonicalRecordModel, identity.stable_id)
         if entry is None:
             raise AppError(status_code=404, code="EDITORIAL_ENTRY_NOT_FOUND", message="editorial entry was not found")
         result = await self.session.execute(
@@ -940,6 +967,82 @@ class EditorialAuthorityService:
         if not events:
             raise RuntimeError("editorial entry has no lifecycle event")
         return entry, events
+
+    @staticmethod
+    def _candidate_finalization_authority_record_ids(artifact: object) -> set[str]:
+        if not isinstance(artifact, dict):
+            return set()
+        identities: set[str] = set()
+
+        def add_identity(value: object, expected_kind: StableIdentityKind) -> None:
+            if not isinstance(value, str):
+                return
+            try:
+                identity = StableIdentity.from_stable_id(value)
+            except ValueError:
+                return
+            if identity.kind is expected_kind:
+                identities.add(identity.stable_id)
+
+        add_identity(artifact.get("entry_identity"), StableIdentityKind.ENTRY)
+        entry = artifact.get("entry")
+        if not isinstance(entry, dict):
+            return identities
+        sources = entry.get("sources")
+        if isinstance(sources, list):
+            for source in sources:
+                source_id = source.get("source_id") if isinstance(source, dict) else None
+                if isinstance(source_id, str):
+                    try:
+                        identities.add(StableIdentity(StableIdentityKind.SOURCE, source_id).stable_id)
+                    except ValueError:
+                        continue
+        source_snapshots = artifact.get("sources")
+        if isinstance(source_snapshots, list):
+            for source_snapshot in source_snapshots:
+                if isinstance(source_snapshot, dict):
+                    add_identity(source_snapshot.get("source_identity"), StableIdentityKind.SOURCE)
+        release_assurance = entry.get("release_assurance")
+        if isinstance(release_assurance, dict):
+            for field in (
+                "contract_identity",
+                "calibration_identity",
+                "frozen_acceptance_identity",
+                "named_gate",
+            ):
+                raw_identity = release_assurance.get(field)
+                if not isinstance(raw_identity, str):
+                    continue
+                try:
+                    identities.add(StableIdentity.from_stable_id(raw_identity).stable_id)
+                except ValueError:
+                    continue
+        return identities
+
+    async def _lock_canonical_records(self, record_identities: set[str]) -> dict[str, CanonicalRecordModel]:
+        if not record_identities:
+            return {}
+        result = await self.session.execute(
+            select(CanonicalRecordModel)
+            .where(CanonicalRecordModel.stable_id.in_(record_identities))
+            .order_by(CanonicalRecordModel.stable_id.asc())
+            .with_for_update()
+        )
+        return {record.stable_id: record for record in result.scalars()}
+
+    async def _acquire_candidate_finalization_fence(self) -> None:
+        bind = self.session.bind
+        if bind is None or bind.dialect.name != "sqlite":
+            return
+        try:
+            await self.session.execute(text("BEGIN IMMEDIATE"))
+        except OperationalError as exc:
+            await self.session.rollback()
+            raise AppError(
+                status_code=409,
+                code="EDITORIAL_AUTHORITY_FENCE_UNAVAILABLE",
+                message="Candidate finalization could not acquire the editorial authority fence",
+            ) from exc
 
     async def _current_draft(
         self,
@@ -2042,8 +2145,7 @@ class EditorialAuthorityService:
 
     @staticmethod
     def _sha256(value: object) -> str:
-        encoded = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
-        return hashlib.sha256(encoded).hexdigest()
+        return canonical_json_sha256(value)
 
     @staticmethod
     def _event_snapshot(event: CanonicalEventModel) -> dict[str, str]:

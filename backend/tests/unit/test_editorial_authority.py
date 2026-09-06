@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.common.exceptions import AppError
 from app.contracts.canonical import (
@@ -24,10 +28,39 @@ from app.editorial_authority.schemas import (
     review_validation_reasons,
 )
 from app.editorial_authority.service import EditorialAuthorityService, evaluate_answer_eligibility
+from app.model.base import Base
 from app.model.canonical import CanonicalEventModel, CanonicalRecordModel
 from app.model.document import Document
 from app.model.user import User
+from app.reviewed_bundles.models import CandidateBuildJob
+from app.reviewed_bundles.service import ReviewedReleaseBundleService
 from app.reviewed_bundles.verifier import CanonicalEditorialExportVerifier
+
+
+def _canonical_sha256(value: object) -> str:
+    encoded = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _bundle_from_export(exported: dict, *, bundle_id: str) -> dict:
+    artifact = exported["artifact"]
+    item = {
+        "bundle_item_id": f"{bundle_id}-item-001",
+        "operation": "create",
+        "artifact_sha256": exported["artifact_sha256"],
+        "artifact": artifact,
+    }
+    item["bundle_item_sha256"] = _canonical_sha256(item)
+    manifest = {
+        "schema": "reviewed_release_bundle/v1",
+        "schema_version": 1,
+        "bundle_id": bundle_id,
+        "editorial_source_revision": artifact["revision_sha256"],
+        "exported_at": "2026-09-06T12:00:00Z",
+        "items": [item],
+    }
+    manifest["bundle_sha256"] = _canonical_sha256(manifest)
+    return manifest
 
 
 async def test_author_can_save_private_draft_but_incomplete_entry_cannot_collect_evidence(db_session) -> None:
@@ -424,6 +457,109 @@ async def test_bundle_intake_verifier_reads_only_the_retained_approved_export_an
         )
 
     assert exc_info.value.code == "EDITORIAL_SOURCE_UNAVAILABLE"
+
+
+async def test_non_ascii_approved_export_imports_as_an_immutable_reviewed_bundle(db_session) -> None:
+    author = User(username="author", password_hash="hash", role="user", is_active=True)
+    reviewer = User(username="reviewer", password_hash="hash", role="user", is_active=True)
+    maintainer = User(username="maintainer", password_hash="hash", role="user", is_active=True)
+    administrator = User(username="administrator", password_hash="hash", role="admin", is_active=True)
+    db_session.add_all([author, reviewer, maintainer, administrator])
+    await db_session.commit()
+
+    entry = _review_ready_entry(entry_id="unicode-reviewed-bundle-001")
+    entry.title = "\u5ba1\u6838\u540e\u5bfc\u5165\u7684\u4e2d\u6587\u77e5\u8bc6\u6761\u76ee"
+    entry.body["recommendation_or_reviewed_branches"] = (
+        "\u4ec5\u4ece\u5df2\u5ba1\u6838\u7684\u79c1\u6709\u7f16\u8f91\u5bfc\u51fa\u6784\u5efa Candidate\u3002"
+    )
+    authority = EditorialAuthorityService(db_session)
+    draft = await authority.create_draft(entry, author)
+    await _prepare_editorial_review(authority, draft["entry_id"], author, maintainer)
+    await authority.approve_current_revision(draft["entry_id"], reviewer)
+    exported = await authority.export_approved_revision(draft["entry_id"], administrator)
+
+    accepted = await ReviewedReleaseBundleService(
+        db_session,
+        editorial_export_verifier=CanonicalEditorialExportVerifier(db_session),
+    ).import_bundle(
+        _bundle_from_export(exported, bundle_id="unicode-reviewed-bundle-intake-001"),
+        actor_identity="member:administrator",
+    )
+
+    job = await db_session.get(CandidateBuildJob, accepted["items"][0]["job_id"])
+    assert job is not None
+    assert job.status == "queued"
+    assert job.input_sha256 == exported["artifact_sha256"]
+
+
+async def test_sqlite_finalization_fence_blocks_a_real_source_authority_writer_until_candidate_commit(tmp_path) -> None:
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'candidate-finalization-fence.db'}",
+        connect_args={"timeout": 0.05},
+    )
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+
+        async with factory() as setup_session:
+            author = User(username="author", password_hash="hash", role="user", is_active=True)
+            reviewer = User(username="reviewer", password_hash="hash", role="user", is_active=True)
+            maintainer = User(username="maintainer", password_hash="hash", role="user", is_active=True)
+            administrator = User(username="administrator", password_hash="hash", role="admin", is_active=True)
+            setup_session.add_all([author, reviewer, maintainer, administrator])
+            await setup_session.commit()
+
+            authority = EditorialAuthorityService(setup_session)
+            draft = await authority.create_draft(_review_ready_entry(entry_id="sqlite-finalization-fence-001"), author)
+            await _prepare_editorial_review(authority, draft["entry_id"], author, maintainer)
+            await authority.approve_current_revision(draft["entry_id"], reviewer)
+            exported = await authority.export_approved_revision(draft["entry_id"], administrator)
+
+        async with factory() as finalization_session:
+            finalization_authority = EditorialAuthorityService(finalization_session)
+            async with finalization_authority.verify_approved_export_for_candidate_finalization(
+                exported["artifact"],
+                exported["artifact_sha256"],
+            ):
+                async with factory() as competing_session:
+                    competing_maintainer = await competing_session.scalar(
+                        select(User).where(User.username == "maintainer")
+                    )
+                    assert competing_maintainer is not None
+                    with pytest.raises(OperationalError):
+                        await EditorialAuthorityService(competing_session).record_source_availability(
+                            "sqlite-finalization-fence-001",
+                            "source-rag-admission-001",
+                            "unavailable_for_new_evidence",
+                            competing_maintainer,
+                        )
+
+                finalization_session.add(
+                    CanonicalRecordModel(
+                        stable_id="candidate:sqlite-finalization-fence-001",
+                        identity_kind=StableIdentityKind.CANDIDATE.value,
+                        identity_value="sqlite-finalization-fence-001",
+                        state="candidate_ready",
+                        record_class=CanonicalRecordClass.IMMUTABLE.value,
+                        payload={"schema": "candidate_build_candidate/v1"},
+                    )
+                )
+                await finalization_session.commit()
+
+        async with factory() as writer_session:
+            writer_maintainer = await writer_session.scalar(select(User).where(User.username == "maintainer"))
+            assert writer_maintainer is not None
+            await EditorialAuthorityService(writer_session).record_source_availability(
+                "sqlite-finalization-fence-001",
+                "source-rag-admission-001",
+                "unavailable_for_new_evidence",
+                writer_maintainer,
+            )
+            candidate = await writer_session.get(CanonicalRecordModel, "candidate:sqlite-finalization-fence-001")
+            assert candidate is not None
+    finally:
+        await engine.dispose()
 
 
 async def test_export_snapshot_rejects_source_definitions_not_bound_to_the_approved_revision(db_session) -> None:

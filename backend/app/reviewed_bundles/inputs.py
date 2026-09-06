@@ -1,18 +1,32 @@
 from __future__ import annotations
 
-import hashlib
-import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import NoReturn
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.canonical_json import canonical_json_sha256
 from app.common.exceptions import AppError
 from app.contracts.canonical import CanonicalRecordClass, StableIdentityKind
 from app.model.canonical import CanonicalRecordModel
 from app.reviewed_bundles.models import CandidateBuildJob
 
 _SHA256_LENGTH = 64
+_FROZEN_INPUT_HASH_FIELDS = (
+    "schema",
+    "bundle_id",
+    "bundle_sha256",
+    "bundle_item_id",
+    "bundle_item_sha256",
+    "entry_identity",
+    "document_identity",
+    "requested_generation",
+    "editorial_source_revision",
+    "input_sha256",
+    "chunk_strategy",
+    "embedding_configuration",
+)
 
 
 @dataclass(frozen=True)
@@ -26,6 +40,8 @@ class FrozenCandidateBuildInput:
     requested_generation: int
     editorial_source_revision: str
     input_sha256: str
+    frozen_input_sha256: str
+    is_legacy_hash_backfill: bool
     chunk_strategy: dict[str, object]
     embedding_configuration: dict[str, object]
     artifact: dict[str, object]
@@ -46,6 +62,7 @@ class FrozenCandidateBuildInput:
             and job.requested_generation == self.requested_generation
             and job.editorial_source_revision == self.editorial_source_revision
             and job.input_sha256 == self.input_sha256
+            and job.frozen_input_sha256 == self.frozen_input_sha256
             and job.chunk_strategy == self.chunk_strategy
             and job.embedding_configuration == self.embedding_configuration
         )
@@ -74,6 +91,14 @@ async def load_frozen_candidate_build_input(session: AsyncSession, job_id: str) 
     input_sha256 = _require_sha256(input_payload, "input_sha256")
     chunk_strategy = _require_dict(input_payload, "chunk_strategy")
     embedding_configuration = _require_dict(input_payload, "embedding_configuration")
+    frozen_input_sha256 = frozen_candidate_build_input_sha256(input_payload)
+    stored_frozen_input_sha256 = input_payload.get("frozen_input_sha256")
+    is_legacy_hash_backfill = "frozen_input_sha256" not in input_payload
+    if not is_legacy_hash_backfill and (
+        not isinstance(stored_frozen_input_sha256, str)
+        or _require_sha256(input_payload, "frozen_input_sha256") != frozen_input_sha256
+    ):
+        _raise_input_integrity()
 
     item_record = await session.get(CanonicalRecordModel, bundle_item_id)
     if item_record is None:
@@ -132,6 +157,8 @@ async def load_frozen_candidate_build_input(session: AsyncSession, job_id: str) 
         requested_generation=requested_generation,
         editorial_source_revision=editorial_source_revision,
         input_sha256=input_sha256,
+        frozen_input_sha256=frozen_input_sha256,
+        is_legacy_hash_backfill=is_legacy_hash_backfill,
         chunk_strategy=chunk_strategy,
         embedding_configuration=embedding_configuration,
         artifact=artifact,
@@ -193,8 +220,11 @@ def _require_dict(payload: dict[str, object], field: str) -> dict[str, object]:
 
 
 def _structured_sha256(value: object) -> str:
-    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return canonical_json_sha256(value)
+
+
+def frozen_candidate_build_input_sha256(payload: Mapping[str, object]) -> str:
+    return canonical_json_sha256({field: payload[field] for field in _FROZEN_INPUT_HASH_FIELDS})
 
 
 def _raise_input_integrity() -> NoReturn:

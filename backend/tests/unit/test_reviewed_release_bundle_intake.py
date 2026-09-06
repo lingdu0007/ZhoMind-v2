@@ -3,30 +3,45 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import pytest
 from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.common.canonical_json import canonical_json_sha256
 from app.common.config import Settings
 from app.common.exceptions import AppError
+from app.contracts.canonical import CanonicalEventType
+from app.model.base import Base
 from app.model.canonical import CanonicalEventModel, CanonicalRecordModel
 from app.model.document import Document
+from app.model.user import User
 from app.reviewed_bundles import build_service as candidate_build_module
 from app.reviewed_bundles import lifecycle as candidate_lifecycle
 from app.reviewed_bundles import runtime as reviewed_bundles_runtime
 from app.reviewed_bundles.build_service import CandidateBuildService
+from app.reviewed_bundles.dispatch_authority import has_current_dispatch_authorization
+from app.reviewed_bundles.events import candidate_job_event_payload
+from app.reviewed_bundles.inputs import load_frozen_candidate_build_input
 from app.reviewed_bundles.models import CandidateBuildChunk, CandidateBuildJob
 from app.reviewed_bundles.recovery import CandidateBuildRecoveryService
 from app.reviewed_bundles.runtime import CandidateBuildRuntime
-from app.reviewed_bundles.service import ReviewedReleaseBundleService, candidate_embedding_configuration
+from app.reviewed_bundles.service import (
+    EditorialExportVerifier,
+    ReviewedReleaseBundleService,
+    candidate_embedding_configuration,
+)
+from app.service.identity_audit_service import IdentityAuditService
 
 
 def _sha256(value: object) -> str:
-    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return canonical_json_sha256(value)
 
 
 def _approved_export(entry_id: str = "source-admission-001") -> dict:
@@ -107,8 +122,40 @@ class _ApprovedExportVerifier:
         assert artifact_sha256 == _sha256(artifact)
         return artifact
 
+    @asynccontextmanager
+    async def verify_for_candidate_finalization(
+        self,
+        artifact: dict,
+        artifact_sha256: str,
+    ) -> AsyncIterator[dict]:
+        yield await self.verify(artifact, artifact_sha256)
 
-class _StructuredSourceFailureVerifier:
+
+class _FinalizationFenceVerifier(_ApprovedExportVerifier):
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self.entered = False
+        self.exited = False
+        self.candidate_persisted_before_guard_exit = False
+
+    @asynccontextmanager
+    async def verify_for_candidate_finalization(
+        self,
+        artifact: dict,
+        artifact_sha256: str,
+    ) -> AsyncIterator[dict]:
+        self.entered = True
+        try:
+            yield await self.verify(artifact, artifact_sha256)
+            candidate = await self._session.scalar(
+                select(CanonicalRecordModel).where(CanonicalRecordModel.identity_kind == "candidate")
+            )
+            self.candidate_persisted_before_guard_exit = candidate is not None
+        finally:
+            self.exited = True
+
+
+class _StructuredSourceFailureVerifier(_ApprovedExportVerifier):
     async def verify(self, artifact: dict, artifact_sha256: str) -> dict:
         assert artifact_sha256 == _sha256(artifact)
         if artifact["entry_identity"] == "entry:authority-blocking-field-entry-002":
@@ -129,7 +176,22 @@ class _StructuredSourceFailureVerifier:
         return artifact
 
 
-class _SourceWithdrawsDuringBuildVerifier:
+class _UnexpectedVerifierFailure:
+    async def verify(self, artifact: dict, artifact_sha256: str) -> dict:
+        raise RuntimeError("editorial authority verifier is temporarily unavailable")
+
+
+class _EntryScopedUnexpectedVerifierFailure(_ApprovedExportVerifier):
+    def __init__(self, failing_entry_identity: str) -> None:
+        self._failing_entry_identity = failing_entry_identity
+
+    async def verify(self, artifact: dict, artifact_sha256: str) -> dict:
+        if artifact["entry_identity"] == self._failing_entry_identity:
+            raise RuntimeError("editorial authority verifier is temporarily unavailable")
+        return await super().verify(artifact, artifact_sha256)
+
+
+class _SourceWithdrawsDuringBuildVerifier(_ApprovedExportVerifier):
     def __init__(self) -> None:
         self.calls = 0
 
@@ -145,7 +207,7 @@ class _SourceWithdrawsDuringBuildVerifier:
         return artifact
 
 
-class _SourceWithdrawsDuringIndexingVerifier:
+class _SourceWithdrawsDuringIndexingVerifier(_ApprovedExportVerifier):
     def __init__(self) -> None:
         self.calls = 0
 
@@ -161,7 +223,7 @@ class _SourceWithdrawsDuringIndexingVerifier:
         return artifact
 
 
-class _SourceWithdrawsDuringFinalizationVerifier:
+class _SourceWithdrawsDuringFinalizationVerifier(_ApprovedExportVerifier):
     def __init__(self) -> None:
         self.calls = 0
 
@@ -235,6 +297,33 @@ class _SlowDenseIndex(_DenseIndexSpy):
         self.delete_calls.append((document_id, generation, embedding_fingerprint))
 
 
+class _LeaseExpiresDuringIndexingDenseIndex(_SlowDenseIndex):
+    def __init__(self, db_session: AsyncSession, job_id: str) -> None:
+        super().__init__()
+        self._session = db_session
+        self._job_id = job_id
+
+    async def index_candidate_generation(
+        self,
+        *,
+        document_id: str,
+        generation: int,
+        chunks,
+        embedding_fingerprint: str | None = None,
+    ) -> object:
+        job = await self._session.get(CandidateBuildJob, self._job_id)
+        assert job is not None
+        job.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        await self._session.commit()
+        return await _DenseIndexSpy.index_candidate_generation(
+            self,
+            document_id=document_id,
+            generation=generation,
+            chunks=chunks,
+            embedding_fingerprint=embedding_fingerprint,
+        )
+
+
 class _CancellationAwareDenseIndex(_DenseIndexSpy):
     def __init__(self) -> None:
         super().__init__()
@@ -306,9 +395,10 @@ class _CleanupFailingDenseIndex(_FailingDenseIndex):
 
 
 class _RecoveryFenceDenseIndex(_FailingDenseIndex):
-    def __init__(self, job: CandidateBuildJob) -> None:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession], job_id: str) -> None:
         super().__init__()
-        self._job = job
+        self._session_factory = session_factory
+        self._job_id = job_id
         self.observed_fence: tuple[str, bool, str | None] | None = None
 
     async def delete_candidate_generation(
@@ -318,11 +408,14 @@ class _RecoveryFenceDenseIndex(_FailingDenseIndex):
         generation: int | None,
         embedding_fingerprint: str | None = None,
     ) -> None:
-        self.observed_fence = (
-            self._job.status,
-            self._job.derived_cleanup_pending,
-            self._job.lease_owner,
-        )
+        async with self._session_factory() as observer:
+            observed = await observer.get(CandidateBuildJob, self._job_id)
+            assert observed is not None
+            self.observed_fence = (
+                observed.status,
+                observed.derived_cleanup_pending,
+                observed.lease_owner,
+            )
         await super().delete_candidate_generation(
             document_id=document_id,
             generation=generation,
@@ -417,11 +510,40 @@ async def _intake_record_count(db_session) -> int:
     return int(count or 0)
 
 
+async def _test_member_identity(
+    db_session,
+    *,
+    username: str,
+    role: str = "admin",
+    is_active: bool = True,
+) -> tuple[User, str]:
+    user = await db_session.scalar(select(User).where(User.username == username))
+    if user is None:
+        user = User(
+            username=username,
+            password_hash="candidate-build-test-password-hash",
+            role=role,
+            is_active=is_active,
+        )
+        db_session.add(user)
+        await db_session.flush()
+    identity = await IdentityAuditService(db_session).ensure_member_record(
+        user,
+        admission_path="candidate_build_test",
+    )
+    await db_session.commit()
+    return user, identity
+
+
 async def _dispatch_candidate_build(db_session, job_id: str) -> None:
+    _, actor_identity = await _test_member_identity(
+        db_session,
+        username="candidate-build-dispatch-administrator",
+    )
     dispatched = await CandidateBuildService(
         db_session,
         editorial_export_verifier=_ApprovedExportVerifier(),
-    ).dispatch_job(job_id, actor_identity="member:administrator-001")
+    ).dispatch_job(job_id, actor_identity=actor_identity)
     assert dispatched is True
 
 
@@ -468,11 +590,32 @@ async def test_importing_an_approved_bundle_persists_immutable_inputs_and_is_ide
 
     assert await db_session.get(CanonicalRecordModel, "bundle:reviewed-bundle-001") is not None
     assert await db_session.get(CanonicalRecordModel, "bundle_item:reviewed-bundle-item-001") is not None
-    assert await db_session.get(
+    frozen_input_record = await db_session.get(
         CanonicalRecordModel,
         f"build_generation:{accepted['items'][0]['job_id']}",
-    ) is not None
+    )
+    assert frozen_input_record is not None
     assert await db_session.scalar(select(func.count()).select_from(CandidateBuildJob)) == 1
+    job = await db_session.get(CandidateBuildJob, accepted["items"][0]["job_id"])
+    assert job is not None
+    expected_frozen_input_sha256 = _sha256(
+        {
+            "schema": "candidate_build_input/v1",
+            "bundle_id": job.bundle_id,
+            "bundle_sha256": manifest["bundle_sha256"],
+            "bundle_item_id": job.bundle_item_id,
+            "bundle_item_sha256": manifest["items"][0]["bundle_item_sha256"],
+            "entry_identity": job.entry_identity,
+            "document_identity": job.document_identity,
+            "requested_generation": job.requested_generation,
+            "editorial_source_revision": job.editorial_source_revision,
+            "input_sha256": job.input_sha256,
+            "chunk_strategy": job.chunk_strategy,
+            "embedding_configuration": job.embedding_configuration,
+        }
+    )
+    assert job.frozen_input_sha256 == expected_frozen_input_sha256
+    assert frozen_input_record.payload["frozen_input_sha256"] == expected_frozen_input_sha256
     queued_event = await db_session.scalar(
         select(CanonicalEventModel)
         .where(CanonicalEventModel.aggregate_id == f"build_generation:{accepted['items'][0]['job_id']}")
@@ -482,6 +625,7 @@ async def test_importing_an_approved_bundle_persists_immutable_inputs_and_is_ide
     assert queued_event.payload["action"] == "queued"
     assert queued_event.payload["editorial_source_revision"] == "a" * 64
     assert queued_event.payload["input_sha256"] == manifest["items"][0]["artifact_sha256"]
+    assert queued_event.payload["frozen_input_sha256"] == expected_frozen_input_sha256
 
     again = await service.import_bundle(manifest, actor_identity="member:administrator-001")
 
@@ -489,6 +633,74 @@ async def test_importing_an_approved_bundle_persists_immutable_inputs_and_is_ide
     assert await db_session.scalar(select(func.count()).select_from(CandidateBuildJob)) == 1
     await db_session.refresh(published_document)
     assert published_document.published_generation == 7
+
+
+async def test_unexpected_verifier_failure_rolls_back_intake_instead_of_recording_an_item_rejection(db_session) -> None:
+    service = ReviewedReleaseBundleService(
+        db_session,
+        editorial_export_verifier=_UnexpectedVerifierFailure(),
+    )
+
+    with pytest.raises(RuntimeError, match="temporarily unavailable"):
+        await service.import_bundle(
+            _bundle_manifest(bundle_id="unexpected-verifier-failure-001"),
+            actor_identity="member:administrator-001",
+        )
+
+    assert await _intake_record_count(db_session) == 0
+    assert await db_session.scalar(select(func.count()).select_from(CandidateBuildJob)) == 0
+    assert await db_session.scalar(select(func.count()).select_from(CanonicalEventModel)) == 0
+
+
+async def test_unexpected_later_verifier_failure_rolls_back_a_prior_supersession(db_session) -> None:
+    original = await ReviewedReleaseBundleService(
+        db_session,
+        editorial_export_verifier=_ApprovedExportVerifier(),
+    ).import_bundle(
+        _bundle_manifest(bundle_id="unexpected-verifier-supersession-original-001"),
+        actor_identity="member:administrator-001",
+    )
+    original_job_id = original["items"][0]["job_id"]
+
+    replacement = _bundle_manifest(bundle_id="unexpected-verifier-supersession-replacement-002")
+    replacement["items"][0]["bundle_item_id"] = "unexpected-verifier-supersession-item-002"
+    replacement["items"][0]["operation"] = "replace"
+    replacement["items"].append(
+        {
+            "bundle_item_id": "unexpected-verifier-failure-item-003",
+            "operation": "create",
+            "artifact": _approved_export(entry_id="unexpected-verifier-failure-entry-003"),
+        }
+    )
+    _rehash_manifest(replacement)
+    service = ReviewedReleaseBundleService(
+        db_session,
+        editorial_export_verifier=_EntryScopedUnexpectedVerifierFailure(
+            "entry:unexpected-verifier-failure-entry-003"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="temporarily unavailable"):
+        await service.import_bundle(replacement, actor_identity="member:administrator-001")
+
+    await db_session.commit()
+    db_session.expire_all()
+    original_job = await db_session.get(CandidateBuildJob, original_job_id)
+    assert original_job is not None
+    assert original_job.status == "queued"
+    assert original_job.terminal_state is None
+    assert original_job.allowed_next_action == "dispatch_candidate_build"
+    assert await db_session.get(
+        CanonicalRecordModel,
+        "bundle:unexpected-verifier-supersession-replacement-002",
+    ) is None
+    assert await db_session.scalar(select(func.count()).select_from(CandidateBuildJob)) == 1
+    original_events = await db_session.execute(
+        select(CanonicalEventModel)
+        .where(CanonicalEventModel.aggregate_id == f"build_generation:{original_job_id}")
+        .order_by(CanonicalEventModel.occurred_at.asc(), CanonicalEventModel.id.asc())
+    )
+    assert "superseded" not in [event.payload["action"] for event in original_events.scalars().all()]
 
 
 async def test_same_hash_bundle_insert_race_returns_the_existing_immutable_projection(
@@ -626,6 +838,41 @@ async def test_bundle_integrity_failures_reject_the_whole_bundle_before_dispatch
         await service.import_bundle(manifest, actor_identity="member:administrator-001")
 
     assert exc_info.value.code == "BUNDLE_INTEGRITY_REJECTED"
+    assert await _intake_record_count(db_session) == 0
+    assert await db_session.scalar(select(func.count()).select_from(CandidateBuildJob)) == 0
+
+
+async def test_unsupported_embedded_export_schema_rejects_the_whole_bundle_before_item_validation(db_session) -> None:
+    service = ReviewedReleaseBundleService(
+        db_session,
+        editorial_export_verifier=_ApprovedExportVerifier(),
+    )
+    manifest = _bundle_manifest(bundle_id="unsupported-embedded-export-schema-bundle-001")
+    manifest["items"][0]["artifact"]["schema"] = "editorial_export/v2"
+    sibling_artifact = _approved_export(entry_id="supported-sibling-entry-002")
+    manifest["items"].append(
+        {
+            "bundle_item_id": "supported-sibling-item-002",
+            "operation": "create",
+            "artifact_sha256": _sha256(sibling_artifact),
+            "artifact": sibling_artifact,
+        }
+    )
+    _rehash_manifest(manifest)
+
+    with pytest.raises(AppError) as exc_info:
+        await service.import_bundle(manifest, actor_identity="member:administrator-001")
+
+    assert exc_info.value.code == "BUNDLE_INTEGRITY_REJECTED"
+    assert exc_info.value.detail == {
+        "reasons": [
+            {
+                "field": "items[0].artifact.schema",
+                "code": "unsupported",
+                "message": "artifact schema must be editorial_export/v1",
+            }
+        ]
+    }
     assert await _intake_record_count(db_session) == 0
     assert await db_session.scalar(select(func.count()).select_from(CandidateBuildJob)) == 0
 
@@ -1062,6 +1309,68 @@ async def test_queued_item_builds_a_hidden_candidate_from_frozen_inputs_without_
     }
 
 
+async def test_candidate_finalization_persists_the_candidate_inside_the_authority_guard(db_session) -> None:
+    verifier = _FinalizationFenceVerifier(db_session)
+    intake = ReviewedReleaseBundleService(
+        db_session,
+        editorial_export_verifier=verifier,
+    )
+    accepted = await intake.import_bundle(
+        _bundle_manifest(bundle_id="candidate-finalization-authority-guard-001"),
+        actor_identity="member:administrator-001",
+    )
+    job_id = accepted["items"][0]["job_id"]
+    await _dispatch_candidate_build(db_session, job_id)
+
+    candidate = await CandidateBuildService(
+        db_session,
+        dense_index_service=_DenseIndexSpy(),
+        editorial_export_verifier=verifier,
+    ).process_job(job_id)
+
+    assert candidate["candidate_id"].startswith("candidate:")
+    assert verifier.entered is True
+    assert verifier.candidate_persisted_before_guard_exit is True
+    assert verifier.exited is True
+
+
+class _VerifierWithoutFinalizationFence:
+    async def verify(self, artifact: dict, artifact_sha256: str) -> dict:
+        assert artifact_sha256 == _sha256(artifact)
+        return artifact
+
+
+async def test_candidate_finalization_fails_closed_when_the_verifier_has_no_authority_fence(db_session) -> None:
+    verifier = _VerifierWithoutFinalizationFence()
+    unfenced_verifier = cast(EditorialExportVerifier, verifier)
+    intake = ReviewedReleaseBundleService(
+        db_session,
+        editorial_export_verifier=unfenced_verifier,
+    )
+    accepted = await intake.import_bundle(
+        _bundle_manifest(bundle_id="candidate-finalization-fence-required-001"),
+        actor_identity="member:administrator-001",
+    )
+    job_id = accepted["items"][0]["job_id"]
+    await _dispatch_candidate_build(db_session, job_id)
+
+    result = await CandidateBuildService(
+        db_session,
+        dense_index_service=_DenseIndexSpy(),
+        editorial_export_verifier=unfenced_verifier,
+    ).process_job(job_id)
+
+    job = await db_session.get(CandidateBuildJob, job_id)
+    assert job is not None
+    assert result["status"] == "failed"
+    assert job.failure_reason["code"] == "EDITORIAL_AUTHORITY_FINALIZATION_FENCE_REQUIRED"
+    assert await db_session.scalar(
+        select(func.count())
+        .select_from(CanonicalRecordModel)
+        .where(CanonicalRecordModel.identity_kind == "candidate")
+    ) == 0
+
+
 async def test_bundle_completion_locks_the_bundle_before_reconstructing_candidate_status(
     db_session,
     monkeypatch: pytest.MonkeyPatch,
@@ -1478,6 +1787,47 @@ async def test_source_withdrawal_in_finalization_window_fails_before_candidate_p
     assert await db_session.scalar(select(func.count()).select_from(Document)) == 0
 
 
+async def test_candidate_input_hash_rejects_a_matched_job_and_input_record_mutation(db_session) -> None:
+    intake = ReviewedReleaseBundleService(
+        db_session,
+        editorial_export_verifier=_ApprovedExportVerifier(),
+    )
+    accepted = await intake.import_bundle(
+        _bundle_manifest(bundle_id="frozen-input-hash-mutation-001"),
+        actor_identity="member:administrator-001",
+    )
+    job_id = accepted["items"][0]["job_id"]
+    job = await db_session.get(CandidateBuildJob, job_id)
+    input_record = await db_session.get(CanonicalRecordModel, f"build_generation:{job_id}")
+    assert job is not None
+    assert input_record is not None
+
+    mutated_chunk_strategy = dict(job.chunk_strategy)
+    mutated_chunk_strategy["max_characters"] = 899
+    input_payload = dict(input_record.payload)
+    input_payload["chunk_strategy"] = mutated_chunk_strategy
+    connection = await db_session.connection()
+    await connection.execute(
+        text("UPDATE canonical_records SET payload = :payload WHERE stable_id = :stable_id"),
+        {
+            "payload": json.dumps(input_payload, ensure_ascii=True, sort_keys=True),
+            "stable_id": input_record.stable_id,
+        },
+    )
+    await db_session.execute(
+        update(CandidateBuildJob)
+        .where(CandidateBuildJob.id == job.id)
+        .values(chunk_strategy=mutated_chunk_strategy)
+    )
+    await db_session.commit()
+    db_session.expire_all()
+
+    with pytest.raises(AppError) as exc_info:
+        await load_frozen_candidate_build_input(db_session, job_id)
+
+    assert exc_info.value.code == "CANDIDATE_INPUT_INTEGRITY_FAILED"
+
+
 @pytest.mark.parametrize(
     ("field_name", "replacement"),
     [
@@ -1775,53 +2125,193 @@ async def test_startup_requeues_valid_work_and_marks_expired_running_leases_inte
     assert await db_session.scalar(select(func.count()).select_from(Document)) == 0
 
 
-async def test_recovery_persists_the_interruption_fence_before_external_cleanup(db_session) -> None:
+async def test_recovery_honors_a_pre_hash_legacy_dispatch_proof_after_hash_backfill(db_session) -> None:
     intake = ReviewedReleaseBundleService(
         db_session,
         editorial_export_verifier=_ApprovedExportVerifier(),
     )
     accepted = await intake.import_bundle(
-        _bundle_manifest(bundle_id="recovery-fence-before-cleanup-001"),
+        _bundle_manifest(bundle_id="legacy-dispatch-hash-backfill-001"),
         actor_identity="member:administrator-001",
     )
     job_id = accepted["items"][0]["job_id"]
     job = await db_session.get(CandidateBuildJob, job_id)
+    input_record = await db_session.get(CanonicalRecordModel, f"build_generation:{job_id}")
     assert job is not None
-    job.status = "running"
-    job.stage = "indexing"
-    job.progress = 80
-    job.lease_owner = "crashed-worker"
-    job.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    assert input_record is not None
+    _, administrator_identity = await _test_member_identity(
+        db_session,
+        username="legacy-dispatch-hash-backfill-administrator",
+    )
+
+    legacy_input_payload = dict(input_record.payload)
+    legacy_input_payload.pop("frozen_input_sha256")
+    connection = await db_session.connection()
+    await connection.execute(
+        text("UPDATE canonical_records SET payload = :payload WHERE stable_id = :stable_id"),
+        {
+            "payload": json.dumps(legacy_input_payload, ensure_ascii=True, sort_keys=True),
+            "stable_id": input_record.stable_id,
+        },
+    )
+    job.dispatched_at = datetime.now(UTC)
+    job.allowed_next_action = "cancel_or_await_candidate_build"
+    legacy_dispatch_payload = candidate_job_event_payload(job, action="dispatched")
+    legacy_dispatch_payload.pop("frozen_input_sha256")
     db_session.add(
-        CandidateBuildChunk(
-            job_id=job.id,
-            candidate_id=f"candidate:{job.id}-abandoned",
-            document_identity=job.document_identity,
-            generation=job.requested_generation,
-            attempt=job.attempt,
-            chunk_index=0,
-            content="abandoned candidate chunk",
-            content_sha256=hashlib.sha256(b"abandoned candidate chunk").hexdigest(),
-            chunk_metadata={},
+        CanonicalEventModel(
+            aggregate_id=f"build_generation:{job_id}",
+            aggregate_kind="build_generation",
+            event_type=CanonicalEventType.STATUS_CHANGED.value,
+            from_state="queued",
+            to_state="queued",
+            payload=legacy_dispatch_payload,
+            recorded_by=administrator_identity,
         )
     )
     await db_session.commit()
-    dense_index = _RecoveryFenceDenseIndex(job)
+    db_session.expire_all()
 
-    async def enqueue(_: str) -> None:
-        return None
+    requeued_job_ids: list[str] = []
+
+    async def enqueue(candidate_job_id: str) -> None:
+        requeued_job_ids.append(candidate_job_id)
 
     recovered = await CandidateBuildRecoveryService(
         db_session,
-        dense_index_service=dense_index,
+        dense_index_service=_FailingDenseIndex(),
     ).recover(enqueue=enqueue, now=datetime.now(UTC))
 
-    assert recovered["interrupted_job_ids"] == [job_id]
-    assert recovered["reconciled_cleanup_job_ids"] == [job_id]
-    assert dense_index.observed_fence == ("interrupted_retryable", True, None)
-    await db_session.refresh(job)
-    assert job.status == "interrupted_retryable"
-    assert job.derived_cleanup_pending is False
+    assert recovered["requeued_job_ids"] == [job_id]
+    assert recovered["invalid_queued_job_ids"] == []
+    assert requeued_job_ids == [job_id]
+    legacy_input_record = await db_session.get(CanonicalRecordModel, f"build_generation:{job_id}")
+    assert legacy_input_record is not None
+    assert "frozen_input_sha256" not in legacy_input_record.payload
+
+
+async def test_legacy_dispatch_proof_rejects_a_mismatched_backfilled_job_hash(db_session) -> None:
+    intake = ReviewedReleaseBundleService(
+        db_session,
+        editorial_export_verifier=_ApprovedExportVerifier(),
+    )
+    accepted = await intake.import_bundle(
+        _bundle_manifest(bundle_id="legacy-dispatch-hash-mismatch-001"),
+        actor_identity="member:administrator-001",
+    )
+    job_id = accepted["items"][0]["job_id"]
+    job = await db_session.get(CandidateBuildJob, job_id)
+    input_record = await db_session.get(CanonicalRecordModel, f"build_generation:{job_id}")
+    assert job is not None
+    assert input_record is not None
+    _, administrator_identity = await _test_member_identity(
+        db_session,
+        username="legacy-dispatch-hash-mismatch-administrator",
+    )
+
+    legacy_input_payload = dict(input_record.payload)
+    legacy_input_payload.pop("frozen_input_sha256")
+    connection = await db_session.connection()
+    await connection.execute(
+        text("UPDATE canonical_records SET payload = :payload WHERE stable_id = :stable_id"),
+        {
+            "payload": json.dumps(legacy_input_payload, ensure_ascii=True, sort_keys=True),
+            "stable_id": input_record.stable_id,
+        },
+    )
+    job.frozen_input_sha256 = "0" * 64
+    job.dispatched_at = datetime.now(UTC)
+    job.allowed_next_action = "cancel_or_await_candidate_build"
+    legacy_dispatch_payload = candidate_job_event_payload(job, action="dispatched")
+    legacy_dispatch_payload.pop("frozen_input_sha256")
+    db_session.add(
+        CanonicalEventModel(
+            aggregate_id=f"build_generation:{job_id}",
+            aggregate_kind="build_generation",
+            event_type=CanonicalEventType.STATUS_CHANGED.value,
+            from_state="queued",
+            to_state="queued",
+            payload=legacy_dispatch_payload,
+            recorded_by=administrator_identity,
+        )
+    )
+    await db_session.commit()
+    db_session.expire_all()
+
+    corrupted_job = await db_session.get(CandidateBuildJob, job_id)
+    assert corrupted_job is not None
+    assert not await has_current_dispatch_authorization(db_session, corrupted_job)
+    requeued_job_ids: list[str] = []
+
+    async def enqueue(candidate_job_id: str) -> None:
+        requeued_job_ids.append(candidate_job_id)
+
+    recovered = await CandidateBuildRecoveryService(
+        db_session,
+        dense_index_service=_FailingDenseIndex(),
+    ).recover(enqueue=enqueue, now=datetime.now(UTC))
+
+    assert recovered["requeued_job_ids"] == []
+    assert recovered["invalid_queued_job_ids"] == []
+    assert requeued_job_ids == []
+
+
+async def test_recovery_persists_the_interruption_fence_before_external_cleanup(tmp_path) -> None:
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'recovery-fence.db'}")
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+
+        async with session_factory() as session:
+            intake = ReviewedReleaseBundleService(
+                session,
+                editorial_export_verifier=_ApprovedExportVerifier(),
+            )
+            accepted = await intake.import_bundle(
+                _bundle_manifest(bundle_id="recovery-fence-before-cleanup-001"),
+                actor_identity="member:administrator-001",
+            )
+            job_id = accepted["items"][0]["job_id"]
+            job = await session.get(CandidateBuildJob, job_id)
+            assert job is not None
+            job.status = "running"
+            job.stage = "indexing"
+            job.progress = 80
+            job.lease_owner = "crashed-worker"
+            job.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            session.add(
+                CandidateBuildChunk(
+                    job_id=job.id,
+                    candidate_id=f"candidate:{job.id}-abandoned",
+                    document_identity=job.document_identity,
+                    generation=job.requested_generation,
+                    attempt=job.attempt,
+                    chunk_index=0,
+                    content="abandoned candidate chunk",
+                    content_sha256=hashlib.sha256(b"abandoned candidate chunk").hexdigest(),
+                    chunk_metadata={},
+                )
+            )
+            await session.commit()
+            dense_index = _RecoveryFenceDenseIndex(session_factory, job.id)
+
+            async def enqueue(_: str) -> None:
+                return None
+
+            recovered = await CandidateBuildRecoveryService(
+                session,
+                dense_index_service=dense_index,
+            ).recover(enqueue=enqueue, now=datetime.now(UTC))
+
+            assert recovered["interrupted_job_ids"] == [job_id]
+            assert recovered["reconciled_cleanup_job_ids"] == [job_id]
+            assert dense_index.observed_fence == ("interrupted_retryable", True, None)
+            await session.refresh(job)
+            assert job.status == "interrupted_retryable"
+            assert job.derived_cleanup_pending is False
+    finally:
+        await engine.dispose()
 
 
 async def test_startup_does_not_report_or_audit_a_requeue_after_the_job_is_canceled(db_session) -> None:
@@ -2006,6 +2496,85 @@ async def test_explicit_dispatch_and_retry_record_administrator_authority_for_th
     assert by_action["dispatched"].payload["attempt"] == 1
     assert by_action["retry_dispatched"].recorded_by == "member:administrator-003"
     assert by_action["retry_dispatched"].payload["attempt"] == retried["attempt"] == 2
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "event_schema",
+        "event_type",
+        "frozen_input_hash",
+        "frozen_candidate_input_hash",
+        "missing_frozen_candidate_input_hash",
+        "ordinary_member",
+        "inactive_administrator",
+    ],
+)
+async def test_runtime_requires_a_well_formed_current_administrator_dispatch_proof(
+    db_session,
+    monkeypatch: pytest.MonkeyPatch,
+    tamper: str,
+) -> None:
+    intake = ReviewedReleaseBundleService(
+        db_session,
+        editorial_export_verifier=_ApprovedExportVerifier(),
+    )
+    accepted = await intake.import_bundle(
+        _bundle_manifest(bundle_id=f"dispatch-proof-{tamper}-001"),
+        actor_identity="member:administrator-001",
+    )
+    job_id = accepted["items"][0]["job_id"]
+    job = await db_session.get(CandidateBuildJob, job_id)
+    assert job is not None
+    administrator, administrator_identity = await _test_member_identity(
+        db_session,
+        username=f"dispatch-proof-admin-{tamper}",
+    )
+    _, ordinary_member_identity = await _test_member_identity(
+        db_session,
+        username=f"dispatch-proof-member-{tamper}",
+        role="user",
+    )
+    job.dispatched_at = datetime.now(UTC)
+    job.allowed_next_action = "cancel_or_await_candidate_build"
+    payload = candidate_job_event_payload(job, action="dispatched")
+    actor_identity = administrator_identity
+    event_type = CanonicalEventType.STATUS_CHANGED.value
+    if tamper == "event_schema":
+        payload["schema"] = "candidate_build_job_event/v0"
+    elif tamper == "event_type":
+        event_type = CanonicalEventType.CREATED.value
+    elif tamper == "frozen_input_hash":
+        payload["input_sha256"] = "0" * 64
+    elif tamper == "frozen_candidate_input_hash":
+        payload["frozen_input_sha256"] = "0" * 64
+    elif tamper == "missing_frozen_candidate_input_hash":
+        payload.pop("frozen_input_sha256")
+    elif tamper == "ordinary_member":
+        actor_identity = ordinary_member_identity
+    elif tamper == "inactive_administrator":
+        administrator.is_active = False
+    db_session.add(
+        CanonicalEventModel(
+            aggregate_id=f"build_generation:{job_id}",
+            aggregate_kind="build_generation",
+            event_type=event_type,
+            from_state="queued",
+            to_state="queued",
+            payload=payload,
+            recorded_by=actor_identity,
+        )
+    )
+    await db_session.commit()
+
+    def should_not_enqueue(_: str):
+        raise AssertionError("invalid Candidate dispatch proof must not reach the task backend")
+
+    monkeypatch.setattr(reviewed_bundles_runtime, "get_task_backend", should_not_enqueue)
+    with pytest.raises(AppError) as exc_info:
+        await CandidateBuildRuntime().enqueue(db_session, job_id)
+
+    assert exc_info.value.code == "CANDIDATE_DISPATCH_REQUIRED"
 
 
 async def test_runtime_refuses_to_enqueue_candidate_work_without_administrator_dispatch_evidence(db_session) -> None:
@@ -2286,6 +2855,60 @@ async def test_retry_requires_a_new_bundle_when_immutable_input_records_are_miss
     assert retry_event.payload["failure_reason"]["code"] == "CANDIDATE_RETRY_REQUIRES_NEW_BUNDLE"
 
 
+async def test_replacement_bundle_supersedes_an_input_corrupted_failed_generation_and_completes_its_bundle(
+    db_session,
+) -> None:
+    intake = ReviewedReleaseBundleService(
+        db_session,
+        editorial_export_verifier=_ApprovedExportVerifier(),
+    )
+    initial = await intake.import_bundle(
+        _bundle_manifest(bundle_id="input-corrupted-supersession-original-001"),
+        actor_identity="member:administrator-001",
+    )
+    job_id = initial["items"][0]["job_id"]
+    await _dispatch_candidate_build(db_session, job_id)
+    build = CandidateBuildService(
+        db_session,
+        dense_index_service=_FailingDenseIndex(),
+        editorial_export_verifier=_ApprovedExportVerifier(),
+    )
+    assert (await build.process_job(job_id))["status"] == "failed"
+
+    await db_session.execute(
+        text("DELETE FROM canonical_records WHERE stable_id = :stable_id"),
+        {"stable_id": f"build_generation:{job_id}"},
+    )
+    await db_session.commit()
+
+    with pytest.raises(AppError) as exc_info:
+        await build.retry_job(job_id, actor_identity="member:administrator-001")
+    assert exc_info.value.code == "CANDIDATE_RETRY_REQUIRES_NEW_BUNDLE"
+
+    old_job = await db_session.get(CandidateBuildJob, job_id)
+    assert old_job is not None
+    old_job.derived_cleanup_pending = True
+    await db_session.commit()
+
+    replacement_manifest = _bundle_manifest(bundle_id="input-corrupted-supersession-replacement-001")
+    replacement_manifest["items"][0]["bundle_item_id"] = "input-corrupted-supersession-replacement-item-001"
+    _rehash_manifest(replacement_manifest)
+    replacement = await intake.import_bundle(
+        replacement_manifest,
+        actor_identity="member:administrator-001",
+    )
+
+    await db_session.refresh(old_job)
+    replacement_job = await db_session.get(CandidateBuildJob, replacement["items"][0]["job_id"])
+    assert replacement_job is not None
+    original_bundle = await intake.get_bundle(initial["bundle_id"])
+    assert replacement_job.requested_generation == 2
+    assert old_job.status == "superseded"
+    assert old_job.derived_cleanup_pending is True
+    assert old_job.allowed_next_action == "reconcile_derived_data"
+    assert original_bundle["state"] == "completed"
+
+
 async def test_retry_cleanup_refusal_is_retained_in_the_candidate_event_audit(db_session) -> None:
     intake = ReviewedReleaseBundleService(
         db_session,
@@ -2495,43 +3118,47 @@ async def test_candidate_embedding_identity_excludes_endpoint_and_uses_a_frozen_
 
 
 async def test_long_running_indexing_renews_the_candidate_worker_lease(
-    db_session,
+    tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(candidate_build_module, "_LEASE_DURATION", timedelta(milliseconds=50))
-    monkeypatch.setattr(candidate_build_module, "_LEASE_HEARTBEAT_INTERVAL_SECONDS", 0.01, raising=False)
-    intake = ReviewedReleaseBundleService(
-        db_session,
-        editorial_export_verifier=_ApprovedExportVerifier(),
-    )
-    accepted = await intake.import_bundle(
-        _bundle_manifest(bundle_id="long-indexing-lease-bundle-001"),
-        actor_identity="member:administrator-001",
-    )
-    job_id = accepted["items"][0]["job_id"]
-    await _dispatch_candidate_build(db_session, job_id)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'lease-heartbeat.db'}")
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
 
-    candidate = await CandidateBuildService(
-        db_session,
-        dense_index_service=_SlowDenseIndex(),
-        editorial_export_verifier=_ApprovedExportVerifier(),
-    ).process_job(job_id)
+        async with session_factory() as session:
+            monkeypatch.setattr(candidate_build_module, "_LEASE_DURATION", timedelta(milliseconds=50))
+            monkeypatch.setattr(candidate_build_module, "_LEASE_HEARTBEAT_INTERVAL_SECONDS", 0.01, raising=False)
+            intake = ReviewedReleaseBundleService(
+                session,
+                editorial_export_verifier=_ApprovedExportVerifier(),
+            )
+            accepted = await intake.import_bundle(
+                _bundle_manifest(bundle_id="long-indexing-lease-bundle-001"),
+                actor_identity="member:administrator-001",
+            )
+            job_id = accepted["items"][0]["job_id"]
+            await _dispatch_candidate_build(session, job_id)
 
-    job = await db_session.get(CandidateBuildJob, job_id)
-    assert job is not None
-    assert candidate["status"] == "candidate_ready"
-    assert job.status == "candidate_ready"
-    assert job.heartbeat_at is not None
-    assert job.started_at is not None
-    assert job.heartbeat_at >= job.started_at
+            candidate = await CandidateBuildService(
+                session,
+                dense_index_service=_SlowDenseIndex(),
+                editorial_export_verifier=_ApprovedExportVerifier(),
+            ).process_job(job_id)
+
+            job = await session.get(CandidateBuildJob, job_id)
+            assert job is not None
+            assert candidate["status"] == "candidate_ready"
+            assert job.status == "candidate_ready"
+            assert job.heartbeat_at is not None
+            assert job.started_at is not None
+            assert job.heartbeat_at >= job.started_at
+    finally:
+        await engine.dispose()
 
 
-async def test_lost_indexing_lease_leaves_derived_data_for_fenced_recovery(
-    db_session,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(candidate_build_module, "_LEASE_DURATION", timedelta(milliseconds=50))
-    monkeypatch.setattr(candidate_build_module, "_LEASE_HEARTBEAT_INTERVAL_SECONDS", 0.1, raising=False)
+async def test_lost_indexing_lease_leaves_derived_data_for_fenced_recovery(db_session) -> None:
     intake = ReviewedReleaseBundleService(
         db_session,
         editorial_export_verifier=_ApprovedExportVerifier(),
@@ -2543,7 +3170,7 @@ async def test_lost_indexing_lease_leaves_derived_data_for_fenced_recovery(
     job_id = accepted["items"][0]["job_id"]
     await _dispatch_candidate_build(db_session, job_id)
 
-    dense_index = _SlowDenseIndex()
+    dense_index = _LeaseExpiresDuringIndexingDenseIndex(db_session, job_id)
     result = await CandidateBuildService(
         db_session,
         dense_index_service=dense_index,

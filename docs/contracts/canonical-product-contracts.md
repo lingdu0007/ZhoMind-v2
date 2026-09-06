@@ -162,6 +162,12 @@ explicit `schema_version` 1; no prior editorial schema exists to migrate, and a
 future incompatible version must add an explicit migration before it is
 accepted.
 
+The editorial export, Reviewed Release Bundle manifest and item, and frozen
+Candidate input integrity hashes use one shared canonical JSON serialization:
+sorted keys, compact separators, ASCII escaping for non-ASCII code points, and
+UTF-8 bytes. This preserves the Private Editorial Repository's established
+export byte contract across Unicode values.
+
 ## Reviewed Release Bundle Intake And Candidate Build
 
 A System Administrator imports only an immutable
@@ -203,6 +209,9 @@ failures are item-local `rejected` results with a structured blocking field and
 allowed next action; independent valid items remain admitted. `no_op` and
 `proposed_withdrawal` remain immutable, visible operation plans and create no
 Candidate Build, publication, replacement, or withdrawal side effect.
+Verifier infrastructure or execution failure is not an item defect: it aborts
+the intake transaction without persisting a bundle, item, job, or false
+rejection, so the same immutable bundle can be retried.
 
 The immutable bundle record remains `received`; its intake state is reconstructed
 from the append-only `received -> validating -> validated -> processing ->
@@ -222,9 +231,13 @@ serializes the terminal aggregate decision.
 Every admitted `create` or `replace` item creates one recoverable Candidate
 Build job and an immutable `build_generation` input record. They retain bundle,
 bundle-item, entry, runtime-document, requested-generation, editorial-source
-revision, input-hash, chunk-strategy, and non-secret effective embedding
-configuration identities. Import plans that work but does not enqueue or start
-it: its initial allowed next action is `dispatch_candidate_build`. Only an
+revision, approved-artifact `input_sha256`, complete
+`frozen_input_sha256`, chunk-strategy, and non-secret effective embedding
+configuration identities. The frozen-input hash covers the input schema,
+bundle and item identities and hashes, entry and document identities,
+generation, editorial revision, artifact hash, chunk strategy, and embedding
+configuration. Import plans that work but does not enqueue or start it: its
+initial allowed next action is `dispatch_candidate_build`. Only an
 explicit System Administrator dispatch may set durable `dispatched_at`, append
 a current-attempt `dispatched` event recorded by the administrator's
 `member:` identity, and enqueue the queued job; an explicit administrator
@@ -232,14 +245,33 @@ retry appends `retry_dispatched` with the same current-attempt authority and
 establishes `cancel_or_await_candidate_build` for its new attempt. Runtime
 enqueue and startup recovery authorize a queued job only from that append-only
 administrator event for its current attempt, never from mutable
-`dispatched_at` alone.
+`dispatched_at` alone. New input records and dispatch events must use
+`candidate_build_job_event/v1`, the exact queued transition and action shape,
+frozen editorial revision and both input hashes, and a `member` identity that
+still resolves to an active current System Administrator and authoritative
+identity record. Pre-`0018` immutable inputs and events are never rewritten:
+upgrade recomputes and persists the full hash on the job, and runtime may honor
+a historical dispatch event without `frozen_input_sha256` only when its
+immutable input record also predates that field, the recomputed hash matches
+the job, and every remaining exact current-attempt and administrator check
+matches. This compatibility recognizes prior explicit authorization; it never
+creates authorization from a mutable timestamp or migration state.
 Before a worker, retry, recovery, cleanup, or
 completion creates, indexes, deletes, or finalizes Candidate-derived data, it
 reconstructs the immutable canonical records and checks every mutable job
 binding against them; a mismatch fails closed without using or deleting the
 Candidate-derived data. Completion repeats approved-export, source, and
 Release-Assured authority verification after indexing and immediately before
-Candidate persistence. Candidate Build storage is separate from legacy
+Candidate persistence while it holds shared canonical authority locks for the
+entry, retained sources, and every Release-Assured reference. Source
+availability recorders and delivery-acceptance status writers acquire those
+same relevant locks, so no authority change can append between final
+verification and the Candidate commit. Finalization requires a
+verifier-provided authority-fence context and never falls back to an unlocked
+check. On SQLite, that context acquires `BEGIN IMMEDIATE` before
+re-verification, serializing editorial-authority writers through the Candidate
+commit just as record locks do on supported locking databases. Candidate Build
+storage is separate from legacy
 `documents` and `document_chunks`; its Candidate chunks and dense vectors are
 derived data and are unavailable to ordinary retrieval. Candidate and legacy
 document workers acquire the same process-wide bounded build-worker capacity,
@@ -300,13 +332,17 @@ another runtime instance, interrupted and retryable. Queue-dispatch failure is
 itself a durable failed job, not a silent drop.
 
 Admitting a newer generation supersedes an older unfinished or
-`candidate_ready` Candidate for the same entry. The older immutable Candidate
-record remains historical evidence, while its job projection records that it is
-not publishable. Superseding unfinished running or interrupted work retains a
-durable `derived_cleanup_pending` obligation. Startup scans terminal jobs with
-that obligation and reconciles their Candidate chunks and vectors only after a
-fresh frozen-input match; a mismatch preserves those assets and keeps the
-obligation recoverable rather than deleting data under an unverified binding.
+`candidate_ready` Candidate for the same entry. It also supersedes an older
+failed job whose allowed next action is `import_new_bundle`, allowing the
+original bundle to reach its terminal aggregate state without retrying
+corrupted immutable input. The older immutable Candidate record remains
+historical evidence, while its job projection records that it is not
+publishable. Superseding unfinished running or interrupted work retains a
+durable `derived_cleanup_pending` obligation, as does any already-pending
+cleanup on the failed generation. Startup scans terminal jobs with that
+obligation and reconciles their Candidate chunks and vectors only after a fresh
+frozen-input match; a mismatch preserves those assets and keeps the obligation
+recoverable rather than deleting data under an unverified binding.
 Intake, retry, recovery, cleanup, supersession, and Candidate completion never
 create or change a Published Knowledge Version, a legacy published generation,
 or a runtime publication pointer. Candidate inspection, publication,

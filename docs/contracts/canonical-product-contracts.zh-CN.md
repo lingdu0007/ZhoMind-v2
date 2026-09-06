@@ -135,6 +135,11 @@ instruction。它不是 Reviewed Release Bundle，不能修改或自动发布运
 保留的 entry schema 从显式的 `schema_version` 1 起步；此前不存在需要 migration 的
 editorial schema，未来不兼容的版本必须先加入明确 migration 才能被接受。
 
+editorial export、Reviewed Release Bundle manifest/item 以及冻结 Candidate input 的
+integrity hash 使用同一份 canonical JSON serialization：key 排序、紧凑 separator、
+对非 ASCII code point 进行 ASCII escape，然后取 UTF-8 byte。这样即使包含 Unicode
+value，也保持 Private Editorial Repository 已确立的 export byte contract。
+
 ## Reviewed Release Bundle Intake 与 Candidate Build
 
 System Administrator 只能导入不可变的
@@ -169,6 +174,8 @@ acceptance failure 都是 item-local 的 `rejected` 结果，带有结构化 blo
 allowed next action；独立的 valid item 仍保持 admitted。`no_op` 与
 `proposed_withdrawal` 保持为不可变、可见的 operation plan，
 不会创建 Candidate Build、publication、replacement 或 withdrawal side effect。
+verifier 的基础设施或执行 failure 不是 item defect：它会中止 intake transaction，且不
+持久化 bundle、item、job 或虚假的 rejection，因此同一个 immutable bundle 可以重试。
 
 不可变 bundle record 仍为 `received`；其 intake state 从只追加的
 `received -> validating -> validated -> processing -> completed` 或
@@ -184,21 +191,38 @@ whole-bundle integrity rejection。完成判定会在重建当前 intake state �
 
 每个 admitted 的 `create` 或 `replace` item 都会创建一个可恢复的 Candidate Build
 job 和一个不可变的 `build_generation` input record。它们保留 bundle、bundle-item、
-entry、runtime-document、requested-generation、editorial-source revision、input-hash、
-chunk-strategy 以及不含 secret 的 effective embedding configuration identity。导入只创建
-这项工作计划，不会 enqueue 或启动它：初始 allowed next action 为
+entry、runtime-document、requested-generation、editorial-source revision、approved-artifact
+`input_sha256`、完整的 `frozen_input_sha256`、chunk-strategy 以及不含 secret 的
+effective embedding configuration identity。frozen-input hash 覆盖 input schema、bundle
+与 item identity/hash、entry/document identity、generation、editorial revision、artifact
+hash、chunk strategy 和 embedding configuration。导入只创建这项工作计划，不会 enqueue
+或启动它：初始 allowed next action 为
 `dispatch_candidate_build`。只有明确的 System Administrator dispatch 可以写入耐久的
 `dispatched_at`、追加由该管理员 `member:` identity 记录且绑定当前 attempt 的
 `dispatched` event 并将 queued job enqueue；明确的 administrator retry 会为新 attempt
 追加带有同样当前-attempt authority 的 `retry_dispatched`，并建立
 `cancel_or_await_candidate_build` action。runtime enqueue 与 startup recovery 只会根据
 当前 attempt 的这条只追加 administrator event 授权 queued job，绝不会只根据可变的
-`dispatched_at`。worker、
+`dispatched_at`。新的 input record 与 dispatch event 必须使用
+`candidate_build_job_event/v1`、精确的 queued transition 与 action shape、冻结的
+editorial revision 与两份 input hash，并且其 `member` identity 仍须解析为 active 的当前
+System Administrator 及权威 identity record。早于 `0018` 的 immutable input 与 event
+绝不会被改写：升级会重新计算并在 job 上持久化完整 hash；只有当历史 dispatch event 缺少
+`frozen_input_sha256`、其 immutable input record 同样早于该字段、重新计算的 hash 与 job
+匹配，并且其余精确的 current-attempt 与 administrator 检查全部匹配时，runtime 才可承认
+该历史 event。这一兼容只承认先前明确的 authorization，绝不会从可变 timestamp 或
+migration state 创建 authorization。worker、
 retry、recovery、cleanup 或 completion 创建、索引、删除或 finalization Candidate-derived
 data 之前，都会重建不可变 canonical record 并检查每一个可变 job binding；任何不匹配
 都会 fail closed，既不会使用也不会删除 Candidate-derived data。completion 会在 indexing
 后、Candidate persistence 前立即重复验证 approved export、source 与 Release-Assured
-authority。Candidate Build storage
+authority，并在这一期间持有 entry、保留 source 及每个 Release-Assured reference 的共享
+canonical authority lock。source availability recorder 与 delivery-acceptance status writer
+会取得对应的同一把 lock，因此任何 authority change 都不能在 final verification 和
+Candidate commit 之间追加。finalization 必须使用 verifier 提供的 authority-fence
+context，绝不允许回退到未加锁的检查。在 SQLite 上，该 context 会在 re-verification
+之前取得 `BEGIN IMMEDIATE`，从而将 editorial-authority writer 串行化到 Candidate
+commit 之后，等价于支持 record lock 的数据库中的对应保护。Candidate Build storage
 与旧的 `documents`、`document_chunks` 分离；其 Candidate chunk 和 dense vector 都是
 derived data，对普通 retrieval 不可用。Candidate 与 legacy document worker 使用同一
 进程范围、有界的 build-worker capacity，新增 dispatcher 也不能放大配置的并发数。
@@ -247,12 +271,15 @@ interrupted/retryable。queue-dispatch failure 本身也是耐久的 failed job�
 drop。
 
 为同一 entry 接纳更高 generation 时，会 supersede 较早的 unfinished 或
-`candidate_ready` Candidate。较早的不可变 Candidate record 保留为历史 evidence，
-而其 job projection 记录它不可 publish。对 unfinished running 或 interrupted work 的
-supersession 会保留耐久的 `derived_cleanup_pending` obligation。startup 会扫描拥有该
-obligation 的 terminal job，只有在再次匹配 frozen input 后才协调其 Candidate chunk 和
-vector；若不匹配，会保留这些 asset 与可恢复 obligation，绝不在未验证 binding 下删除
-数据。intake、retry、recovery、cleanup、supersession 和 Candidate completion 都不会
+`candidate_ready` Candidate。对于 allowed next action 为 `import_new_bundle` 的较早
+failed job，也会 supersede，这使原 bundle 无需重试已损坏的 immutable input 即可进入
+terminal aggregate state。较早的不可变 Candidate record 保留为历史 evidence，而其 job
+projection 记录它不可 publish。对 unfinished running 或 interrupted work 的
+supersession 会保留耐久的 `derived_cleanup_pending` obligation；failed generation
+已存在的 cleanup obligation 同样必须保留。startup 会扫描拥有该 obligation 的 terminal
+job，只有在再次匹配 frozen input 后才协调其 Candidate chunk 和 vector；若不匹配，会保留
+这些 asset 与可恢复 obligation，绝不在未验证 binding 下删除数据。intake、retry、
+recovery、cleanup、supersession 和 Candidate completion 都不会
 创建或改变 Published Knowledge Version、legacy published generation 或 runtime
 publication pointer。Candidate inspection、publication、replacement switching 和
 withdrawal 仍由后续职责处理。

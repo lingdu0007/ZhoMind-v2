@@ -20,6 +20,7 @@ def candidate_job_event_payload(
         "attempt": job.attempt,
         "editorial_source_revision": job.editorial_source_revision,
         "input_sha256": job.input_sha256,
+        "frozen_input_sha256": job.frozen_input_sha256,
         "failure_reason": dict(job.failure_reason) if isinstance(job.failure_reason, dict) else None,
         "allowed_next_action": job.allowed_next_action,
     }

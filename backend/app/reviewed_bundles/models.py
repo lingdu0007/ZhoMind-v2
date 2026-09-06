@@ -23,6 +23,7 @@ class CandidateBuildJob(Base):
     requested_generation: Mapped[int] = mapped_column(Integer, nullable=False)
     editorial_source_revision: Mapped[str] = mapped_column(String(64), nullable=False)
     input_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    frozen_input_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     chunk_strategy: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     embedding_configuration: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String(48), nullable=False, default="queued")

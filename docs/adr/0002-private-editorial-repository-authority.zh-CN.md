@@ -60,7 +60,10 @@ boundary，并使后续 reconstruction 无法审计。
   availability event hash、适用的 Release-Assured record/status hash 以及 approval
   当时 audit cutoff 的 snapshot。只有结构正确的 lifecycle、Maintainer 与 approval
   event 才能建立这些 fact。新的 export 会检查当前 authority fact；历史
-  reconstruction 只使用其保留的 approval snapshot。拒绝凭据形态的 material、
+  reconstruction 只使用其保留的 approval snapshot。editorial export、Reviewed
+  Release Bundle manifest/item 与冻结 Candidate input 的 integrity hash 使用同一份
+  canonical JSON serialization：key 排序、紧凑 separator、对非 ASCII code point 进行
+  ASCII escape，然后取 UTF-8 byte。拒绝凭据形态的 material、
   任意结构深度的非空 secret-bearing field 和 automatic-publication instruction。
   该 export 不是 bundle，不触发 intake，也不能写入 Candidate、已发布 knowledge
   version、运行时 document 或部署副本。
@@ -79,7 +82,10 @@ boundary，并使后续 reconstruction 无法审计。
   恢复的 action；明确 retry 会为其新 attempt 追加带有同样当前-attempt authority 的
   `retry_dispatched`，并建立 `cancel_or_await_candidate_build` action。runtime enqueue
   与 startup recovery 都要求当前 queued attempt 的这条只追加 evidence，绝不会只凭可变的
-  `dispatched_at`。并发的 Candidate-generation allocation 争用会重新读取胜出的 generation，
+  `dispatched_at`。该 proof 必须使用 `candidate_build_job_event/v1`、精确的 queued
+transition 与 action shape、冻结的 editorial revision 与两份 input hash，并且其 `member`
+identity 仍须解析为 active 的当前 System Administrator 及权威 identity record。并发的
+  Candidate-generation allocation 争用会重新读取胜出的 generation，
   并在有界 attempt budget 内重试同一 immutable intake；耗尽时会返回 retry-required，
   不留下 admitted intake record，也不会将不同的有效 bundle 视作 immutable identity conflict。
   bundle 通过只追加的
@@ -90,7 +96,13 @@ boundary，并使后续 reconstruction 无法审计。
   worker、retry、recovery、derived write、vector
   call、Candidate finalization 与 cleanup path 都会在使用前重建并重新匹配这些 frozen
   input。Candidate finalization 会在 indexing 后、Candidate persistence 前立即重复验证
-  approved export、source 与 Release-Assured authority。Candidate embedding 只基于
+  approved export、source 与 Release-Assured authority，并在此期间持有 entry、保留 source
+  和每个 Release-Assured reference 的共享 canonical authority lock。source availability
+  recorder 与 delivery-acceptance status writer 会取得对应的同一把 lock，因此任何 authority
+  event 都不能在 final verification 与 Candidate commit 之间追加。verifier 必须提供
+  finalization authority fence，绝不允许未加锁的 fallback。在 SQLite 上，该 fence 会在
+  re-verification 前使用 `BEGIN IMMEDIATE`，将 authority writer 串行化到 Candidate
+  commit 之后。Candidate embedding 只基于
   configuration schema、active flag、model 与
   dimension 计算 fingerprint，因此其 Candidate-specific collection 与 normal runtime
   retrieval 分离，且不含 endpoint 或 secret。inactive frozen configuration 没有 Candidate
@@ -99,11 +111,23 @@ boundary，并使后续 reconstruction 无法审计。
   `chunking`、`indexing`）；terminal status 独立，worker 必须在修改 running job 前证明其
   精确 attempt、owner 与未过期 lease。Candidate 与 legacy document job 使用同一进程范围、
   有界的 build-worker slot pool，独立 dispatcher 不能放大配置的并发数。更高 generation 会 supersede unfinished work，
-  但不会抹去 historical evidence；未验证或失败的 cleanup 会保留为 durable pending
+  以及其唯一 next action 为 `import_new_bundle` 的 failed job，但不会抹去 historical
+  evidence；未验证或失败的 cleanup 会保留为 durable pending
   obligation，且只有重新匹配 frozen input 后才可删除。intake 和 worker 都不能回写
   private editorial authority、legacy runtime document 行或任何 published knowledge
   pointer。Candidate 仍是隔离的 derived result；Candidate inspection、publication、
   replacement 与 withdrawal 都不属于 T02 的职责。
+- 将 approved-artifact `input_sha256` 与 `frozen_input_sha256` 分开保留；后者会对完整
+  immutable Candidate input binding 进行 canonical hash：schema、bundle/item
+  identity/hash、entry/document identity、generation、editorial revision、artifact hash、
+  chunk strategy 与 embedding configuration。两份 hash 都会出现在每个新的 job 与
+  dispatch event 上。早于 `0018` 的 immutable input record 与 dispatch event 保持不变：
+  升级会将完整 hash 重新计算到 job；只有匹配的 immutable input record 同样早于该 hash
+  字段、其余 current-attempt administrator proof 仍完全精确时，runtime 才会接受缺少该字段的
+  legacy event。这只承认先前 authorization，不会凭空创建 authorization。预期的 authority
+  validation failure 保持 item-local；verifier 的基础设施或执行 failure 会回滚整个 intake
+  transaction，不会持久化虚假的 rejected item 或 partial supersession，因此同一个 immutable
+  bundle 可以安全重试。
 - 将 Candidate Build 的 recovery 与并发视为耐久的 authority boundary。intake 中 source 的
   可用性只来自 verifier 对保留 authority fact 的重建，绝不相信 artifact 内 Author 声明的
   `availability` 值。bundle completion 会在重建 state 与 child-job status 前锁定 bundle
@@ -125,6 +149,12 @@ intake 和可恢复 Candidate Build record 消费它，而 T04 publication 仍�
 bundle verifier 会重新检查当前 authority，但绝不会回填或改写 private editorial
 record。source availability 已是 fail-closed eligibility 的权威事实；后续 publication
 与 maintenance path 必须消费这项保留 evidence，而不是从 runtime copy 推断。
+Candidate finalization 会通过共享 canonical authority record 与 source-availability、Release-Assured
+authority writer 串行化其最终 re-verification 与 persistence；这消除了刚刚失效的 source
+或 acceptance status 仍可能产生新 Candidate 的窗口。dispatch evidence 同样保持
+fail-closed：finalization verifier fence 是必需的，且在 SQLite 上会在 re-verification
+之前启动 `BEGIN IMMEDIATE`，使并发 authority writer 留在 Candidate commit 之后。它必须将精确 frozen input 和 queued transition 绑定到仍解析为 active System
+Administrator 的 identity。
 recovery 只会重新 enqueue 带有其当前 attempt 的耐久 administrator-dispatch evidence 的
 queued job，绝不会只凭可变 timestamp，并在成功 requeue 时追加 `requeued_on_startup`；
 它会将缺失、过期以及由先前 runtime 持有的

@@ -73,7 +73,10 @@ authority boundary and make later reconstruction unauditable.
   approval-time audit cutoff. Only structurally valid lifecycle, maintainer,
   and approval events establish those facts. A new export checks current
   authority facts; historical reconstruction uses its retained approval
-  snapshot only. Reject credential-shaped material, non-empty secret-bearing
+  snapshot only. Editorial export, Reviewed Release Bundle manifest/item, and
+  frozen Candidate-input integrity hashes use one shared canonical JSON
+  serialization: sorted keys, compact separators, ASCII escaping of non-ASCII
+  code points, and UTF-8 bytes. Reject credential-shaped material, non-empty secret-bearing
   fields at every structured depth, and automatic-publication instructions.
   The export is not a bundle, does not invoke intake, and cannot write a
   Candidate, published knowledge version, runtime document, or deployment
@@ -97,7 +100,11 @@ authority boundary and make later reconstruction unauditable.
   `retry_dispatched` with that same current-attempt authority and establishes
   `cancel_or_await_candidate_build` for its new attempt. Runtime enqueue and
   startup recovery require that append-only evidence for the current queued
-  attempt, never mutable `dispatched_at` alone. Concurrent Candidate-generation
+  attempt, never mutable `dispatched_at` alone. The proof must use
+  `candidate_build_job_event/v1`, the exact queued transition and action
+  shape, frozen editorial revision and both input hashes, and a `member` identity
+  that still resolves to an active current System Administrator and
+  authoritative identity record. Concurrent Candidate-generation
   allocation contention rereads the winner and retries the same immutable
   intake within a bounded attempt budget; exhaustion returns retry-required
   without admitted intake records instead of treating a distinct valid bundle
@@ -111,7 +118,14 @@ authority boundary and make later reconstruction unauditable.
   Candidate finalization, and cleanup path reconstructs and re-matches frozen
   inputs before use. Candidate finalization repeats approved-export, source,
   and Release-Assured authority verification after indexing and immediately
-  before Candidate persistence. Candidate embeddings use a fingerprint over configuration
+  before Candidate persistence while holding shared canonical authority locks
+  for the entry, retained sources, and every Release-Assured reference. Source
+  availability recorders and delivery-acceptance status writers take the same
+  relevant locks, so no authority event can append between final verification
+  and Candidate commit. The verifier must provide the finalization authority
+  fence; no unlocked fallback is valid. On SQLite, the fence uses
+  `BEGIN IMMEDIATE` before re-verification to serialize authority writers
+  through Candidate commit. Candidate embeddings use a fingerprint over configuration
   schema, active flag, model, and dimension only, so their Candidate-specific
   collection is separate from normal runtime retrieval and contains no endpoint
   or secret. An inactive frozen configuration has no Candidate vector
@@ -122,13 +136,28 @@ authority boundary and make later reconstruction unauditable.
   attempt, owner, and unexpired lease before mutating a running job. Candidate
   and legacy document jobs acquire one process-wide bounded build-worker slot
   pool, so separate dispatchers cannot multiply configured concurrency. A newer
-  generation supersedes unfinished work without erasing historical evidence;
-  unverified or failed cleanup remains a durable pending obligation and may
+  generation supersedes unfinished work and a failed job whose only next action
+  is `import_new_bundle`, without erasing historical evidence; unverified or
+  failed cleanup remains a durable pending obligation and may
   delete only after a fresh frozen-input match. Neither intake nor the worker
   may write back to private editorial authority, legacy runtime document rows,
   or any published knowledge pointer. A Candidate remains an isolated derived
   result; Candidate inspection, publication, replacement, and withdrawal are
   not T02 responsibilities.
+- Retain the approved-artifact `input_sha256` separately from
+  `frozen_input_sha256`, which canonically hashes the complete immutable
+  Candidate input binding: schema, bundle and item identities and hashes,
+  entry/document identities, generation, editorial revision, artifact hash,
+  chunk strategy, and embedding configuration. Both hashes appear on every new
+  job and dispatch event. Pre-`0018` immutable input records and dispatch
+  events remain unchanged: upgrade recomputes the full hash onto the job, and
+  runtime accepts a legacy event without that field only when its matching
+  immutable input record is likewise pre-hash and every remaining
+  current-attempt administrator proof remains exact. This recognizes prior
+  authorization without minting one. Expected authority validation failures
+  remain item-local; verifier infrastructure or execution failure rolls back
+  the whole intake transaction without persisting a false rejected item or
+  partial supersession, so the immutable bundle is safely retryable.
 - Treat Candidate Build recovery and concurrency as a durable authority
   boundary. Source usability at intake comes only from verifier-reconstructed
   retained authority facts, never an artifact Author's `availability` value.
@@ -157,6 +186,15 @@ The bundle verifier rechecks current authority but never backfills or rewrites
 private editorial records. Source availability is already authoritative for
 fail-closed eligibility, while later publication and maintenance paths must
 consume that retained evidence rather than infer it from a runtime copy.
+Candidate finalization serializes its final re-verification and persistence
+with source-availability and Release-Assured authority writers through their
+shared canonical authority records; this removes the interval in which a
+freshly invalidated source or acceptance status could otherwise produce a new
+Candidate. The finalization verifier fence is required, and on SQLite it starts
+`BEGIN IMMEDIATE` before re-verification so concurrent authority writers remain
+outside the interval through Candidate commit. Dispatch evidence also remains fail-closed: it must bind the exact
+frozen input and queued transition to an identity that still resolves to an
+active System Administrator.
 Recovery requeues only queued jobs with durable administrator-dispatch
 evidence for their current attempt, never a mutable timestamp alone, appending
 `requeued_on_startup` on successful requeue; it treats

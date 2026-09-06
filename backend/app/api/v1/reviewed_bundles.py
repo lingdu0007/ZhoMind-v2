@@ -49,6 +49,7 @@ async def _serialize_job(session: AsyncSession, job: CandidateBuildJob) -> dict:
         "requested_generation": job.requested_generation,
         "editorial_source_revision": job.editorial_source_revision,
         "input_sha256": job.input_sha256,
+        "frozen_input_sha256": job.frozen_input_sha256,
         "chunk_strategy": job.chunk_strategy,
         "embedding_configuration": job.embedding_configuration,
         "status": job.status,
@@ -152,8 +153,8 @@ async def dispatch_candidate_build_job(
         session,
         editorial_export_verifier=CanonicalEditorialExportVerifier(session),
     )
-    if await service.dispatch_job(job_id, actor_identity=actor_identity):
-        await _enqueue_or_record_failure(session, job_id)
+    await service.dispatch_job(job_id, actor_identity=actor_identity)
+    await _enqueue_or_record_failure(session, job_id)
     return _ok(await _serialize_job(session, await _get_job(session, job_id)))
 
 

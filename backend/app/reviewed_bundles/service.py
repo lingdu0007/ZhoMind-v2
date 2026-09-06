@@ -4,13 +4,15 @@ import hashlib
 import json
 import re
 import uuid
+from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime, timedelta
 from typing import NoReturn, Protocol
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.canonical_json import canonical_json_sha256
 from app.common.config import Settings, get_settings
 from app.common.exceptions import AppError
 from app.contracts.canonical import (
@@ -25,6 +27,7 @@ from app.editorial_authority.schemas import editorial_export_safety_findings
 from app.model.canonical import CanonicalEventModel, CanonicalRecordModel
 from app.rag.dense_contract import DenseEmbeddingContract
 from app.reviewed_bundles.events import candidate_job_event_payload
+from app.reviewed_bundles.inputs import frozen_candidate_build_input_sha256
 from app.reviewed_bundles.lifecycle import bundle_intake_state, complete_bundle_when_candidate_work_is_finished
 from app.reviewed_bundles.models import CandidateBuildJob
 
@@ -51,6 +54,12 @@ _MAX_GENERATION_ALLOCATION_RETRIES = 3
 
 class EditorialExportVerifier(Protocol):
     async def verify(self, artifact: dict, artifact_sha256: str) -> dict: ...
+
+    def verify_for_candidate_finalization(
+        self,
+        artifact: dict,
+        artifact_sha256: str,
+    ) -> AbstractAsyncContextManager[dict]: ...
 
 
 class ReviewedReleaseBundleService:
@@ -131,10 +140,14 @@ class ReviewedReleaseBundleService:
             item_identity = StableIdentity(StableIdentityKind.BUNDLE_ITEM, item["bundle_item_id"])
             artifact = item["artifact"]
             artifact_sha256 = item["artifact_sha256"]
-            verified_artifact, failure_reason = await self._validate_item(
-                artifact=artifact,
-                artifact_sha256=artifact_sha256,
-            )
+            try:
+                verified_artifact, failure_reason = await self._validate_item(
+                    artifact=artifact,
+                    artifact_sha256=artifact_sha256,
+                )
+            except Exception:
+                await self.session.rollback()
+                raise
             entry_identity = artifact["entry_identity"]
             state = "rejected" if failure_reason is not None else "admitted"
             allowed_next_action = "correct_item_in_new_bundle" if failure_reason is not None else "dispatch_candidate_build"
@@ -202,6 +215,22 @@ class ReviewedReleaseBundleService:
             )
             if job is not None:
                 input_identity = StableIdentity(StableIdentityKind.BUILD_GENERATION, job.id)
+                input_payload = {
+                    "schema": "candidate_build_input/v1",
+                    "bundle_id": bundle_identity.stable_id,
+                    "bundle_sha256": manifest["bundle_sha256"],
+                    "bundle_item_id": item_identity.stable_id,
+                    "bundle_item_sha256": item["bundle_item_sha256"],
+                    "entry_identity": entry_identity,
+                    "document_identity": job.document_identity,
+                    "requested_generation": job.requested_generation,
+                    "editorial_source_revision": job.editorial_source_revision,
+                    "input_sha256": artifact_sha256,
+                    "chunk_strategy": job.chunk_strategy,
+                    "embedding_configuration": job.embedding_configuration,
+                }
+                job.frozen_input_sha256 = frozen_candidate_build_input_sha256(input_payload)
+                input_payload["frozen_input_sha256"] = job.frozen_input_sha256
                 records.append(
                     CanonicalRecordModel(
                         stable_id=input_identity.stable_id,
@@ -209,20 +238,7 @@ class ReviewedReleaseBundleService:
                         identity_value=input_identity.value,
                         state="queued",
                         record_class=CanonicalRecordClass.IMMUTABLE.value,
-                        payload={
-                            "schema": "candidate_build_input/v1",
-                            "bundle_id": bundle_identity.stable_id,
-                            "bundle_sha256": manifest["bundle_sha256"],
-                            "bundle_item_id": item_identity.stable_id,
-                            "bundle_item_sha256": item["bundle_item_sha256"],
-                            "entry_identity": entry_identity,
-                            "document_identity": job.document_identity,
-                            "requested_generation": job.requested_generation,
-                            "editorial_source_revision": job.editorial_source_revision,
-                            "input_sha256": artifact_sha256,
-                            "chunk_strategy": job.chunk_strategy,
-                            "embedding_configuration": job.embedding_configuration,
-                        },
+                        payload=input_payload,
                     )
                 )
                 job_events.append(
@@ -294,12 +310,6 @@ class ReviewedReleaseBundleService:
             verified_artifact = await self._editorial_export_verifier.verify(artifact, artifact_sha256)
         except AppError as exc:
             return None, self._verifier_failure_reason(exc)
-        except Exception:
-            return None, self._failure_reason(
-                code="EDITORIAL_EXPORT_NOT_APPROVED",
-                field="editorial_export",
-                message="item is not a verified approved editorial export",
-            )
 
         if not isinstance(verified_artifact, dict) or verified_artifact != artifact:
             return None, self._failure_reason(
@@ -680,7 +690,13 @@ class ReviewedReleaseBundleService:
             select(CandidateBuildJob).where(
                 CandidateBuildJob.entry_identity == entry_identity,
                 CandidateBuildJob.requested_generation < requested_generation,
-                CandidateBuildJob.status.in_({"queued", "running", "interrupted_retryable", "candidate_ready"}),
+                or_(
+                    CandidateBuildJob.status.in_({"queued", "running", "interrupted_retryable", "candidate_ready"}),
+                    and_(
+                        CandidateBuildJob.status == "failed",
+                        CandidateBuildJob.allowed_next_action == "import_new_bundle",
+                    ),
+                ),
             ).with_for_update()
         )
         events: list[CanonicalEventModel] = []
@@ -691,7 +707,10 @@ class ReviewedReleaseBundleService:
             affected_bundle_ids.add(job.bundle_id)
             job.status = "superseded"
             job.terminal_state = "superseded"
-            job.derived_cleanup_pending = previous_status in {"running", "interrupted_retryable"}
+            job.derived_cleanup_pending = job.derived_cleanup_pending or previous_status in {
+                "running",
+                "interrupted_retryable",
+            }
             job.failure_reason = {
                 "code": "CANDIDATE_SUPERSEDED",
                 "stage": previous_stage,
@@ -1054,6 +1073,14 @@ class ReviewedReleaseBundleService:
                         }
                     )
                     continue
+                if artifact.get("schema") != _EXPORT_SCHEMA:
+                    reasons.append(
+                        {
+                            "field": f"{prefix}.artifact.schema",
+                            "code": "unsupported",
+                            "message": f"artifact schema must be {_EXPORT_SCHEMA}",
+                        }
+                    )
                 if not isinstance(artifact_sha256, str) or _SHA256.fullmatch(artifact_sha256) is None:
                     reasons.append(
                         {
@@ -1234,8 +1261,7 @@ class ReviewedReleaseBundleService:
 
     @staticmethod
     def _sha256(value: object) -> str:
-        encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        return hashlib.sha256(encoded).hexdigest()
+        return canonical_json_sha256(value)
 
 
 def candidate_embedding_configuration(settings: Settings) -> dict[str, object]:

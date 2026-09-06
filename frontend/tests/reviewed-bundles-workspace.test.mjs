@@ -91,22 +91,111 @@ test('Reviewed Release Bundle intake shows structured whole-bundle rejection rea
   assert.equal(await page.getByText('schema_version: schema_version must be a JSON integer').isVisible(), true);
 });
 
-test('Reviewed Release Bundle controls follow the server-provided allowed action', async () => {
-  const page = await readFile(new URL('../src/pages/ReviewedBundlesPage.vue', import.meta.url), 'utf8');
+test('Reviewed Release Bundle dispatch shows a server-returned enqueue failure instead of a success', { timeout: 30000 }, async (t) => {
+  const { page, baseUrl } = await startWorkbench(t, { env: { BROWSER_ACCEPTANCE_SEED: 'minimal' } });
+  const bundleId = 'bundle-ui-action-001';
+  const jobId = 'job-ui-action-001';
+  const bundle = {
+    bundle_id: bundleId,
+    state: 'processing',
+    schema_version: 1,
+    editorial_source_revision: 'a'.repeat(64),
+    exported_at: '2026-09-06T12:00:00Z',
+    bundle_sha256: 'b'.repeat(64),
+    items: [
+      {
+        bundle_item_id: 'bundle_item:bundle-ui-action-item-001',
+        entry_identity: 'entry:bundle-ui-action-entry-001',
+        operation: 'create',
+        state: 'admitted',
+        artifact_sha256: 'c'.repeat(64),
+        bundle_item_sha256: 'd'.repeat(64),
+        allowed_next_action: 'dispatch_candidate_build',
+        job_id: jobId
+      }
+    ]
+  };
+  const queuedJob = {
+    job_id: jobId,
+    bundle_id: `bundle:${bundleId}`,
+    bundle_item_id: 'bundle_item:bundle-ui-action-item-001',
+    entry_identity: 'entry:bundle-ui-action-entry-001',
+    document_identity: 'document:candidate-bundle-ui-action-entry-001',
+    requested_generation: 1,
+    editorial_source_revision: 'a'.repeat(64),
+    input_sha256: 'c'.repeat(64),
+    chunk_strategy: {},
+    embedding_configuration: { active: false },
+    status: 'queued',
+    stage: 'queued',
+    progress: 0,
+    attempt: 1,
+    terminal_state: null,
+    failure_reason: null,
+    allowed_next_action: 'dispatch_candidate_build',
+    candidate_id: null,
+    derived_cleanup_pending: false,
+    dispatched_at: null,
+    started_at: null,
+    heartbeat_at: null,
+    lease_expires_at: null,
+    completed_at: null,
+    created_at: '2026-09-06T12:00:00Z',
+    updated_at: '2026-09-06T12:00:00Z',
+    events: []
+  };
+  const failedJob = {
+    ...queuedJob,
+    status: 'failed',
+    terminal_state: 'failed',
+    failure_reason: {
+      code: 'CANDIDATE_ENQUEUE_FAILED',
+      stage: 'queued',
+      message: 'Candidate Build could not be returned to the queue'
+    },
+    allowed_next_action: 'retry_fixed_inputs',
+    completed_at: '2026-09-06T12:00:01Z',
+    updated_at: '2026-09-06T12:00:01Z'
+  };
 
-  assert.match(
-    page,
-    /const canRetry = \(item\) =>\s*\['retry_fixed_inputs', 'reconcile_derived_data_then_retry'\]\.includes\(jobFor\(item\)\?\.allowed_next_action\);/
+  await page.route('**/reviewed-release-bundles**', async (route) => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname.replace(/\/+$/, '');
+    if (request.method() === 'GET' && pathname.endsWith('/reviewed-release-bundles')) {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ data: { items: [bundle] } }) });
+      return;
+    }
+    if (request.method() === 'GET' && pathname.endsWith(`/reviewed-release-bundles/${bundleId}`)) {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ data: bundle }) });
+      return;
+    }
+    if (request.method() === 'GET' && pathname.endsWith(`/reviewed-release-bundles/jobs/${jobId}`)) {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ data: queuedJob }) });
+      return;
+    }
+    if (request.method() === 'POST' && pathname.endsWith(`/reviewed-release-bundles/jobs/${jobId}/dispatch`)) {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ data: failedJob }) });
+      return;
+    }
+    await route.fallback();
+  });
+
+  await loginAdmin(page, baseUrl);
+  await page.goto(`${baseUrl}reviewed-bundles`);
+  await page.getByRole('heading', { name: 'Reviewed Release Bundles' }).waitFor();
+  await page.getByRole('button', { name: bundleId }).click();
+  await page.getByRole('button', { name: `开始 Candidate Build ${jobId}` }).waitFor();
+  await page.getByRole('button', { name: `开始 Candidate Build ${jobId}` }).click();
+
+  await page.getByRole('alert').filter({ hasText: `Candidate Build ${jobId} 未能进入队列。` }).waitFor();
+  assert.equal(
+    await page
+      .getByRole('alert')
+      .filter({ hasText: `CANDIDATE_ENQUEUE_FAILED: Candidate Build could not be returned to the queue` })
+      .isVisible(),
+    true
   );
-  assert.match(page, /const canCancel = \(item\) => jobFor\(item\)\?\.allowed_next_action === 'cancel_or_await_candidate_build';/);
-  assert.match(page, /completed_with_rejections: '已完成，存在拒绝项'/);
-  assert.match(page, /const bundleStateTone = \(state\) => \{[\s\S]*completed_with_rejections.*return 'danger';/);
-  assert.match(page, /:class="`reviewed-bundles__status--\$\{bundleStateTone\(selectedBundle\.state\)\}`"/);
-  assert.match(page, /const refreshSelectedBundle = async \(\) => \{/);
-  assert.match(page, /jobs\.forEach\(mergeJob\);\s*await refreshSelectedBundle\(\);/);
-  assert.match(page, /const structuredReasonMessage = \(detail\) => \{/);
-  assert.match(page, /const applyActionResult = \(job, successMessage, failureFallback\) => \{/);
-  assert.match(page, /if \(job\?\.status === 'failed'\) \{/);
+  assert.equal(await page.getByText(`Candidate Build ${jobId} 已进入队列。`, { exact: true }).count(), 0);
 });
 
 test('Reviewed Release Bundle acceptance runs inside the deterministic browser gate', async () => {

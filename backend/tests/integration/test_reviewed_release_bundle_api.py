@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
-from collections.abc import Generator
+from collections.abc import AsyncIterator, Generator
+from contextlib import asynccontextmanager
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.api.v1 import reviewed_bundles as reviewed_bundles_api
+from app.common.canonical_json import canonical_json_sha256
 from app.infra.db import SessionLocal, get_db_session
 from app.infra.redis import get_redis_client
 from app.main import app
@@ -49,10 +50,17 @@ class _ApprovedExportVerifier:
         assert artifact_sha256 == _sha256(artifact)
         return artifact
 
+    @asynccontextmanager
+    async def verify_for_candidate_finalization(
+        self,
+        artifact: dict,
+        artifact_sha256: str,
+    ) -> AsyncIterator[dict]:
+        yield await self.verify(artifact, artifact_sha256)
+
 
 def _sha256(value: object) -> str:
-    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return canonical_json_sha256(value)
 
 
 def _approved_export() -> dict:
@@ -259,6 +267,8 @@ def test_reviewed_bundle_intake_api_is_admin_only_and_exposes_a_recoverable_non_
     assert job_data["entry_identity"] == "entry:bundle-api-entry-001"
     assert job_data["editorial_source_revision"] == "a" * 64
     assert job_data["input_sha256"] == manifest["items"][0]["artifact_sha256"]
+    assert len(job_data["frozen_input_sha256"]) == 64
+    assert job_data["events"][0]["payload"]["frozen_input_sha256"] == job_data["frozen_input_sha256"]
     assert job_data["status"] == "queued"
     assert job_data["attempt"] == 1
     assert job_data["candidate_id"] is None
@@ -274,13 +284,14 @@ def test_reviewed_bundle_intake_api_is_admin_only_and_exposes_a_recoverable_non_
     assert dispatched_data["dispatched_at"] is not None
     assert dispatched_data["allowed_next_action"] == "cancel_or_await_candidate_build"
     assert dispatched_data["events"][-1]["payload"]["action"] == "dispatched"
+    assert dispatched_data["events"][-1]["payload"]["frozen_input_sha256"] == job_data["frozen_input_sha256"]
     assert dispatched_data["events"][-1]["recorded_by"].startswith("member:")
     assert enqueued_job_ids == [job_id]
 
     repeated_dispatch = client.post(f"/api/v1/reviewed-release-bundles/jobs/{job_id}/dispatch", headers=admin_headers)
     assert repeated_dispatch.status_code == 200
     assert _data(repeated_dispatch)["dispatched_at"] == dispatched_data["dispatched_at"]
-    assert enqueued_job_ids == [job_id]
+    assert enqueued_job_ids == [job_id, job_id]
 
     canceled = client.post(f"/api/v1/reviewed-release-bundles/jobs/{job_id}/cancel", headers=admin_headers)
     assert canceled.status_code == 200
@@ -298,7 +309,7 @@ def test_reviewed_bundle_intake_api_is_admin_only_and_exposes_a_recoverable_non_
     assert retried_data["attempt"] == 2
     assert retried_data["events"][-1]["payload"]["action"] == "retry_dispatched"
     assert retried_data["events"][-1]["recorded_by"].startswith("member:")
-    assert enqueued_job_ids == [job_id, job_id]
+    assert enqueued_job_ids == [job_id, job_id, job_id]
 
     repeated = client.post("/api/v1/reviewed-release-bundles/import", headers=admin_headers, json=manifest)
     assert repeated.status_code == 200

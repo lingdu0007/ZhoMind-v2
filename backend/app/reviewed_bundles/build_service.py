@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import uuid
-from contextlib import suppress
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, TypedDict
 
@@ -551,57 +552,58 @@ class CandidateBuildService:
         if not await self._owns_running_job(job):
             return False
         frozen_input = await self._current_frozen_input(job, expected=frozen_input)
-        await self._revalidate_editorial_authority(job, frozen_input)
-        if not await self._owns_running_job(job):
-            return False
-        from_stage = job.stage
-        candidate_record = CanonicalRecordModel(
-            stable_id=candidate_identity.stable_id,
-            identity_kind=StableIdentityKind.CANDIDATE.value,
-            identity_value=candidate_identity.value,
-            state="candidate_ready",
-            record_class=CanonicalRecordClass.IMMUTABLE.value,
-            payload={
-                "schema": "candidate_build_candidate/v1",
-                "bundle_id": frozen_input.bundle_id,
-                "bundle_sha256": frozen_input.bundle_sha256,
-                "bundle_item_id": frozen_input.bundle_item_id,
-                "bundle_item_sha256": frozen_input.bundle_item_sha256,
-                "build_generation_id": f"build_generation:{job.id}",
-                "entry_identity": frozen_input.entry_identity,
-                "document_identity": frozen_input.document_identity,
-                "requested_generation": frozen_input.requested_generation,
-                "editorial_source_revision": frozen_input.editorial_source_revision,
-                "input_sha256": frozen_input.input_sha256,
-                "chunk_strategy": frozen_input.chunk_strategy,
-                "embedding_configuration": frozen_input.embedding_configuration,
-                "embedding_active": bool(getattr(dense_result, "active", False)),
-                "embedding_fingerprint": getattr(dense_result, "fingerprint", None),
-                "attempt": job.attempt,
-                "chunk_count": len(chunk_specs),
-                "chunk_sha256s": [str(chunk["content_sha256"]) for chunk in chunk_specs],
-            },
-        )
-        job.status = BuildJobTerminalStatus.CANDIDATE_READY.value
-        job.progress = 100
-        job.terminal_state = BuildJobTerminalStatus.CANDIDATE_READY.value
-        job.candidate_id = candidate_identity.stable_id
-        job.completed_at = datetime.now(UTC)
-        job.heartbeat_at = job.completed_at
-        job.lease_expires_at = None
-        job.lease_owner = None
-        job.derived_cleanup_pending = False
-        job.allowed_next_action = "await_candidate_inspection"
-        self.session.add(candidate_record)
-        self._append_job_event(
-            job,
-            event_type=CanonicalEventType.STATE_CHANGED,
-            from_state=from_stage,
-            to_state=BuildJobTerminalStatus.CANDIDATE_READY.value,
-            action="completed",
-        )
-        await complete_bundle_when_candidate_work_is_finished(self.session, job.bundle_id)
-        await self.session.commit()
+        async with self._candidate_finalization_authority_guard(job, frozen_input):
+            if not await self._owns_running_job(job):
+                return False
+            from_stage = job.stage
+            candidate_record = CanonicalRecordModel(
+                stable_id=candidate_identity.stable_id,
+                identity_kind=StableIdentityKind.CANDIDATE.value,
+                identity_value=candidate_identity.value,
+                state="candidate_ready",
+                record_class=CanonicalRecordClass.IMMUTABLE.value,
+                payload={
+                    "schema": "candidate_build_candidate/v1",
+                    "bundle_id": frozen_input.bundle_id,
+                    "bundle_sha256": frozen_input.bundle_sha256,
+                    "bundle_item_id": frozen_input.bundle_item_id,
+                    "bundle_item_sha256": frozen_input.bundle_item_sha256,
+                    "build_generation_id": f"build_generation:{job.id}",
+                    "entry_identity": frozen_input.entry_identity,
+                    "document_identity": frozen_input.document_identity,
+                    "requested_generation": frozen_input.requested_generation,
+                    "editorial_source_revision": frozen_input.editorial_source_revision,
+                    "input_sha256": frozen_input.input_sha256,
+                    "frozen_input_sha256": frozen_input.frozen_input_sha256,
+                    "chunk_strategy": frozen_input.chunk_strategy,
+                    "embedding_configuration": frozen_input.embedding_configuration,
+                    "embedding_active": bool(getattr(dense_result, "active", False)),
+                    "embedding_fingerprint": getattr(dense_result, "fingerprint", None),
+                    "attempt": job.attempt,
+                    "chunk_count": len(chunk_specs),
+                    "chunk_sha256s": [str(chunk["content_sha256"]) for chunk in chunk_specs],
+                },
+            )
+            job.status = BuildJobTerminalStatus.CANDIDATE_READY.value
+            job.progress = 100
+            job.terminal_state = BuildJobTerminalStatus.CANDIDATE_READY.value
+            job.candidate_id = candidate_identity.stable_id
+            job.completed_at = datetime.now(UTC)
+            job.heartbeat_at = job.completed_at
+            job.lease_expires_at = None
+            job.lease_owner = None
+            job.derived_cleanup_pending = False
+            job.allowed_next_action = "await_candidate_inspection"
+            self.session.add(candidate_record)
+            self._append_job_event(
+                job,
+                event_type=CanonicalEventType.STATE_CHANGED,
+                from_state=from_stage,
+                to_state=BuildJobTerminalStatus.CANDIDATE_READY.value,
+                action="completed",
+            )
+            await complete_bundle_when_candidate_work_is_finished(self.session, job.bundle_id)
+            await self.session.commit()
         self._owned_attempts.pop(job.id, None)
         return True
 
@@ -768,6 +770,34 @@ class CandidateBuildService:
                 detail={"job_id": job.id},
             )
 
+    @asynccontextmanager
+    async def _candidate_finalization_authority_guard(
+        self,
+        job: CandidateBuildJob,
+        frozen_input: FrozenCandidateBuildInput,
+    ) -> AsyncIterator[None]:
+        try:
+            authority_context = self._editorial_export_verifier.verify_for_candidate_finalization(
+                frozen_input.artifact,
+                frozen_input.input_sha256,
+            )
+        except AttributeError as exc:
+            raise AppError(
+                status_code=409,
+                code="EDITORIAL_AUTHORITY_FINALIZATION_FENCE_REQUIRED",
+                message="Candidate finalization requires an editorial authority fence",
+                detail={"job_id": job.id},
+            ) from exc
+        async with authority_context as verified_artifact:
+            if verified_artifact != frozen_input.artifact:
+                raise AppError(
+                    status_code=409,
+                    code="EDITORIAL_EXPORT_NOT_APPROVED",
+                    message="Candidate Build inputs no longer match the approved editorial export",
+                    detail={"job_id": job.id},
+                )
+            yield
+
     def _assert_embedding_configuration(self, frozen_input: FrozenCandidateBuildInput) -> None:
         if candidate_embedding_configuration(self._settings) != frozen_input.embedding_configuration:
             raise AppError(
@@ -905,6 +935,7 @@ class CandidateBuildService:
             "candidate_id": candidate.stable_id,
             "entry_identity": payload["entry_identity"],
             "input_sha256": payload["input_sha256"],
+            "frozen_input_sha256": payload["frozen_input_sha256"],
             "chunk_count": payload["chunk_count"],
             "status": candidate.state,
             "allowed_next_action": job.allowed_next_action,
