@@ -961,7 +961,7 @@ class EditorialAuthorityService:
             raise RuntimeError("retrieval authority revision changed during resolution")
 
         sources = await self._verified_source_snapshot(draft, action="retrieval")
-        await self._release_assurance_snapshot(draft)
+        release_assurance_snapshot = await self._release_assurance_snapshot(draft)
         source_by_id: dict[str, dict[str, str]] = {}
         for source_snapshot in sources:
             source_identity = source_snapshot.get("source_identity")
@@ -980,6 +980,9 @@ class EditorialAuthorityService:
             }
 
         body = draft.body if isinstance(draft.body, dict) else {}
+        decision_query = body.get("decision_query")
+        if not isinstance(decision_query, str) or not decision_query.strip():
+            raise RuntimeError("retrieval authority decision query is missing")
         relationships = draft.section_source_relationships
         if not isinstance(relationships, list):
             raise RuntimeError("retrieval authority section-source relationships are missing")
@@ -1014,6 +1017,8 @@ class EditorialAuthorityService:
                 "assurance_level": draft.assurance_level,
                 "applicability_conditions": list(draft.applicability_conditions or []),
                 "freshness_triggers": list(draft.freshness_triggers or []),
+                "release_assurance_snapshot": release_assurance_snapshot,
+                "decision_query": decision_query.strip(),
             }
         )
         return authority

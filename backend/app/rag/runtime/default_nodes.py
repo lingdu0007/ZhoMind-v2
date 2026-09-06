@@ -1,8 +1,9 @@
 from app.rag.answer_evidence import select_answer_evidence
 from app.rag.claim_evidence import ClaimEvidenceGate, ClaimResolver
+from app.rag.evidence_sufficiency import EvidenceSufficiencyDecision, decide_answer_evidence
 from app.rag.runtime.provider_adapters import JudgeAdapter, RerankerAdapter, RetrieverAdapter
 from app.rag.runtime.state import ProviderTraceDetail, RagStateDict
-from app.retrieval.policy import get_retrieval_policy
+from app.retrieval.policy import PILOT_RETRIEVAL_PROFILE_ID, get_retrieval_policy
 from app.settings.runtime import get_runtime_settings
 
 
@@ -67,7 +68,6 @@ class RetrieveNode:
         top_k = int(plan.get("top_k") or self.top_k)
 
         retrieved, exec_detail = await self.retriever.retrieve(state["query_norm"], top_k=top_k)
-        active_profile = get_retrieval_policy(get_runtime_settings())
         ordered_items = []
         for index, item in enumerate(retrieved.items):
             ordered_item = dict(item)
@@ -86,6 +86,8 @@ class RetrieveNode:
 
         state["candidates_sparse"] = sparse_items
         state["candidates_dense"] = dense_items
+        state["retrieval_profile_identity"] = retrieved.profile_identity
+        state["candidate_pool_scope"] = retrieved.candidate_pool_scope
         retrieve_detail: ProviderTraceDetail = {
             "strategy": retrieved.strategy,
             "dense_candidate_count": retrieved.dense_candidate_count,
@@ -100,7 +102,7 @@ class RetrieveNode:
             "fallback_used": exec_detail["fallback_used"],
             "provider_error": exec_detail["error"],
             "embedding_provider_ms": retrieved.embedding_provider_ms,
-            "profile_identity": retrieved.profile_identity or active_profile.identity,
+            "profile_identity": retrieved.profile_identity,
             "candidate_pool_scope": retrieved.candidate_pool_scope,
             # Keep ordinary-user runtime traces useful without exposing excluded
             # Candidate or unpublished chunk identities.
@@ -183,7 +185,21 @@ class VerifyNode:
         self.claim_gate = ClaimEvidenceGate(resolver=claim_resolver) if claim_resolver is not None else None
 
     async def run(self, state: RagStateDict) -> RagStateDict:
-        if state["evidence_pack"]:
+        decision = state["evidence_sufficiency_decision"]
+        if isinstance(decision, EvidenceSufficiencyDecision):
+            passed = decision.is_sufficient
+            reason = "sufficient_evidence" if passed else str(decision.reason)
+            state["claim_evidence_audit"] = {
+                "decision": decision.to_record(),
+                "passed": passed,
+                "reason": reason,
+            }
+            exec_detail = {
+                "provider": "deterministic-evidence-sufficiency",
+                "fallback_used": False,
+                "error": None,
+            }
+        elif state["evidence_pack"]:
             has_agent_evidence = any(
                 isinstance(item.get("metadata"), dict)
                 and isinstance(item["metadata"].get("entry_id"), str)
@@ -263,6 +279,45 @@ class ContextPackNode:
         self.max_excerpt_chars = max_excerpt_chars
 
     async def run(self, state: RagStateDict) -> RagStateDict:
+        policy = get_retrieval_policy(get_runtime_settings())
+        if policy.identity == PILOT_RETRIEVAL_PROFILE_ID:
+            authorized_pool = (
+                state["retrieval_profile_identity"] == PILOT_RETRIEVAL_PROFILE_ID
+                and state["candidate_pool_scope"] == "published_knowledge"
+            )
+            decision = decide_answer_evidence(
+                normalized_question=state["query_norm"],
+                query_conditions=state["query_condition_set"],
+                candidates=state["candidates_reranked"] if authorized_pool else (),
+                max_items=policy.evidence_max_items,
+                max_excerpt_chars=policy.evidence_max_chars_per_snapshot,
+                max_total_chars=policy.evidence_max_total_chars,
+            )
+            state["evidence_sufficiency_decision"] = decision
+            frozen_evidence_set = decision.evidence_set.to_record() if decision.evidence_set is not None else None
+            frozen_items = frozen_evidence_set.get("items") if frozen_evidence_set is not None else None
+            state["evidence_pack"] = (
+                [
+                    item["evidence"]
+                    for item in frozen_items
+                    if isinstance(item, dict) and isinstance(item.get("evidence"), dict)
+                ]
+                if isinstance(frozen_items, list)
+                else []
+            )
+            state["trace_steps"].append(
+                {
+                    "step": "context_pack",
+                    "detail": {
+                        "evidence_count": len(state["evidence_pack"]),
+                        "decision": "sufficient" if decision.is_sufficient else decision.reason,
+                        "evidence_set_identity": decision.evidence_set.identity if decision.evidence_set else None,
+                        "authorized_candidate_pool": authorized_pool,
+                    },
+                }
+            )
+            return state
+
         eligible_candidates = [
             candidate
             for candidate in state["candidates_reranked"]

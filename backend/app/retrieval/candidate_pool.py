@@ -89,6 +89,10 @@ class AuthorizedRetrievalCandidatePool:
             if authority.get("editorial_revision_identity") != revision_identity:
                 exclusions.append({"chunk_id": chunk.id, "reason": "superseded_revision"})
                 continue
+            decision_query = authority.get("decision_query")
+            if not isinstance(decision_query, str) or not decision_query.strip():
+                exclusions.append({"chunk_id": chunk.id, "reason": "decision_query_missing"})
+                continue
             source_relationships = self._section_relationships(authority, section_id)
             if source_relationships is None:
                 exclusions.append({"chunk_id": chunk.id, "reason": "source_relationship_missing"})
@@ -491,15 +495,19 @@ class AuthorizedRetrievalCandidatePool:
                 "applicability_conditions": authority["applicability_conditions"],
                 "freshness_triggers": authority["freshness_triggers"],
                 "lifecycle_state": authority["lifecycle_state"],
+                "decision_query": authority["decision_query"],
             }
         )
+        if authority.get("release_assurance_snapshot") is not None:
+            authoritative_metadata["release_assurance_snapshot"] = authority["release_assurance_snapshot"]
         return {
             "chunk_id": chunk.id,
             "document_id": document.id,
             "generation": chunk.generation,
             "chunk_index": chunk.chunk_index,
             "content_sha256": chunk.content_sha256,
-            "content_preview": chunk.content[:160],
+            "content_preview": chunk.content[:1200],
+            "content_length": len(chunk.content),
             "metadata": authoritative_metadata,
             "retrieval_source": "sparse_bm25",
             "entry_id": entry_id,
@@ -509,6 +517,7 @@ class AuthorizedRetrievalCandidatePool:
             "publication_version": f"v{document.published_generation}",
             "section_id": section_id,
             "section_identity": f"{entry_identity}#{section_id}",
+            "decision_query": authority["decision_query"],
             "source_relationships": source_relationships,
             "assurance_level": authority["assurance_level"],
             "applicability_conditions": list(authority["applicability_conditions"]),

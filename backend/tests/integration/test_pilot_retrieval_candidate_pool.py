@@ -132,6 +132,7 @@ class _StaticAuthority:
             "assurance_level": "source_grounded",
             "applicability_conditions": [{"condition_id": f"{entry_id}-applicability"}],
             "freshness_triggers": [{"trigger_id": f"{entry_id}-freshness"}],
+            "decision_query": "Which reviewed Sparse BM25 retrieval decision applies for RUNTIME_RETRIEVAL_PROFILE?",
         }
 
 
@@ -351,6 +352,12 @@ def test_pilot_pool_uses_bm25_filters_ineligible_content_and_preserves_identity(
         assert candidate["publication_identity"] == "published_knowledge_version:legacy:published-eligible:v1"
         assert candidate["publication_version"] == "v1"
         assert candidate["section_identity"] == "entry:decision-001#recommendation"
+        assert candidate["content_length"] == len(
+            "Sparse BM25 keeps RUNTIME_RETRIEVAL_PROFILE and /api/v1/retrieval literal."
+        )
+        assert candidate["decision_query"] == (
+            "Which reviewed Sparse BM25 retrieval decision applies for RUNTIME_RETRIEVAL_PROFILE?"
+        )
         assert candidate["source_relationships"] == [
             {
                 "source_identity": "source:decision-001-source",

@@ -191,7 +191,7 @@ def test_graph_runner_retriever_failure_uses_fallback_trace_and_rejects() -> Non
 
     retrieve_step = next(step for step in result["steps"] if step["step"] == "retrieve")
     assert retrieve_step["detail"]["fallback_used"] is True
-    assert result["gate"]["reason"] == "reject_insufficient_evidence"
+    assert result["gate"]["reason"] == "no_eligible_published_evidence"
 
 
 def test_graph_runner_langgraph_path_when_available() -> None:

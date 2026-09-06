@@ -9,6 +9,8 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
+from app.common.canonical_json import canonical_json_sha256
+from app.contracts.canonical import StableIdentity, StableIdentityKind
 from app.rag.generation_observation import observed_generation_envelope
 
 _CITATION_METADATA_KEYS = (
@@ -33,6 +35,8 @@ _CITATION_METADATA_KEYS = (
 )
 _GATE_METADATA_KEYS = (
     "entry_id",
+    "entry_identity",
+    "editorial_revision_identity",
     "section_id",
     "review_status",
     "evidence_conflict",
@@ -40,6 +44,8 @@ _GATE_METADATA_KEYS = (
     "source_availability",
     "source_review_date",
     "source_freshness_days",
+    "source_access_scope",
+    "source_tier",
     "claim_evidence_contract",
     "claim_evidence_contract_sha256",
 )
@@ -55,6 +61,7 @@ _AGENT_CITATION_KEYS = (
     "review_date",
 )
 _UNSAFE_URL_QUERY_PARTS = ("credential", "password", "redirect", "secret", "signature", "token")
+_CONTROLLED_LOCATOR = re.compile(r"^controlled://[a-z0-9][a-z0-9._/-]{2,159}$")
 
 
 def _safe_public_url(value: str) -> bool:
@@ -81,6 +88,12 @@ def _safe_public_url(value: str) -> bool:
     )
 
 
+def _safe_source_locator(value: str, *, access_scope: object) -> bool:
+    if access_scope == "controlled_internal":
+        return _CONTROLLED_LOCATOR.fullmatch(value.strip()) is not None
+    return _safe_public_url(value)
+
+
 def _agent_metadata_is_eligible(metadata: Mapping[str, object]) -> bool:
     if not isinstance(metadata.get("entry_id"), str):
         return True
@@ -92,7 +105,10 @@ def _agent_metadata_is_eligible(metadata: Mapping[str, object]) -> bool:
         return False
     if any(not isinstance(metadata.get(key), str) or not str(metadata[key]).strip() for key in _AGENT_CITATION_KEYS):
         return False
-    if not _safe_public_url(str(metadata["source_url"])):
+    if not _safe_source_locator(
+        str(metadata["source_url"]),
+        access_scope=metadata.get("source_access_scope"),
+    ):
         return False
     if metadata.get("section_id") == "version-mapping":
         try:
@@ -270,6 +286,11 @@ class AnswerEvidence:
     def is_agent_entry(self) -> bool:
         return isinstance(dict(self.metadata_items).get("entry_id"), str)
 
+    @property
+    def section_id(self) -> str:
+        section_id = dict(self.metadata_items).get("section_id")
+        return section_id if isinstance(section_id, str) else ""
+
     def to_public_citation(self, citation_id: str) -> dict[str, str]:
         metadata = dict(self.metadata_items)
         citation = {
@@ -300,67 +321,276 @@ def select_answer_evidence(
     return tuple(selected)
 
 
-def evidence_summary_from_trace(rag_trace: object) -> dict[str, Any]:
-    trace = rag_trace if isinstance(rag_trace, Mapping) else {}
-    evidence = trace.get("evidence")
-    evidence_items = evidence if isinstance(evidence, (list, tuple)) else []
+def _identity_has_kind(value: object, kind: StableIdentityKind) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        return StableIdentity.from_stable_id(value).kind is kind
+    except ValueError:
+        return False
+
+
+def _frozen_identity_binding_is_valid(
+    binding: object,
+    *,
+    item_identity: str,
+    snapshot_id: str,
+    evidence: Mapping[str, object],
+    metadata: Mapping[str, object],
+    excerpt: str | None,
+) -> bool:
+    if not isinstance(binding, Mapping) or set(binding) != {
+        "entry_identity",
+        "editorial_revision_identity",
+        "publication_identity",
+        "section_identity",
+        "chunk_identity",
+        "snapshot_id",
+        "source_content_length",
+    }:
+        return False
+    if canonical_json_sha256(binding) != item_identity:
+        return False
+    entry_identity = binding.get("entry_identity")
+    editorial_revision_identity = binding.get("editorial_revision_identity")
+    publication_identity = binding.get("publication_identity")
+    section_identity = binding.get("section_identity")
+    chunk_identity = binding.get("chunk_identity")
+    source_content_length = binding.get("source_content_length")
+    if (
+        not _identity_has_kind(entry_identity, StableIdentityKind.ENTRY)
+        or not _identity_has_kind(editorial_revision_identity, StableIdentityKind.EDITORIAL_REVISION)
+        or not _identity_has_kind(publication_identity, StableIdentityKind.PUBLISHED_KNOWLEDGE_VERSION)
+        or not isinstance(section_identity, str)
+        or not isinstance(chunk_identity, Mapping)
+        or set(chunk_identity) != {"document_id", "generation", "chunk_index", "content_sha256"}
+        or not isinstance(source_content_length, int)
+        or isinstance(source_content_length, bool)
+        or source_content_length < 1
+        or binding.get("snapshot_id") != snapshot_id
+    ):
+        return False
+    assert isinstance(entry_identity, str)
+    try:
+        entry = StableIdentity.from_stable_id(entry_identity)
+    except ValueError:
+        return False
+    if (
+        metadata.get("entry_id") != entry.value
+        or metadata.get("entry_identity") != entry_identity
+        or metadata.get("editorial_revision_identity") != editorial_revision_identity
+        or metadata.get("section_id") is None
+        or section_identity != f"{entry_identity}#{metadata['section_id']}"
+        or chunk_identity.get("document_id") != evidence.get("document_id")
+        or chunk_identity.get("generation") != evidence.get("generation")
+        or chunk_identity.get("chunk_index") != evidence.get("chunk_index")
+        or not isinstance(chunk_identity.get("content_sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", str(chunk_identity["content_sha256"])) is None
+        or (excerpt is not None and source_content_length < len(excerpt))
+    ):
+        return False
+    return True
+
+
+def _sources_from_frozen_answer_evidence_set(value: Mapping[str, object]) -> list[dict[str, Any]]:
+    evidence_set_identity = value.get("identity")
+    query_condition_set_identity = value.get("query_condition_set_identity")
+    items = value.get("items")
+    governing_citation = value.get("governing_citation")
+    if (
+        not isinstance(evidence_set_identity, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", evidence_set_identity)
+        or not isinstance(query_condition_set_identity, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", query_condition_set_identity)
+        or not isinstance(items, list)
+        or not items
+        or not isinstance(governing_citation, Mapping)
+    ):
+        return []
+
     sources: list[dict[str, Any]] = []
-    for item in evidence_items:
+    item_identities: list[str] = []
+    citations_by_marker: dict[str, Mapping[str, object]] = {}
+    for item in items:
         if not isinstance(item, Mapping):
-            continue
-        source_id = str(item.get("chunk_id") or item.get("source_id") or "").strip()
-        if not source_id:
-            continue
-        metadata = item.get("metadata")
-        source_metadata = (
-            {
-                key: str(metadata[key]).strip()
-                for key in _CITATION_METADATA_KEYS
-                if isinstance(metadata, Mapping)
-                and isinstance(metadata.get(key), str)
-                and str(metadata[key]).strip()
-            }
-            if isinstance(metadata, Mapping)
-            else {}
+            return []
+        item_identity = item.get("item_identity")
+        identity_binding = item.get("identity_binding")
+        snapshot_id = item.get("snapshot_id")
+        evidence = item.get("evidence")
+        citation = item.get("citation")
+        if (
+            not isinstance(item_identity, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", item_identity)
+            or not isinstance(snapshot_id, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", snapshot_id)
+            or not isinstance(evidence, Mapping)
+            or not isinstance(citation, Mapping)
+        ):
+            return []
+        metadata = evidence.get("metadata")
+        if not isinstance(metadata, Mapping):
+            return []
+        title = metadata.get("title")
+        publication_version = metadata.get("publication_version")
+        excerpt = evidence.get("content_preview")
+        withdrawn = evidence.get("withdrawn") is True or item.get("withdrawn") is True
+        if (
+            not isinstance(title, str)
+            or not title.strip()
+            or not isinstance(publication_version, str)
+            or not publication_version.strip()
+            or not isinstance(metadata.get("entry_id"), str)
+            or not isinstance(metadata.get("section_id"), str)
+        ):
+            return []
+        if not withdrawn and (not isinstance(excerpt, str) or not excerpt.strip()):
+            return []
+        expected_snapshot_id = (
+            str(evidence.get("snapshot_id") or "")
+            if withdrawn
+            else evidence_snapshot_id(
+                title=title,
+                publication_version=publication_version,
+                excerpt=str(excerpt),
+                citation_metadata=metadata,
+            )
         )
-        if isinstance(source_metadata.get("entry_id"), str):
-            citation: dict[str, Any] = {
-                "citation_id": f"S{len(sources) + 1}",
-                **{key: source_metadata[key] for key in _AGENT_CITATION_KEYS if key in source_metadata},
-                "publication_version": source_metadata.get("publication_version") or f"v{item.get('generation', 1)}",
-            }
-            if item.get("withdrawn") is True:
-                citation["withdrawal_notice"] = "This source has been withdrawn."
-                if isinstance(item.get("snapshot_id"), str) and item["snapshot_id"].strip():
-                    citation["snapshot_id"] = item["snapshot_id"].strip()
-            else:
-                excerpt = str(item.get("content_preview") or item.get("content") or "")
-                if not excerpt:
-                    continue
-                citation["excerpt"] = excerpt
-                citation["snapshot_id"] = evidence_snapshot_id(
-                    title=str(source_metadata.get("title") or ""),
-                    publication_version=str(
-                        source_metadata.get("publication_version") or f"v{item.get('generation', 1)}"
-                    ),
-                    excerpt=excerpt,
-                    citation_metadata=source_metadata,
-                )
-            sources.append(citation)
-            continue
-        if item.get("withdrawn") is True:
-            sources.append(
+        if (
+            not re.fullmatch(r"[0-9a-f]{64}", expected_snapshot_id)
+            or evidence.get("snapshot_id") != expected_snapshot_id
+            or snapshot_id != expected_snapshot_id
+            or not _frozen_identity_binding_is_valid(
+                identity_binding,
+                item_identity=item_identity,
+                snapshot_id=expected_snapshot_id,
+                evidence=evidence,
+                metadata=metadata,
+                excerpt=None if withdrawn else str(excerpt),
+            )
+        ):
+            return []
+        citation_id = citation.get("citation_id")
+        citation_identity = citation.get("citation_identity")
+        if (
+            not isinstance(citation_id, str)
+            or re.fullmatch(r"S[1-9][0-9]*", citation_id) is None
+            or citation_id in citations_by_marker
+            or not isinstance(citation_identity, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", citation_identity)
+            or citation.get("item_identity") != item_identity
+            or citation.get("snapshot_id") != expected_snapshot_id
+            or citation.get("entry_id") != metadata.get("entry_id")
+            or citation.get("section_id") != metadata.get("section_id")
+            or citation_identity
+            != canonical_json_sha256(
                 {
-                    "source_id": source_id,
-                    "metadata": source_metadata,
-                    "withdrawal_notice": "This source has been withdrawn.",
+                    "evidence_set_identity": evidence_set_identity,
+                    "item_identity": item_identity,
                 }
             )
-            continue
-        excerpt = str(item.get("content_preview") or item.get("content") or "")
-        if not excerpt:
-            continue
-        sources.append({"source_id": source_id, "metadata": source_metadata, "excerpt": excerpt})
+        ):
+            return []
+        citations_by_marker[citation_id] = citation
+        item_identities.append(item_identity)
+        source: dict[str, Any] = {
+            "citation_id": citation_id,
+            "citation_identity": citation_identity,
+            **{key: str(metadata[key]).strip() for key in _AGENT_CITATION_KEYS if isinstance(metadata.get(key), str)},
+            "publication_version": publication_version,
+            "snapshot_id": expected_snapshot_id,
+        }
+        if withdrawn:
+            source["withdrawal_notice"] = "This source has been withdrawn."
+        else:
+            source["excerpt"] = excerpt
+        sources.append(source)
+
+    governing_marker = governing_citation.get("citation_id")
+    governing_item_identity = governing_citation.get("item_identity")
+    expected_set_identity = canonical_json_sha256(
+        {
+            "query_condition_set_identity": query_condition_set_identity,
+            "item_identities": item_identities,
+            "governing_item_identity": governing_item_identity,
+        }
+    )
+    if (
+        expected_set_identity != evidence_set_identity
+        or not isinstance(governing_marker, str)
+        or governing_marker not in citations_by_marker
+        or citations_by_marker[governing_marker].get("citation_identity") != governing_citation.get("citation_identity")
+        or governing_citation.get("section_id") != "recommendation_or_reviewed_branches"
+    ):
+        return []
+    return sources
+
+
+def evidence_summary_from_trace(rag_trace: object) -> dict[str, Any]:
+    trace = rag_trace if isinstance(rag_trace, Mapping) else {}
+    answer_evidence_set = trace.get("answer_evidence_set")
+    if isinstance(answer_evidence_set, Mapping):
+        sources = _sources_from_frozen_answer_evidence_set(answer_evidence_set)
+    else:
+        evidence = trace.get("evidence")
+        evidence_items = evidence if isinstance(evidence, (list, tuple)) else []
+        sources = []
+        for item in evidence_items:
+            if not isinstance(item, Mapping):
+                continue
+            source_id = str(item.get("chunk_id") or item.get("source_id") or "").strip()
+            if not source_id:
+                continue
+            metadata = item.get("metadata")
+            source_metadata = (
+                {
+                    key: str(metadata[key]).strip()
+                    for key in _CITATION_METADATA_KEYS
+                    if isinstance(metadata, Mapping)
+                    and isinstance(metadata.get(key), str)
+                    and str(metadata[key]).strip()
+                }
+                if isinstance(metadata, Mapping)
+                else {}
+            )
+            if isinstance(source_metadata.get("entry_id"), str):
+                citation: dict[str, Any] = {
+                    "citation_id": f"S{len(sources) + 1}",
+                    **{key: source_metadata[key] for key in _AGENT_CITATION_KEYS if key in source_metadata},
+                    "publication_version": source_metadata.get("publication_version") or f"v{item.get('generation', 1)}",
+                }
+                if item.get("withdrawn") is True:
+                    citation["withdrawal_notice"] = "This source has been withdrawn."
+                    if isinstance(item.get("snapshot_id"), str) and item["snapshot_id"].strip():
+                        citation["snapshot_id"] = item["snapshot_id"].strip()
+                else:
+                    excerpt = str(item.get("content_preview") or item.get("content") or "")
+                    if not excerpt:
+                        continue
+                    citation["excerpt"] = excerpt
+                    citation["snapshot_id"] = evidence_snapshot_id(
+                        title=str(source_metadata.get("title") or ""),
+                        publication_version=str(
+                            source_metadata.get("publication_version") or f"v{item.get('generation', 1)}"
+                        ),
+                        excerpt=excerpt,
+                        citation_metadata=source_metadata,
+                    )
+                sources.append(citation)
+                continue
+            if item.get("withdrawn") is True:
+                sources.append(
+                    {
+                        "source_id": source_id,
+                        "metadata": source_metadata,
+                        "withdrawal_notice": "This source has been withdrawn.",
+                    }
+                )
+                continue
+            excerpt = str(item.get("content_preview") or item.get("content") or "")
+            if not excerpt:
+                continue
+            sources.append({"source_id": source_id, "metadata": source_metadata, "excerpt": excerpt})
 
     outcome = trace.get("outcome")
     _gate_value = trace.get("gate")

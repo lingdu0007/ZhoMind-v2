@@ -1,6 +1,6 @@
 # 规范化产品契约
 
-状态：规范性产品契约；ticket 13 至 18 的增量基础
+状态：规范性产品契约；ticket 13 至 19 的增量基础
 
 ## 目的
 
@@ -306,7 +306,8 @@ eligibility。其 lifecycle 必须为 `published`，或为仍处于七日 grace 
 `needs_re_review`；known contradiction、integrity defect、已过期的 grace、不可用
 source、不支持的 access scope 和不合格 assurance 都会 fail closed。该 pool 保留
 entry、revision、publication、section、source、assurance、applicability、freshness、
-access 与 chunk identity。通过 authority 的 candidate 可以标记为可供后续 evidence
+access、chunk identity、经过 review 的 `decision_query` 以及 source 未截断的 content length。
+通过 authority 的 candidate 可以标记为可供后续 evidence
 selection 使用，但这个 pre-sufficiency boundary 不决定 sufficiency。在返回至多 20 个
 candidate 前，pool 会以确定性方式去重 exact content 和重复的 `(entry, section)` pair。
 
@@ -329,6 +330,64 @@ selection 与其他后续职责不属于本 ticket。
 migration/diagnostic profile。它的 strategy 和 candidate-pool scope 分别标识为
 `lexical_heuristic_migration` 和 `legacy_migration_diagnostic`；它绝不能被标记或
 视为 Sparse BM25。
+
+## 证据充分性与冻结回答证据
+
+只有活跃的 Pilot profile 可以将 Authorized Retrieval Candidate Pool 传入证据充分性
+判定。decider 要求该 profile identity 和 `published_knowledge` pool scope；缺少或
+不兼容的 boundary 都是 `no_eligible_published_evidence`。candidate count、non-empty
+context、原始 BM25 score、ranking position、任意 score threshold 或 model judgment
+都绝不能建立 sufficiency。
+
+确定性的输入是不可变的 Query Condition Set（QCS）：normalized question 以及按顺序
+排列的显式 `field`、`operator` 和 `value` condition。每一个选中的 item 都必须匹配该
+QCS 中每一个 decisive applicability condition。对于缺失 condition、未解决的 review、
+material conflict、不支持的 assurance 或缺少 Claim-Evidence Link support，decider 都会
+fail closed。它还要求一个 governing 的 `recommendation_or_reviewed_branches` item，
+并要求 comparison、diagnosis、acceptance review 或 implementation guidance 所需的每个
+由问题形状决定的 complement。governing item 必须通过经过 review 的 `decision_query`
+以确定性方式覆盖 normalized question；raw retrieval score、rank、non-empty context 或
+model inference 都不能替代该 coverage。Claim-Linked evidence 要求每个支持 selected item
+的 claim 都具有全部经过 review 的 `(section_id, source_id)` link。decider 按 canonical
+item identity 而非 retrieval order 搜索，并且只能从 authorized pool 中选择满足这些要求的、
+最小的可行集合。
+
+唯一的 insufficient-evidence reason 是
+`no_eligible_published_evidence`、`decision_not_covered`、
+`decisive_condition_missing`、`material_evidence_conflict`、
+`assurance_support_missing`、`evidence_budget_exceeded` 和
+`knowledge_needs_review`。insufficient result 是带有这些精确 code 之一的结构化 reply。
+它没有 Answer Evidence Set、recommendation、citation identity 或 provider-visible
+evidence payload，也不会调用 provider。
+
+sufficient result 会在 answer generation 之前冻结一个不可变的 Answer Evidence Set。
+它至多包含三个选中的 item，每个 item 至多 1200 个字符，总计至多 3000 个字符；若满足
+要求的 evidence 超过 cap，decider 会拒绝，而不是静默丢弃 required evidence。被截断的
+candidate preview 不能作为完整 evidence 冻结：authoritative source content
+length 也必须满足 per-item cap。每一个 item 的 identity 绑定精确的 entry、editorial
+revision、Published Knowledge Version、section、content-hashed chunk、source content
+length 与 Evidence Excerpt Snapshot。持久化 item 包含该 canonical identity binding，
+reader 在信任 item、snapshot 或 citation 前必须重新计算它。set identity 绑定 QCS、
+有序的 item identity 和 governing item。每个 citation identity 都绑定该 set identity
+以及恰好一个 selected item。score 与 selection diagnostic 不属于 citation identity
+输入，也不会进入 provider-visible 或 user-facing citation data。
+
+provider-visible prompt 只能从同一个冻结 set 派生。它的结构化 region 会分离
+normalized question、QCS、selected evidence source 和 response contract。response
+contract 只能列出 selected citation 和 governing citation。每个 provider-visible source
+都携带来自同一 frozen set 的 `snapshot_id`、`item_identity`
+和 `citation_identity`，但 score、chunk locator 与 selection diagnostic 仍被排除。
+retrieved text 不能修改 policy、permission、provider routing、QCS condition、evidence
+identity 或 citation identity。generated output 只能引用冻结的 selected item；每一个
+required response section 中每条 material nonblank line 都必须引用，且不得引入 unknown 或
+矛盾的 QCS assignment、secret value、unsupported quantified assurance，或将 bounded
+internal case universalize。
+
+对于活跃 Pilot 的 production decision，历史的 first-three selector、non-empty-context
+gate 和 candidate-derived citation projection 已被替代。它们只能保留在显式的
+`lexical_heuristic_migration` / `legacy_migration_diagnostic` profile 后面，且不能产生
+product sufficiency decision、immutable Answer Evidence Set 或 product citation
+identity。
 
 ## Pilot 身份权威与审计
 
@@ -376,6 +435,7 @@ Ticket 14 的尾部 migration 将所有以前未 revoke、未 expired 的 legacy
 | 16 | Markdown/front-matter 编写与运行时 document 副本 | Private Editorial Repository 的 entry、revision、source 与确定性 `editorial_export/v1` 权威 | T02 只消费经 review 的不可变 export，且 legacy/runtime 行上不再存在权威性的 editorial 写入 |
 | 17 | 上传和批量构建分发 | Reviewed Release Bundle、bundle item、build generation、可恢复 Candidate Build | Reviewed bundle 是唯一新增的 authority-bearing intake；Candidate work 没有 publication side effect，legacy publication path 仍仅为 compatibility |
 | 18 | 未经资格校验的 legacy retrieval 与 Candidate-derived chunk | 有版本的 Pilot Sparse BM25 与授权的当前 Published Candidate Pool | 普通 retrieval 只返回当前、已授权的 compatibility-published chunk；Candidate preview 保持仅管理员可用且仅用于 diagnostic |
+| 19 | first-three selection、non-empty context gate 与 candidate-derived citation | 确定性的 evidence sufficiency 与不可变 Answer Evidence Set | 活跃 Pilot 只使用 authorized pool、精确 QCS 和 assurance rule、一个冻结 selected set 及其绑定的 citation identity |
 | 20 | `ChatMessage.rag_trace` 与回答推断 | Answer execution、条件、证据集、快照 | 每个回答都持久化封闭的规范化结果 |
 | 21 | HTTP、SSE 和 history 适配器 | 规范化 execution 投影 | 所有界面都读取同一规范化 execution |
 | 24 | Candidate 检查与发布 | Candidate 和 Published Knowledge Version | 发布检查规范化代次、hash 和验收标识 |

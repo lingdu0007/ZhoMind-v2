@@ -443,6 +443,41 @@ async def _compensate_batch_enqueue_failure(
     await session.commit()
 
 
+def _redact_frozen_answer_evidence_set(value: object, *, document_id: str) -> bool:
+    if not isinstance(value, dict):
+        return False
+    items = value.get("items")
+    if not isinstance(items, list):
+        return False
+    changed = False
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        evidence = item.get("evidence")
+        if not isinstance(evidence, dict) or evidence.get("document_id") != document_id:
+            continue
+        evidence.pop("content_preview", None)
+        evidence.pop("content", None)
+        evidence["withdrawn"] = True
+        item["withdrawn"] = True
+        changed = True
+    return changed
+
+
+def _redact_nested_frozen_answer_evidence(value: object, *, document_id: str) -> bool:
+    if isinstance(value, dict):
+        changed = False
+        for key, nested in value.items():
+            if key == "answer_evidence_set":
+                changed = _redact_frozen_answer_evidence_set(nested, document_id=document_id) or changed
+            else:
+                changed = _redact_nested_frozen_answer_evidence(nested, document_id=document_id) or changed
+        return changed
+    if isinstance(value, list):
+        return any(_redact_nested_frozen_answer_evidence(item, document_id=document_id) for item in value)
+    return False
+
+
 async def _tombstone_document(session: AsyncSession, *, document: Document) -> None:
     document.deleted_at = datetime.now(UTC)
     document.status = "pending"
@@ -463,25 +498,26 @@ async def _tombstone_document(session: AsyncSession, *, document: Document) -> N
     for message in messages_result.scalars().all():
         trace = deepcopy(message.rag_trace) if isinstance(message.rag_trace, dict) else None
         evidence = trace.get("evidence") if isinstance(trace, dict) else None
-        if not isinstance(evidence, list):
-            continue
         changed = False
-        for item in evidence:
-            if not isinstance(item, dict) or item.get("document_id") != document.id:
-                continue
-            metadata = item.get("metadata")
-            excerpt = item.get("content_preview") or item.get("content")
-            if isinstance(metadata, dict) and isinstance(metadata.get("entry_id"), str) and isinstance(excerpt, str):
-                item["snapshot_id"] = evidence_snapshot_id(
-                    title=str(metadata.get("title") or ""),
-                    publication_version=str(metadata.get("publication_version") or f"v{item.get('generation', 1)}"),
-                    excerpt=excerpt,
-                    citation_metadata=metadata,
-                )
-            item.pop("content_preview", None)
-            item.pop("content", None)
-            item["withdrawn"] = True
-            changed = True
+        if isinstance(evidence, list):
+            for item in evidence:
+                if not isinstance(item, dict) or item.get("document_id") != document.id:
+                    continue
+                metadata = item.get("metadata")
+                excerpt = item.get("content_preview") or item.get("content")
+                if isinstance(metadata, dict) and isinstance(metadata.get("entry_id"), str) and isinstance(excerpt, str):
+                    item["snapshot_id"] = evidence_snapshot_id(
+                        title=str(metadata.get("title") or ""),
+                        publication_version=str(metadata.get("publication_version") or f"v{item.get('generation', 1)}"),
+                        excerpt=excerpt,
+                        citation_metadata=metadata,
+                    )
+                item.pop("content_preview", None)
+                item.pop("content", None)
+                item["withdrawn"] = True
+                changed = True
+        if isinstance(trace, dict):
+            changed = _redact_nested_frozen_answer_evidence(trace, document_id=document.id) or changed
         if changed:
             message.rag_trace = trace
 

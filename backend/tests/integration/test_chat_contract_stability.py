@@ -89,7 +89,7 @@ def test_administrator_chat_response_contract_projects_bounded_retrieval_diagnos
             assert diagnostics["candidate_counts"] == {"retrieved": 0, "reranked": 0}
             assert diagnostics["evidence_gate"] == {
                 "outcome": "rejected",
-                "reason": "reject_insufficient_evidence",
+                "reason": "no_eligible_published_evidence",
             }
             assert diagnostics["fallback"] == {
                 "state": "not_used",
@@ -130,7 +130,7 @@ def test_administrator_chat_response_contract_projects_bounded_retrieval_diagnos
             diagnostics_data = _extract_sse_event_data(stream_resp.text, "retrieval_diagnostics")
             assert diagnostics_data is not None
             streamed = json.loads(diagnostics_data)["retrieval_diagnostics"]
-            assert streamed["evidence_gate"]["reason"] == "reject_insufficient_evidence"
+            assert streamed["evidence_gate"]["reason"] == "no_eligible_published_evidence"
             assert [item["step"] for item in streamed["timeline"]] == [item["step"] for item in diagnostics["timeline"]]
             assert "event: stage" in stream_resp.text
             assert '"stage": "retrieval"' in stream_resp.text

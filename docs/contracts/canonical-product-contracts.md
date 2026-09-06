@@ -1,6 +1,6 @@
 # Canonical Product Contracts
 
-Status: normative product contract; additive foundation for tickets 13 through 18
+Status: normative product contract; additive foundation for tickets 13 through 19
 
 ## Purpose
 
@@ -374,7 +374,8 @@ metadata never grants eligibility. Its lifecycle is `published`, or
 contradictions, integrity defects, expired grace, unavailable sources,
 unsupported access scopes, and ineligible assurance all fail closed. The pool
 preserves entry, revision, publication, section, source, assurance,
-applicability, freshness, access, and chunk identities. An
+applicability, freshness, access, chunk identities, the reviewed
+`decision_query`, and the source's untruncated content length. An
 authority-qualified candidate may be marked eligible for later evidence
 selection, but that pre-sufficiency boundary does not decide sufficiency. The
 pool deduplicates exact content and repeated `(entry, section)` pairs
@@ -403,6 +404,76 @@ selection and other later responsibilities remain outside this ticket.
 explicit migration/diagnostic profile only. Its strategy and candidate-pool
 scope identify it as `lexical_heuristic_migration` and
 `legacy_migration_diagnostic`; it is never labeled or treated as Sparse BM25.
+
+## Evidence Sufficiency And Frozen Answer Evidence
+
+Only the active Pilot profile may pass an Authorized Retrieval Candidate Pool
+to evidence sufficiency. The decider requires that profile identity and the
+`published_knowledge` pool scope; a missing or incompatible boundary is
+`no_eligible_published_evidence`. Candidate count, non-empty context, raw
+BM25 score, ranking position, an arbitrary score threshold, and a model
+judgment never establish sufficiency.
+
+The deterministic input is an immutable Query Condition Set (QCS): the
+normalized question plus its ordered, explicit `field`, `operator`, and
+`value` conditions. Every selected item must match every decisive
+applicability condition in that QCS. The decider fails closed for missing
+conditions, unresolved review, material conflict, unsupported assurance, or
+missing Claim-Evidence Link support. It also requires a governing
+`recommendation_or_reviewed_branches` item and every question-shaped
+complement required for comparison, diagnosis, acceptance review, or
+implementation guidance. The governing item must deterministically cover the
+normalized question through its reviewed `decision_query`; a raw retrieval
+score, rank, non-empty context, or model inference cannot substitute for that
+coverage. Claim-Linked evidence requires every reviewed `(section_id,
+source_id)` link for each claim that supports a selected item. The decider
+searches canonical item identities, not retrieval order, and selects the
+smallest viable set that meets those requirements from the authorized pool
+alone.
+
+The only insufficient-evidence reasons are
+`no_eligible_published_evidence`, `decision_not_covered`,
+`decisive_condition_missing`, `material_evidence_conflict`,
+`assurance_support_missing`, `evidence_budget_exceeded`, and
+`knowledge_needs_review`. An insufficient result is a structured reply with
+one of those exact codes. It has no Answer Evidence Set, recommendation,
+citation identity, or provider-visible evidence payload, and it does not
+invoke a provider.
+
+A sufficient result freezes one immutable Answer Evidence Set before answer
+generation. It contains at most three selected items, each with at most 1200
+characters and at most 3000 characters in total; the decider rejects rather
+than silently dropping required evidence that would exceed a cap. A truncated
+candidate preview cannot be frozen as complete evidence: the authoritative
+source content length must also fit the per-item cap. Each item's identity
+binds the exact entry, editorial revision, Published Knowledge Version,
+section, content-hashed chunk, source content length, and Evidence Excerpt
+Snapshot. The persisted item includes that canonical identity binding, and a
+reader must recompute it before trusting the item, its snapshot, or its
+citation. The set identity binds the QCS, ordered item identities, and
+governing item. Each citation identity binds that set identity and exactly one
+selected item. Scores and selection diagnostics are not citation identity
+inputs and are not provider-visible or user-facing citation data.
+
+The provider-visible prompt is derived only from that same frozen set. Its
+structural regions keep the normalized question, QCS, selected evidence
+sources, and response contract separate. The response contract names only the
+selected citations and governing citation. Each provider-visible source carries
+the frozen `snapshot_id`, `item_identity`, and `citation_identity` from that
+same set, while scores, chunk locators, and selection diagnostics remain
+excluded. Retrieved text cannot modify policy, permissions, provider routing,
+QCS conditions, evidence identities, or citation identities. Generated output
+may cite only the frozen selected items, must cite every material nonblank line
+in each required response section, and cannot introduce an unknown or
+contradictory QCS assignment, secret value, unsupported quantified assurance,
+or universalization of a bounded internal case.
+
+The historical first-three selector, non-empty-context gate, and
+candidate-derived citation projection are superseded for active Pilot
+production decisions. They may remain only behind the explicit
+`lexical_heuristic_migration` / `legacy_migration_diagnostic` profile and
+must not produce a product sufficiency decision, immutable Answer Evidence
+Set, or product citation identity.
 
 ## Pilot Identity Authority And Audit
 
@@ -460,6 +531,7 @@ administrator issues a new invitation for any pending admission.
 | 16 | Markdown/front-matter authoring and runtime document copies | Private Editorial Repository entry, revision, source, and deterministic `editorial_export/v1` authority | T02 consumes only reviewed immutable exports and no authoritative editorial write remains on legacy/runtime rows |
 | 17 | Upload and batch build dispatch | Reviewed Release Bundle, bundle item, build generation, recoverable Candidate Build | Reviewed bundles are the only new authority-bearing intake; Candidate work has no publication side effect and legacy publication paths remain compatibility-only |
 | 18 | Unqualified legacy retrieval and Candidate-derived chunks | Versioned Pilot Sparse BM25 and an authorized current-Published Candidate Pool | Ordinary retrieval returns only current, authorized compatibility-published chunks; Candidate preview remains administrator-only and diagnostic |
+| 19 | First-three selection, non-empty context gate, and candidate-derived citations | Deterministic evidence sufficiency and immutable Answer Evidence Set | Active Pilot uses only an authorized pool, exact QCS and assurance rules, one frozen selected set, and its bound citation identities |
 | 20 | `ChatMessage.rag_trace` and answer inference | Answer execution, conditions, evidence set, snapshot | Every answer persists the closed canonical outcome |
 | 21 | HTTP, SSE and history adapters | Canonical execution projection | All surfaces read one canonical execution |
 | 24 | Candidate inspection and publication | Candidate and Published Knowledge Version | Publication checks canonical generation, hash and acceptance identities |

@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     runtime_generation_settings_managed: bool = False
     runtime_answer_evidence_max_items: int = Field(3, alias="RUNTIME_ANSWER_EVIDENCE_MAX_ITEMS", ge=1, le=10)
     runtime_answer_evidence_max_chars_per_source: int = Field(
-        160,
+        1200,
         alias="RUNTIME_ANSWER_EVIDENCE_MAX_CHARS_PER_SOURCE",
         ge=1,
         le=4000,

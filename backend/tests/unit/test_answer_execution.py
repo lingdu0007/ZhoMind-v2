@@ -2,12 +2,29 @@ import asyncio
 
 import pytest
 
+from app.common.config import get_settings
 from app.extensions.provider_router import ProviderRouter
 from app.rag.answer_evidence import evidence_snapshot_id, evidence_summary_from_trace
 from app.rag.answer_execution import (
     AnswerOutcomeKind,
     EvidenceGatedAnswerExecutor,
 )
+from app.retrieval.policy import LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID
+from app.settings.runtime import get_system_settings_runtime
+
+
+@pytest.fixture(autouse=True)
+def _run_legacy_execution_fixtures_under_the_explicit_migration_profile(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("RUNTIME_RETRIEVAL_PROFILE", LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID)
+    get_system_settings_runtime().reset()
+    get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        get_system_settings_runtime().reset()
+        get_settings.cache_clear()
 
 
 def _candidate(index: int, *, content: str | None = None) -> dict:

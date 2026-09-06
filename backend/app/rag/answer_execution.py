@@ -10,6 +10,8 @@ from typing import Any
 from app.extensions.provider_router import ProviderRouter
 from app.rag.answer_evidence import AnswerEvidence, evidence_summary_from_trace
 from app.rag.claim_evidence import ClaimResolver
+from app.rag.evidence_sufficiency import AnswerEvidenceSet, EvidenceSufficiencyDecision
+from app.rag.generation_observation import provider_visible_snapshot_ids
 from app.rag.interfaces import RelevanceJudge, Reranker, Retriever
 from app.rag.prompt_regions import build_generation_prompt, validate_agent_response
 from app.rag.runtime.graph_runner import RagGraphRunner
@@ -50,6 +52,8 @@ class AnswerExecutionOutcome:
     gate_reason: str
     steps: tuple[Mapping[str, Any], ...]
     runtime: Mapping[str, Any]
+    evidence_set: AnswerEvidenceSet | None = None
+    sufficiency_decision: EvidenceSufficiencyDecision | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "evidence", tuple(self.evidence))
@@ -57,7 +61,7 @@ class AnswerExecutionOutcome:
         object.__setattr__(self, "runtime", _freeze(self.runtime))
 
     def to_rag_trace(self) -> dict[str, Any]:
-        return {
+        trace = {
             "outcome": self.kind.value,
             "query": self.question,
             "steps": _thaw(self.steps),
@@ -66,6 +70,21 @@ class AnswerExecutionOutcome:
             "answer_preview": self.text[:120],
             "runtime": _thaw(self.runtime),
         }
+        if self.evidence_set is not None:
+            frozen_set = self.evidence_set.to_record()
+            trace["answer_evidence_set"] = frozen_set
+            frozen_items = frozen_set.get("items")
+            if isinstance(frozen_items, list):
+                trace["evidence"] = [
+                    item["evidence"]
+                    for item in frozen_items
+                    if isinstance(item, Mapping) and isinstance(item.get("evidence"), Mapping)
+                ]
+        if self.sufficiency_decision is not None:
+            trace["evidence_sufficiency_decision"] = self.sufficiency_decision.to_record()
+            if self.sufficiency_decision.insufficient_reply is not None:
+                trace["insufficient_evidence_reply"] = self.sufficiency_decision.insufficient_reply.to_record()
+        return trace
 
     def evidence_summary(self) -> dict[str, Any]:
         return evidence_summary_from_trace(self.to_rag_trace())
@@ -257,50 +276,84 @@ class EvidenceGatedAnswerExecutor:
             question=normalized_question,
         )
         retrieval_ms = round((perf_counter() - retrieval_started) * 1000)
-        evidence = tuple(
-            item
-            for candidate in runtime_result.get("answer_evidence") or []
-            if (item := AnswerEvidence.from_candidate(candidate, max_excerpt_chars=self._max_excerpt_chars)) is not None
-        )
-        _gate_value = runtime_result.get("gate")
-        gate = _gate_value if isinstance(_gate_value, Mapping) else {}
-        gate_passed = bool(gate.get("passed")) and bool(evidence)
-        gate_reason = str(gate.get("reason") or "reject_insufficient_evidence")
+        decision = runtime_result.get("evidence_sufficiency_decision")
+        evidence_set = decision.evidence_set if isinstance(decision, EvidenceSufficiencyDecision) else None
+        if isinstance(decision, EvidenceSufficiencyDecision):
+            evidence = evidence_set.items if evidence_set is not None else ()
+            gate_passed = decision.is_sufficient
+            gate_reason = "sufficient_evidence" if gate_passed else str(decision.reason)
+        else:
+            evidence = tuple(
+                item
+                for candidate in runtime_result.get("answer_evidence") or []
+                if (item := AnswerEvidence.from_candidate(candidate, max_excerpt_chars=self._max_excerpt_chars)) is not None
+            )
+            _gate_value = runtime_result.get("gate")
+            gate = _gate_value if isinstance(_gate_value, Mapping) else {}
+            gate_passed = bool(gate.get("passed")) and bool(evidence)
+            gate_reason = str(gate.get("reason") or "reject_insufficient_evidence")
         provider_result: dict[str, Any] = {
             "text": "",
             "final_provider": None,
             "provider_attempts": [],
             "fallback_hops": 0,
         }
+        provider_prompt_snapshot_ids: list[str] = []
         generation_provider_ms = 0
         if not gate_passed:
             kind = AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
             text = self._INSUFFICIENT_REPLY
             evidence = ()
-            if not gate_reason.startswith("reject_"):
+            if not isinstance(decision, EvidenceSufficiencyDecision) and not gate_reason.startswith("reject_"):
                 gate_reason = "reject_insufficient_evidence"
         else:
             if progress is not None:
                 await progress("generating", "证据核验通过，正在生成回答（深度生成约需 1~5 分钟）…")
-            generation_prompt = build_generation_prompt(normalized_question, evidence)
-            generation_started = perf_counter()
-            provider_result = await self._provider_router.complete(
-                primary=self._primary_provider,
-                fallbacks=[],
-                prompt=generation_prompt.user_prompt,
-                system_prompt=generation_prompt.system_prompt,
-            )
-            generation_provider_ms = round((perf_counter() - generation_started) * 1000)
-            completion = str(provider_result.get("text") or "").strip()
-            if completion and validate_agent_response(completion, question=normalized_question, evidence=evidence):
-                kind = AnswerOutcomeKind.EVIDENCE_GATED_ANSWER
-                text = completion
-            else:
+            generation_input = evidence_set if evidence_set is not None else evidence
+            generation_prompt = build_generation_prompt(normalized_question, generation_input)
+            expected_snapshot_ids = tuple(item.snapshot_id for item in evidence)
+            provider_prompt_snapshot_ids = list(provider_visible_snapshot_ids(generation_prompt.user_prompt))
+            if tuple(provider_prompt_snapshot_ids) != expected_snapshot_ids:
                 kind = AnswerOutcomeKind.GENERATION_UNAVAILABLE
                 text = self._GENERATION_UNAVAILABLE_REPLY
+            else:
+                generation_started = perf_counter()
+                provider_result = await self._provider_router.complete(
+                    primary=self._primary_provider,
+                    fallbacks=[],
+                    prompt=generation_prompt.user_prompt,
+                    system_prompt=generation_prompt.system_prompt,
+                )
+                generation_provider_ms = round((perf_counter() - generation_started) * 1000)
+                completion = str(provider_result.get("text") or "").strip()
+                observed_envelope = provider_result.get("generation_envelope")
+                observed_snapshot_ids = (
+                    observed_envelope.get("snapshot_ids")
+                    if isinstance(observed_envelope, Mapping)
+                    else None
+                )
+                observed_matches = (
+                    observed_snapshot_ids is None
+                    or (
+                        isinstance(observed_snapshot_ids, list)
+                        and tuple(observed_snapshot_ids) == expected_snapshot_ids
+                    )
+                )
+                if (
+                    completion
+                    and observed_matches
+                    and validate_agent_response(completion, question=normalized_question, evidence=generation_input)
+                ):
+                    kind = AnswerOutcomeKind.EVIDENCE_GATED_ANSWER
+                    text = completion
+                else:
+                    kind = AnswerOutcomeKind.GENERATION_UNAVAILABLE
+                    text = self._GENERATION_UNAVAILABLE_REPLY
 
         runtime_result["gate"] = {"passed": gate_passed, "reason": gate_reason}
-        runtime_result["provider_prompt_snapshot_ids"] = [item.snapshot_id for item in evidence]
+        runtime_result["evidence_sufficiency_decision"] = decision.to_record() if isinstance(decision, EvidenceSufficiencyDecision) else {}
+        runtime_result["answer_evidence_set"] = evidence_set.to_record() if evidence_set is not None else None
+        runtime_result["provider_prompt_snapshot_ids"] = provider_prompt_snapshot_ids
         runtime_result["provider_generation_envelope"] = provider_result.get("generation_envelope")
         runtime_result["timing_ms"] = {
             "retrieval_ms": retrieval_ms,
@@ -343,4 +396,6 @@ class EvidenceGatedAnswerExecutor:
                 kind=kind,
             ),
             runtime=self._runtime_trace(runtime_result),
+            evidence_set=evidence_set,
+            sufficiency_decision=decision if isinstance(decision, EvidenceSufficiencyDecision) else None,
         )

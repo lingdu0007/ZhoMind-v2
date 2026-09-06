@@ -15,6 +15,7 @@ from app.model.document import Document, DocumentChunk
 from app.repository.chat_repository import ChatRepository
 from app.retrieval.policy import LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID
 from app.service.chat_service import CHAT_JUDGE_PROVIDER, CHAT_RERANK_PROVIDER, CHAT_RETRIEVER_PROVIDER
+from app.settings.runtime import get_system_settings_runtime
 from tests.support.auth import create_authenticated_test_token
 
 
@@ -600,6 +601,8 @@ def test_chat_dense_trace_uses_default_mixed_mode_retriever(monkeypatch) -> None
     monkeypatch.setenv("RAG_DISABLE_GATE", "false")
     monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "missing-test-llm")
     monkeypatch.setenv("RAG_LLM_FALLBACK_PROVIDERS", "")
+    monkeypatch.setenv("RUNTIME_RETRIEVAL_PROFILE", LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID)
+    get_system_settings_runtime().reset()
     get_settings.cache_clear()
     get_extension_registry.cache_clear()
 
@@ -706,6 +709,7 @@ def test_chat_dense_trace_uses_default_mixed_mode_retriever(monkeypatch) -> None
         else:
             registry.judges.pop(CHAT_JUDGE_PROVIDER, None)
         app.dependency_overrides.clear()
+        get_system_settings_runtime().reset()
         get_settings.cache_clear()
         get_extension_registry.cache_clear()
         asyncio.run(db_engine.dispose())

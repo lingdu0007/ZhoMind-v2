@@ -150,3 +150,36 @@ def test_agent_chunking_binds_each_reviewed_section_to_its_contract_source_snaps
     assert source_by_section == {"decision-question": "source-workflow", "recommendation": "source-agent"}
     assert {chunk.metadata["source_title"] for chunk in chunks} == {"Workflow source", "Agent source"}
     assert all(chunk.metadata["claim_evidence_contract_sha256"] == "a" * 64 for chunk in chunks)
+
+
+def test_agent_chunking_preserves_the_access_appropriate_controlled_source_locator() -> None:
+    parsed = ParsedDocument(
+        source_file="controlled.md",
+        file_type="md",
+        text="# Recommendation\n\nUse the reviewed controlled source only within its stated boundary.",
+        metadata={
+            "entry_id": "ticket19-controlled-source-001",
+            "title": "Controlled source projection",
+            "domain": "evidence-sufficiency",
+            "sources": [
+                {
+                    "source_id": "ticket19-controlled-source",
+                    "title": "Controlled operational evidence",
+                    "authority": "ZhoMind architecture group",
+                    "access_scope": "controlled_internal",
+                    "controlled_locator": "controlled://knowledge/ticket19-controlled-source",
+                    "source_tier": "bounded_internal_case",
+                    "version": "2026-09-06",
+                    "availability": "verified",
+                    "review_date": "2026-09-06",
+                    "freshness_days": 90,
+                }
+            ],
+        },
+    )
+
+    [chunk] = chunk_document(parsed, strategy="agent")
+
+    assert chunk.metadata["source_url"] == "controlled://knowledge/ticket19-controlled-source"
+    assert chunk.metadata["source_access_scope"] == "controlled_internal"
+    assert chunk.metadata["source_tier"] == "bounded_internal_case"

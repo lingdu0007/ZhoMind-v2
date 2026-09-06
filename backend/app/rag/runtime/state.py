@@ -1,5 +1,6 @@
 from typing import Any, NotRequired, TypedDict
 
+from app.rag.evidence_sufficiency import EvidenceSufficiencyDecision, QueryConditionSet
 from app.rag.interfaces import ProviderExecError
 
 
@@ -35,6 +36,10 @@ class RagStateDict(TypedDict):
     candidates_dense: list[dict]
     candidates_fused: list[dict]
     candidates_reranked: list[dict]
+    query_condition_set: QueryConditionSet
+    evidence_sufficiency_decision: EvidenceSufficiencyDecision | None
+    retrieval_profile_identity: str | None
+    candidate_pool_scope: str | None
     gate_result: dict[str, Any]
     claim_evidence_audit: dict[str, Any]
     evidence_pack: list[dict]
@@ -68,6 +73,10 @@ class RagState:
             "candidates_dense": [],
             "candidates_fused": [],
             "candidates_reranked": [],
+            "query_condition_set": QueryConditionSet.from_question(query_norm),
+            "evidence_sufficiency_decision": None,
+            "retrieval_profile_identity": None,
+            "candidate_pool_scope": None,
             "gate_result": {"passed": False, "reason": "not_checked"},
             "claim_evidence_audit": {},
             "evidence_pack": [],

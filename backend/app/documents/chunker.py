@@ -163,9 +163,15 @@ def _agent_chunk_metadata(parsed_document: ParsedDocument, *, section: _Markdown
         "sources": sources,
         "source_title": primary_source.get("title"),
         "source_authority": primary_source.get("authority"),
-        "source_url": primary_source.get("url"),
+        "source_url": (
+            primary_source.get("public_url")
+            or primary_source.get("controlled_locator")
+            or primary_source.get("url")
+        ),
         "source_version": primary_source.get("version"),
         "source_availability": primary_source.get("availability"),
+        "source_access_scope": primary_source.get("access_scope"),
+        "source_tier": primary_source.get("source_tier"),
         "source_id": primary_source.get("source_id"),
         "source_review_date": primary_source.get("review_date", metadata.get("review_date")),
         "source_freshness_days": primary_source.get("freshness_days", 90),

@@ -19,7 +19,7 @@ def test_settings_defaults() -> None:
     assert settings.rag_default_llm_provider == "chat-default-llm"
     assert settings.runtime_retrieval_top_k == 5
     assert settings.runtime_answer_evidence_max_items == 3
-    assert settings.runtime_answer_evidence_max_chars_per_source == 160
+    assert settings.runtime_answer_evidence_max_chars_per_source == 1200
     assert settings.claim_resolver_profile_path == ""
     assert settings.claim_resolver_profile_sha256 == ""
 
