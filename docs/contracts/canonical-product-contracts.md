@@ -1,6 +1,6 @@
 # Canonical Product Contracts
 
-Status: normative product contract; additive foundation for tickets 13 through 17
+Status: normative product contract; additive foundation for tickets 13 through 18
 
 ## Purpose
 
@@ -348,6 +348,62 @@ create or change a Published Knowledge Version, a legacy published generation,
 or a runtime publication pointer. Candidate inspection, publication,
 replacement switching, and withdrawal remain later responsibilities.
 
+## Retrieval Answer Policy And Authorized Candidate Pool
+
+`retrieval-answer-policy/pilot-v1` is the active ordinary-user retrieval
+profile. It is genuine `sparse_bm25`, with literal-preserving tokenization,
+`k1=1.5`, `b=0.75`, candidate depth `20`, and the versioned
+`retrieval-candidate-tie-breaker/v1`. The profile does not accept field boosts:
+an unrecorded boost is rejected rather than silently changing the effective
+profile. It keeps reranking, lexical-answer anchors, semantic near-duplicate
+removal, query expansion, and online LLM sufficiency judging disabled. The
+effective profile identity is carried with every retrieval result and trace.
+
+Until a later ticket replaces the legacy runtime projection with canonical
+Published Knowledge Versions, Pilot forms its ordinary pre-sufficiency
+Candidate Pool only from the compatibility projection of a current legacy
+published generation. A chunk is eligible only when its `Document` is not
+withdrawn and its generation equals that document's current published
+generation. Before ranking, the pool resolves the current Private Editorial
+Repository authority for the entry: the current revision, lifecycle
+eligibility, exact per-section verified source relationship, assurance,
+applicability, freshness, and team-shared access scope. Compatibility metadata
+is only a binding to those current facts; missing, malformed, or mismatched
+metadata never grants eligibility. Its lifecycle is `published`, or
+`needs_re_review` only within the seven-day grace interval; known
+contradictions, integrity defects, expired grace, unavailable sources,
+unsupported access scopes, and ineligible assurance all fail closed. The pool
+preserves entry, revision, publication, section, source, assurance,
+applicability, freshness, access, and chunk identities. An
+authority-qualified candidate may be marked eligible for later evidence
+selection, but that pre-sufficiency boundary does not decide sufficiency. The
+pool deduplicates exact content and repeated `(entry, section)` pairs
+deterministically before it returns at most 20 candidates.
+
+Candidate Build chunks and Candidate records are not members of this ordinary
+pool. Candidate preview is an explicit, administrator-only, isolated path:
+`GET /reviewed-release-bundles/candidates/{candidate_id}/preview`. It accepts
+only an immutable `candidate_ready` Candidate and matching current-attempt
+`candidate_ready` build chunks after it reconstructs and verifies the complete
+immutable Candidate binding: Candidate record, build job, frozen input,
+bundle/item records and artifact, then contiguous content-hashed chunks and
+their exact section-source metadata. Preview results are diagnostic-only,
+retain Candidate rather than publication identity, and set
+`answer_evidence_eligible=false`; they cannot be returned to an ordinary user
+or presented as product answer evidence. Ordinary runtime traces retain only
+normalized exclusion reasons, never excluded Candidate or unpublished chunk
+identities.
+
+BM25 raw scores, including the copied `score` compatibility field, order the
+already-authorized pre-sufficiency pool only. A raw score never establishes
+eligibility, sufficiency, or a generated-answer decision. Evidence Set
+selection and other later responsibilities remain outside this ticket.
+
+`retrieval-answer-policy/lexical-heuristic-migration-v1` is a retained,
+explicit migration/diagnostic profile only. Its strategy and candidate-pool
+scope identify it as `lexical_heuristic_migration` and
+`legacy_migration_diagnostic`; it is never labeled or treated as Sparse BM25.
+
 ## Pilot Identity Authority And Audit
 
 The current `users` row is the authorization fact: protected handlers require
@@ -403,6 +459,7 @@ administrator issues a new invitation for any pending admission.
 | 14 | User, invitation, and Redis session admission/authority paths | Member/invitation identities and content-free identity audit events | One-time invitation consumption, database-derived role checks, and append-only identity audit are used by every pilot identity path |
 | 16 | Markdown/front-matter authoring and runtime document copies | Private Editorial Repository entry, revision, source, and deterministic `editorial_export/v1` authority | T02 consumes only reviewed immutable exports and no authoritative editorial write remains on legacy/runtime rows |
 | 17 | Upload and batch build dispatch | Reviewed Release Bundle, bundle item, build generation, recoverable Candidate Build | Reviewed bundles are the only new authority-bearing intake; Candidate work has no publication side effect and legacy publication paths remain compatibility-only |
+| 18 | Unqualified legacy retrieval and Candidate-derived chunks | Versioned Pilot Sparse BM25 and an authorized current-Published Candidate Pool | Ordinary retrieval returns only current, authorized compatibility-published chunks; Candidate preview remains administrator-only and diagnostic |
 | 20 | `ChatMessage.rag_trace` and answer inference | Answer execution, conditions, evidence set, snapshot | Every answer persists the closed canonical outcome |
 | 21 | HTTP, SSE and history adapters | Canonical execution projection | All surfaces read one canonical execution |
 | 24 | Candidate inspection and publication | Candidate and Published Knowledge Version | Publication checks canonical generation, hash and acceptance identities |

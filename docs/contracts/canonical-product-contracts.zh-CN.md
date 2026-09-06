@@ -1,6 +1,6 @@
 # 规范化产品契约
 
-状态：规范性产品契约；ticket 13 至 17 的增量基础
+状态：规范性产品契约；ticket 13 至 18 的增量基础
 
 ## 目的
 
@@ -284,6 +284,52 @@ recovery、cleanup、supersession 和 Candidate completion 都不会
 publication pointer。Candidate inspection、publication、replacement switching 和
 withdrawal 仍由后续职责处理。
 
+## 检索回答策略与授权候选池
+
+`retrieval-answer-policy/pilot-v1` 是活跃的普通用户检索 profile。它是实际的
+`sparse_bm25`，使用保留字面量的 tokenization、`k1=1.5`、`b=0.75`、candidate
+depth `20` 以及有版本的 `retrieval-candidate-tie-breaker/v1`。该 profile 不接受
+field boost：未记录的 boost 会被拒绝，不能静默改变 effective profile。它保持
+reranking、lexical-answer anchor、semantic near-duplicate removal、query expansion
+和 online LLM sufficiency judging 为 disabled。每个 retrieval result 与 trace 都携带
+effective profile identity。
+
+在后续 ticket 以 canonical Published Knowledge Version 替换 legacy runtime projection
+之前，Pilot 的普通 pre-sufficiency Candidate Pool 只从当前 legacy published generation
+的 compatibility projection 构建。只有当 chunk 所属的 `Document` 未被 withdraw、
+其 generation 等于该 document 的当前 published generation 时，它才可能进入 pool。
+ranking 前，pool 会为 entry 解析当前 Private Editorial Repository authority：当前
+revision、lifecycle eligibility、准确的 section-level verified source relationship、
+assurance、applicability、freshness 与 team-shared access scope。compatibility metadata
+只用于将 chunk 绑定到这些当前事实；缺失、畸形或不匹配的 metadata 绝不授予
+eligibility。其 lifecycle 必须为 `published`，或为仍处于七日 grace interval 内的
+`needs_re_review`；known contradiction、integrity defect、已过期的 grace、不可用
+source、不支持的 access scope 和不合格 assurance 都会 fail closed。该 pool 保留
+entry、revision、publication、section、source、assurance、applicability、freshness、
+access 与 chunk identity。通过 authority 的 candidate 可以标记为可供后续 evidence
+selection 使用，但这个 pre-sufficiency boundary 不决定 sufficiency。在返回至多 20 个
+candidate 前，pool 会以确定性方式去重 exact content 和重复的 `(entry, section)` pair。
+
+Candidate Build chunk 与 Candidate record 不是这个普通 pool 的成员。Candidate preview
+是一条显式的、仅 System Administrator 可用的隔离路径：
+`GET /reviewed-release-bundles/candidates/{candidate_id}/preview`。它只接受 immutable 的
+`candidate_ready` Candidate 以及其匹配 current attempt 的 `candidate_ready` build
+chunk，并且会重建和验证完整 immutable Candidate binding：Candidate record、build job、
+frozen input、bundle/item record 与 artifact，以及连续、content-hashed 的 chunk 和其准确的
+section-source metadata。preview result 仅用于 diagnostic，保留 Candidate 而非
+publication identity，并设定 `answer_evidence_eligible=false`；它不能返回给普通用户，
+也不能被呈现为 product answer evidence。普通 runtime trace 只保留 normalized exclusion
+reason，绝不保留被排除的 Candidate 或 unpublished chunk identity。
+
+BM25 raw score（包括兼容的 `score` field）只对已经授权的 pre-sufficiency pool 排序。
+raw score 绝不建立 eligibility、sufficiency 或 generated-answer decision。Evidence Set
+selection 与其他后续职责不属于本 ticket。
+
+`retrieval-answer-policy/lexical-heuristic-migration-v1` 只保留为显式的
+migration/diagnostic profile。它的 strategy 和 candidate-pool scope 分别标识为
+`lexical_heuristic_migration` 和 `legacy_migration_diagnostic`；它绝不能被标记或
+视为 Sparse BM25。
+
 ## Pilot 身份权威与审计
 
 当前的 `users` 行是授权事实：受保护的 handler 必须要求成员仍存在且 active，
@@ -329,6 +375,7 @@ Ticket 14 的尾部 migration 将所有以前未 revoke、未 expired 的 legacy
 | 14 | 用户、invitation 和 Redis session 的准入/授权路径 | member/invitation 标识和不含内容的身份审计事件 | 每条 pilot 身份路径都使用一次性 invitation、数据库派生的 role 检查和只追加身份审计 |
 | 16 | Markdown/front-matter 编写与运行时 document 副本 | Private Editorial Repository 的 entry、revision、source 与确定性 `editorial_export/v1` 权威 | T02 只消费经 review 的不可变 export，且 legacy/runtime 行上不再存在权威性的 editorial 写入 |
 | 17 | 上传和批量构建分发 | Reviewed Release Bundle、bundle item、build generation、可恢复 Candidate Build | Reviewed bundle 是唯一新增的 authority-bearing intake；Candidate work 没有 publication side effect，legacy publication path 仍仅为 compatibility |
+| 18 | 未经资格校验的 legacy retrieval 与 Candidate-derived chunk | 有版本的 Pilot Sparse BM25 与授权的当前 Published Candidate Pool | 普通 retrieval 只返回当前、已授权的 compatibility-published chunk；Candidate preview 保持仅管理员可用且仅用于 diagnostic |
 | 20 | `ChatMessage.rag_trace` 与回答推断 | Answer execution、条件、证据集、快照 | 每个回答都持久化封闭的规范化结果 |
 | 21 | HTTP、SSE 和 history 适配器 | 规范化 execution 投影 | 所有界面都读取同一规范化 execution |
 | 24 | Candidate 检查与发布 | Candidate 和 Published Knowledge Version | 发布检查规范化代次、hash 和验收标识 |

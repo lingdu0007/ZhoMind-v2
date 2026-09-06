@@ -15,6 +15,7 @@ from app.rag.answer_execution import EvidenceGatedAnswerExecutor
 from app.rag.claim_evidence import ClaimResolver
 from app.rag.interfaces import RelevanceJudge, Reranker, Retriever
 from app.repository.chat_repository import ChatRepository
+from app.retrieval.policy import get_retrieval_policy
 from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
 from app.settings.runtime import get_runtime_settings
 
@@ -105,14 +106,22 @@ class ChatService:
         self.repo = ChatRepository(session)
 
     def _resolve_retriever(self) -> tuple[Retriever, str]:
+        policy = get_retrieval_policy(get_runtime_settings())
+        fallback = MixedModeDocumentRetrieverService(self.session)
+        if not policy.diagnostic_or_migration_only:
+            # The active product profile owns the ordinary-user retrieval boundary.
+            return fallback, fallback.name
+
         provider = get_extension_registry().get_retriever(CHAT_RETRIEVER_PROVIDER)
         if provider is not None:
             return provider, CHAT_RETRIEVER_PROVIDER
 
-        fallback = MixedModeDocumentRetrieverService(self.session)
         return fallback, fallback.name
 
-    def _resolve_reranker(self) -> tuple[Reranker, str]:
+    def _resolve_reranker(self) -> tuple[Reranker | None, str]:
+        policy = get_retrieval_policy(get_runtime_settings())
+        if not policy.reranker_enabled:
+            return None, f"disabled-by-{policy.identity}"
         provider = get_extension_registry().get_rerank(CHAT_RERANK_PROVIDER)
         if provider is not None:
             return provider, CHAT_RERANK_PROVIDER
@@ -121,6 +130,9 @@ class ChatService:
         return fallback, fallback.name
 
     def _resolve_judge(self) -> tuple[RelevanceJudge | None, str]:
+        policy = get_retrieval_policy(get_runtime_settings())
+        if not policy.online_llm_sufficiency_judge_enabled:
+            return None, f"disabled-by-{policy.identity}"
         provider = get_extension_registry().get_judge(CHAT_JUDGE_PROVIDER)
         if provider is not None:
             return provider, CHAT_JUDGE_PROVIDER

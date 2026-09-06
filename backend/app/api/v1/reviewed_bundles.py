@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Body, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,12 +13,14 @@ from app.common.responses import ok_response
 from app.contracts.canonical import StableIdentityKind
 from app.infra.db import get_db_session
 from app.model.canonical import CanonicalEventModel
+from app.retrieval.candidate_pool import AuthorizedRetrievalCandidatePool
 from app.reviewed_bundles.build_service import CandidateBuildService
 from app.reviewed_bundles.models import CandidateBuildJob
 from app.reviewed_bundles.runtime import candidate_build_runtime
 from app.reviewed_bundles.service import ReviewedReleaseBundleService
 from app.reviewed_bundles.verifier import CanonicalEditorialExportVerifier
 from app.service.identity_audit_service import IdentityAuditService
+from app.settings.runtime import get_runtime_settings
 
 router = APIRouter(prefix="/reviewed-release-bundles", tags=["reviewed-release-bundles"])
 
@@ -137,6 +139,28 @@ async def get_candidate_build_job(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     return _ok(await _serialize_job(session, await _get_job(session, job_id)))
+
+
+@router.get("/candidates/{candidate_id}/preview")
+async def preview_candidate(
+    candidate_id: str,
+    query: str = Query(..., min_length=1, max_length=4000),
+    _: object = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    result = await AuthorizedRetrievalCandidatePool(
+        session,
+        settings=get_runtime_settings(),
+    ).preview_candidate(candidate_id, query)
+    return _ok(
+        {
+            "items": result.items,
+            "strategy": result.strategy,
+            "profile_identity": result.profile_identity,
+            "candidate_pool_scope": result.candidate_pool_scope,
+            "candidate_exclusions": result.candidate_exclusions,
+        }
+    )
 
 
 @router.post("/jobs/{job_id}/dispatch")

@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol, TypedDict
 
 
@@ -38,6 +38,9 @@ class RetrieveResult:
     fallback_used: bool = False
     provider_error: ProviderExecError | None = None
     embedding_provider_ms: float = 0.0
+    profile_identity: str | None = None
+    candidate_pool_scope: str | None = None
+    candidate_exclusions: list[dict[str, str]] = field(default_factory=list)
 
     @classmethod
     def from_items(

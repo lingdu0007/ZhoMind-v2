@@ -8,7 +8,13 @@ from pathlib import Path
 
 from app.common.config import Settings
 from app.rag.dense_contract import build_embedding_contract_fingerprint
-from app.retrieval_evidence import HttpResponse, RetrievalEvidenceSmoke, UrllibHttpClient
+from app.retrieval.policy import LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID
+from app.retrieval_evidence import (
+    HttpResponse,
+    RetrievalEvidenceSmoke,
+    UrllibHttpClient,
+    _migration_diagnostic_settings,
+)
 
 
 class _FakeHttpClient:
@@ -208,6 +214,12 @@ def _settings(**overrides: object) -> Settings:
     }
     values.update(overrides)
     return Settings(**values)
+
+
+def test_retrieval_evidence_legacy_smokes_force_an_explicit_migration_profile() -> None:
+    settings = _migration_diagnostic_settings(_settings())
+
+    assert settings.runtime_retrieval_profile == LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID
 
 
 def test_retrieval_evidence_smoke_writes_non_sensitive_success_manifest(tmp_path) -> None:

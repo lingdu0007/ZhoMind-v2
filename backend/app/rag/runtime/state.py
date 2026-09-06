@@ -19,6 +19,9 @@ class ProviderTraceDetail(TypedDict):
     sparse_count: NotRequired[int]
     dense_count: NotRequired[int]
     embedding_provider_ms: NotRequired[float]
+    profile_identity: NotRequired[str | None]
+    candidate_pool_scope: NotRequired[str | None]
+    candidate_exclusions: NotRequired[list[str]]
 
 
 class RagStateDict(TypedDict):

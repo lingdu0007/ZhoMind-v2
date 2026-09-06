@@ -97,7 +97,7 @@ class EvidenceGatedAnswerExecutor:
         self,
         *,
         retriever: Retriever,
-        reranker: Reranker,
+        reranker: Reranker | None,
         judge: RelevanceJudge | None,
         provider_router: ProviderRouter,
         primary_provider: str,

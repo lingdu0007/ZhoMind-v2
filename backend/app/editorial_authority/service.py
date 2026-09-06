@@ -895,7 +895,7 @@ class EditorialAuthorityService:
         await self._lock_canonical_records(self._candidate_finalization_authority_record_ids(artifact))
         yield await self.verify_approved_export(artifact, artifact_sha256)
 
-    async def get_projection(self, entry_id: str) -> dict[str, Any]:
+    async def get_projection(self, entry_id: str, *, now: datetime | None = None) -> dict[str, Any]:
         entry, events = await self._entry_and_events(entry_id)
         entry_payload = self._payload(entry)
         current = self._latest_event(events)
@@ -914,6 +914,7 @@ class EditorialAuthorityService:
             known_contradiction=self._revision_flag(events, revision_identity, "known_contradiction"),
             integrity_defect=self._revision_flag(events, revision_identity, "integrity_defect"),
             decisive_source_loss=self._revision_flag(events, revision_identity, "decisive_source_loss"),
+            now=now,
         )
         return {
             "entry_id": entry.identity_value,
@@ -937,6 +938,85 @@ class EditorialAuthorityService:
             "eligibility": eligibility,
             "answer_eligible": eligibility["answer_eligible"],
         }
+
+    async def get_retrieval_authority(self, entry_id: str, *, now: datetime | None = None) -> dict[str, Any]:
+        """Resolve the current authority facts required before Pilot ranking."""
+
+        projection = await self.get_projection(entry_id, now=now)
+        authority: dict[str, Any] = {
+            "entry_id": projection["entry_id"],
+            "entry_identity": projection["entry_identity"],
+            "editorial_revision_identity": projection["revision_identity"],
+            "lifecycle_state": projection["lifecycle_state"],
+            "answer_eligible": projection["answer_eligible"],
+            "eligibility_reasons": list(projection["eligibility"]["reasons"]),
+        }
+        if projection["answer_eligible"] is not True:
+            return authority
+
+        entry, events = await self._entry_and_events(entry_id)
+        current = self._latest_event(events)
+        draft, revision_identity = await self._current_draft(self._payload(entry), current)
+        if revision_identity != projection["revision_identity"]:
+            raise RuntimeError("retrieval authority revision changed during resolution")
+
+        sources = await self._verified_source_snapshot(draft, action="retrieval")
+        await self._release_assurance_snapshot(draft)
+        source_by_id: dict[str, dict[str, str]] = {}
+        for source_snapshot in sources:
+            source_identity = source_snapshot.get("source_identity")
+            source_definition = source_snapshot.get("source")
+            if (
+                not isinstance(source_identity, str)
+                or not isinstance(source_definition, dict)
+                or not isinstance(source_definition.get("source_id"), str)
+                or source_definition.get("access_scope") not in {"public", "controlled_internal"}
+            ):
+                raise RuntimeError("retrieval authority source snapshot is invalid")
+            source_by_id[source_definition["source_id"]] = {
+                "source_identity": source_identity,
+                "availability": str(source_snapshot["availability"]),
+                "access_scope": str(source_definition["access_scope"]),
+            }
+
+        body = draft.body if isinstance(draft.body, dict) else {}
+        relationships = draft.section_source_relationships
+        if not isinstance(relationships, list):
+            raise RuntimeError("retrieval authority section-source relationships are missing")
+        by_section: dict[str, list[dict[str, str]]] = {}
+        for relationship in relationships:
+            if not isinstance(relationship, dict):
+                raise RuntimeError("retrieval authority section-source relationship is invalid")
+            section_id = relationship.get("section_id")
+            source_ids = relationship.get("source_ids")
+            if (
+                not isinstance(section_id, str)
+                or not section_id
+                or section_id in by_section
+                or not isinstance(source_ids, list)
+                or not source_ids
+            ):
+                raise RuntimeError("retrieval authority section-source relationship is invalid")
+            section_sources: list[dict[str, str]] = []
+            seen_source_ids: set[str] = set()
+            for source_id in source_ids:
+                if not isinstance(source_id, str) or source_id in seen_source_ids or source_id not in source_by_id:
+                    raise RuntimeError("retrieval authority section-source relationship is invalid")
+                seen_source_ids.add(source_id)
+                section_sources.append(dict(source_by_id[source_id]))
+            by_section[section_id] = sorted(section_sources, key=lambda item: item["source_identity"])
+        if set(by_section) != set(body):
+            raise RuntimeError("retrieval authority section-source relationships do not cover the retained body")
+
+        authority.update(
+            {
+                "section_source_relationships": by_section,
+                "assurance_level": draft.assurance_level,
+                "applicability_conditions": list(draft.applicability_conditions or []),
+                "freshness_triggers": list(draft.freshness_triggers or []),
+            }
+        )
+        return authority
 
     async def _entry_and_events(
         self,

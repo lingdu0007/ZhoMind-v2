@@ -12,6 +12,7 @@ from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
 from app.model.document import Document, DocumentChunk
+from app.retrieval.policy import LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID
 from tests.support.auth import create_authenticated_test_token
 
 
@@ -62,6 +63,7 @@ def test_knowledge_user_chat_cites_only_published_document_in_normal_and_streami
     provider = _RecordingProvider()
 
     monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "ark")
+    monkeypatch.setenv("RUNTIME_RETRIEVAL_PROFILE", LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID)
     get_settings.cache_clear()
     get_extension_registry.cache_clear()
 
@@ -195,6 +197,7 @@ def test_knowledge_user_with_no_published_evidence_is_not_sent_to_generation(mon
     provider = _RecordingProvider()
 
     monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "ark")
+    monkeypatch.setenv("RUNTIME_RETRIEVAL_PROFILE", LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID)
     get_settings.cache_clear()
     get_extension_registry.cache_clear()
 
@@ -250,6 +253,7 @@ def test_narrow_social_reply_is_explicitly_labeled_as_non_knowledge_base(monkeyp
     provider = _RecordingProvider()
 
     monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "ark")
+    monkeypatch.setenv("RUNTIME_RETRIEVAL_PROFILE", LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID)
     get_settings.cache_clear()
     get_extension_registry.cache_clear()
 
@@ -319,6 +323,7 @@ def test_generation_outage_fails_closed_with_published_sources_in_normal_and_str
     secondary = _RecordingProvider()
 
     monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "ark")
+    monkeypatch.setenv("RUNTIME_RETRIEVAL_PROFILE", LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID)
     get_settings.cache_clear()
     get_extension_registry.cache_clear()
 

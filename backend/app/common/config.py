@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -26,6 +27,11 @@ class Settings(BaseSettings):
     system_settings_encryption_key: str = Field("", alias="SYSTEM_SETTINGS_ENCRYPTION_KEY")
 
     # Applied System Settings are process-local runtime values, never browser input.
+    runtime_retrieval_profile: Literal[
+        "retrieval-answer-policy/pilot-v1",
+        "retrieval-answer-policy/lexical-heuristic-migration-v1",
+    ] = Field("retrieval-answer-policy/pilot-v1", alias="RUNTIME_RETRIEVAL_PROFILE")
+    runtime_retrieval_field_boosts: str = Field("", alias="RUNTIME_RETRIEVAL_FIELD_BOOSTS")
     runtime_retrieval_top_k: int = 5
     runtime_score_threshold: float = 0.0
     runtime_generation_settings_managed: bool = False
@@ -99,6 +105,13 @@ class Settings(BaseSettings):
     def validate_document_allowed_extensions_raw(cls, value: str) -> str:
         if not cls._normalize_document_extensions(value):
             raise ValueError("DOCUMENT_ALLOWED_EXTENSIONS must include at least one extension")
+        return value
+
+    @field_validator("runtime_retrieval_field_boosts")
+    @classmethod
+    def reject_unrecorded_retrieval_field_boosts(cls, value: str) -> str:
+        if value.strip():
+            raise ValueError("RUNTIME_RETRIEVAL_FIELD_BOOSTS is not accepted by the active retrieval profile")
         return value
 
     @property

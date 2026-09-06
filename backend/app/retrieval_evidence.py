@@ -23,6 +23,7 @@ from app.extensions.langchain_embedding_providers import OpenAIEmbeddingProvider
 from app.infra.milvus_document_index import MilvusDocumentIndex
 from app.rag.dense_contract import DenseEmbeddingContract, build_embedding_contract_fingerprint
 from app.rag.interfaces import RetrieveResult
+from app.retrieval.policy import LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID
 from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
 
 _POLL_ATTEMPTS = 120
@@ -796,11 +797,19 @@ def _run_evaluate_profile(args: argparse.Namespace) -> int:
     return 0 if manifest["outcome"] == "passed" else 1
 
 
+def _migration_diagnostic_settings(settings: Settings) -> Settings:
+    """Make retained smoke commands name their legacy retrieval regime explicitly."""
+    return settings.model_copy(
+        update={"runtime_retrieval_profile": LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID}
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     if args.profile == "evaluate":
         return _run_evaluate_profile(args)
-    settings = get_settings()
+    # These commands exercise the retained migration diagnostic, never Pilot BM25.
+    settings = _migration_diagnostic_settings(get_settings())
     http_client = UrllibHttpClient(base_url=args.base_url, timeout_seconds=args.timeout_seconds)
     force_dense_failure = args.profile == "fallback"
     evaluation_inputs: Mapping[str, Any] | None = None

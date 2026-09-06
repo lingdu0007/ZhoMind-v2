@@ -459,6 +459,71 @@ async def test_bundle_intake_verifier_reads_only_the_retained_approved_export_an
     assert exc_info.value.code == "EDITORIAL_SOURCE_UNAVAILABLE"
 
 
+async def test_retrieval_authority_uses_current_published_source_facts_and_fails_closed_after_source_loss(
+    db_session,
+) -> None:
+    author = User(username="author", password_hash="hash", role="user", is_active=True)
+    reviewer = User(username="reviewer", password_hash="hash", role="user", is_active=True)
+    maintainer = User(username="maintainer", password_hash="hash", role="user", is_active=True)
+    administrator = User(username="administrator", password_hash="hash", role="admin", is_active=True)
+    db_session.add_all([author, reviewer, maintainer, administrator])
+    await db_session.commit()
+
+    authority = EditorialAuthorityService(db_session)
+    draft = await authority.create_draft(_review_ready_entry(entry_id="retrieval-authority-001"), author)
+    await _prepare_editorial_review(authority, draft["entry_id"], author, maintainer)
+    approved = await authority.approve_current_revision(draft["entry_id"], reviewer)
+
+    entry, events = await authority._entry_and_events(draft["entry_id"])
+    await authority._append_entry_event(
+        entry,
+        events,
+        event_type=CanonicalEventType.STATE_CHANGED,
+        from_state="editorial_review",
+        to_state="candidate_build",
+        action="candidate_build_admitted_for_retrieval_fixture",
+        revision_identity=approved["revision_identity"],
+        actor_identity="member:administrator-001",
+    )
+    await db_session.commit()
+    entry, events = await authority._entry_and_events(draft["entry_id"])
+    await authority._append_entry_event(
+        entry,
+        events,
+        event_type=CanonicalEventType.PUBLISHED,
+        from_state="candidate_build",
+        to_state="published",
+        action="published_for_retrieval_fixture",
+        revision_identity=approved["revision_identity"],
+        actor_identity="member:administrator-001",
+    )
+    await db_session.commit()
+
+    current = await authority.get_retrieval_authority(draft["entry_id"])
+
+    assert current["answer_eligible"] is True
+    assert current["lifecycle_state"] == "published"
+    assert current["editorial_revision_identity"] == approved["revision_identity"]
+    assert current["section_source_relationships"]["recommendation_or_reviewed_branches"] == [
+        {
+            "source_identity": "source:source-rag-admission-001",
+            "availability": "verified_usable",
+            "access_scope": "public",
+        }
+    ]
+
+    await authority.record_source_availability(
+        draft["entry_id"],
+        "source-rag-admission-001",
+        "unavailable_for_new_evidence",
+        maintainer,
+    )
+    revoked = await authority.get_retrieval_authority(draft["entry_id"])
+
+    assert revoked["answer_eligible"] is False
+    assert set(revoked["eligibility_reasons"]) >= {"decisive_source_loss", "source_unavailable"}
+
+
 async def test_non_ascii_approved_export_imports_as_an_immutable_reviewed_bundle(db_session) -> None:
     author = User(username="author", password_hash="hash", role="user", is_active=True)
     reviewer = User(username="reviewer", password_hash="hash", role="user", is_active=True)

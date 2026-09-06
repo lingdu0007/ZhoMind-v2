@@ -16,6 +16,7 @@ from app.model.base import Base
 from app.model.chat import ChatMessage
 from app.rag.claim_evidence import ClaimEvidenceContract, ClaimResolution, ResolvedClaim, parse_claim_evidence_contract
 from app.rag.interfaces import RetrieveResult
+from app.retrieval.policy import LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID
 from tests.support.auth import create_authenticated_test_token
 
 
@@ -192,6 +193,7 @@ def test_authenticated_chat_claim_gate_allows_reviewed_claims_and_refuses_bounda
     provider = _RecordingProvider()
 
     monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "ark")
+    monkeypatch.setenv("RUNTIME_RETRIEVAL_PROFILE", LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID)
     get_settings.cache_clear()
     get_extension_registry.cache_clear()
 

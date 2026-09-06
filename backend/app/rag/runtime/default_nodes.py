@@ -1,8 +1,8 @@
 from app.rag.answer_evidence import select_answer_evidence
 from app.rag.claim_evidence import ClaimEvidenceGate, ClaimResolver
-from app.rag.dense_contract import dense_mode_active
 from app.rag.runtime.provider_adapters import JudgeAdapter, RerankerAdapter, RetrieverAdapter
 from app.rag.runtime.state import ProviderTraceDetail, RagStateDict
+from app.retrieval.policy import get_retrieval_policy
 from app.settings.runtime import get_runtime_settings
 
 
@@ -39,7 +39,9 @@ class RetrievalPlanNode:
 
     async def run(self, state: RagStateDict) -> RagStateDict:
         plan = state.get("retrieval_plan") or {}
-        plan["strategy"] = "dense_plus_lexical_migration" if dense_mode_active(get_runtime_settings()) else "sparse_only"
+        policy = get_retrieval_policy(get_runtime_settings())
+        plan["strategy"] = policy.strategy
+        plan["profile_identity"] = policy.identity
         plan["top_k"] = int(plan.get("top_k") or self.default_top_k)
         state["retrieval_plan"] = plan
         state["trace_steps"].append(
@@ -47,6 +49,7 @@ class RetrievalPlanNode:
                 "step": "plan",
                 "detail": {
                     "strategy": plan["strategy"],
+                    "profile_identity": plan["profile_identity"],
                     "top_k": plan["top_k"],
                 },
             }
@@ -64,6 +67,7 @@ class RetrieveNode:
         top_k = int(plan.get("top_k") or self.top_k)
 
         retrieved, exec_detail = await self.retriever.retrieve(state["query_norm"], top_k=top_k)
+        active_profile = get_retrieval_policy(get_runtime_settings())
         ordered_items = []
         for index, item in enumerate(retrieved.items):
             ordered_item = dict(item)
@@ -72,6 +76,13 @@ class RetrieveNode:
 
         dense_items = [item for item in ordered_items if item.get("retrieval_source") == "dense"]
         sparse_items = [item for item in ordered_items if item.get("retrieval_source") != "dense"]
+        exclusion_reasons = sorted(
+            {
+                reason
+                for exclusion in retrieved.candidate_exclusions
+                if isinstance(exclusion, dict) and isinstance((reason := exclusion.get("reason")), str)
+            }
+        )
 
         state["candidates_sparse"] = sparse_items
         state["candidates_dense"] = dense_items
@@ -89,6 +100,11 @@ class RetrieveNode:
             "fallback_used": exec_detail["fallback_used"],
             "provider_error": exec_detail["error"],
             "embedding_provider_ms": retrieved.embedding_provider_ms,
+            "profile_identity": retrieved.profile_identity or active_profile.identity,
+            "candidate_pool_scope": retrieved.candidate_pool_scope,
+            # Keep ordinary-user runtime traces useful without exposing excluded
+            # Candidate or unpublished chunk identities.
+            "candidate_exclusions": exclusion_reasons,
         }
         state["provider_trace"]["retrieve"] = retrieve_detail
         state["trace_steps"].append(

@@ -140,6 +140,21 @@ identity 仍须解析为 active 的当前 System Administrator 及权威 identit
   结构化 failure reason 与 allowed next action。recovery 会在 mutation 前立即锁定并
   重新检查每个选中的 queued、running 或 cleanup-pending job。这些路径都不能创建或改变
   Published Knowledge Version 或 publication pointer。
+- 将普通 Pilot retrieval 绑定到有版本的 authorization boundary。活跃的
+  `retrieval-answer-policy/pilot-v1` 只有在从 current published compatibility row 与
+  对每个 entry fresh reconstruction 的 retained Private Editorial Repository authority
+  构建授权 pool 后，才使用实际的、保留字面量的 Sparse BM25（`k1=1.5`、`b=0.75`、
+  depth 20）。compatibility metadata 必须将该 row 精确绑定到当前 entry、revision、
+  section-source relationship、assurance、applicability、freshness 与支持的 access
+  scope；它本身绝不能授予 eligibility。Candidate-derived chunk 仍然被排除。显式的、
+  仅 System Administrator 可用的 Candidate preview 会在返回 diagnostic-only result 前验证
+  immutable Candidate record、current-attempt job、frozen input、bundle/item artifact
+  以及 content-hashed chunk binding。它携带 Candidate 而非 publication identity，且不能
+  成为 answer evidence。普通 runtime trace 仅保留 normalized exclusion reason，不包含
+  被排除的 Candidate 或 unpublished chunk identity。BM25 score 只对授权的
+  pre-sufficiency pool 排序；它们既不授予 eligibility，也不建立 sufficiency。保留的
+  `retrieval-answer-policy/lexical-heuristic-migration-v1` 路径明确是
+  migration/diagnostic，绝不被表示为 Sparse BM25。
 
 ## 后果
 
@@ -149,6 +164,12 @@ intake 和可恢复 Candidate Build record 消费它，而 T04 publication 仍�
 bundle verifier 会重新检查当前 authority，但绝不会回填或改写 private editorial
 record。source availability 已是 fail-closed eligibility 的权威事实；后续 publication
 与 maintenance path 必须消费这项保留 evidence，而不是从 runtime copy 推断。
+retrieval boundary 现在会在 ranking 前消费这些保留 fact：普通 Pilot query 无法看到
+Candidate content、stale 或 withdrawn generation、unavailable 或 unauthorized source、
+已过期的 review grace、known contradiction 或 ineligible assurance。compatibility-row
+metadata mismatch 是 exclusion，不是可回退的 authority source。Candidate inspection 刻意
+不是普通 retrieval：它的隔离 administrative preview 仍然只用于 diagnostic，不能提供
+product answer evidence。这不会增加 publication capability，也不决定 answer sufficiency。
 Candidate finalization 会通过共享 canonical authority record 与 source-availability、Release-Assured
 authority writer 串行化其最终 re-verification 与 persistence；这消除了刚刚失效的 source
 或 acceptance status 仍可能产生新 Candidate 的窗口。dispatch evidence 同样保持

@@ -53,7 +53,10 @@ class CandidateChunkSpec(TypedDict):
 class ParsedCandidateArtifact(TypedDict):
     entry: dict[str, object]
     body: dict[str, object]
-    source_ids: list[str]
+    source_relationships_by_section: dict[str, list[dict[str, object]]]
+    assurance_level: object
+    applicability_conditions: list[object]
+    freshness_triggers: list[object]
     editorial_revision_identity: object
 
 
@@ -382,6 +385,21 @@ class CandidateBuildService:
 
     async def _start(self, job: CandidateBuildJob) -> bool:
         await self.session.refresh(job, with_for_update=True)
+        if job.status != "queued":
+            return False
+        if job.dispatched_at is not None:
+            try:
+                await self._load_frozen_input(job)
+            except AppError as exc:
+                # A dispatched job whose immutable input no longer binds must
+                # become a durable failure; an undispatched job still waits
+                # for an administrator's current dispatch proof below.
+                await self._fail(
+                    job,
+                    code=exc.code or "CANDIDATE_INPUT_INTEGRITY_FAILED",
+                    message=exc.message or "candidate build immutable inputs no longer verify",
+                )
+                return False
         if not await has_current_dispatch_authorization(self.session, job):
             return False
         now = datetime.now(UTC)
@@ -822,18 +840,87 @@ class CandidateBuildService:
                 code="CANDIDATE_PARSER_FAILED",
                 message="editorial export body is missing",
             )
-        source_ids: list[str] = []
+        entry_sources: dict[str, dict[str, object]] = {}
+        raw_entry_sources = entry.get("sources")
+        if isinstance(raw_entry_sources, list):
+            for item in raw_entry_sources:
+                if isinstance(item, dict) and isinstance(item.get("source_id"), str):
+                    entry_sources[item["source_id"]] = item
+
+        source_relationships_by_identity: dict[str, dict[str, object]] = {}
         source_snapshots = artifact.get("sources")
         if isinstance(source_snapshots, list):
             for item in source_snapshots:
                 if isinstance(item, dict):
                     source_identity = item.get("source_identity")
                     if isinstance(source_identity, str):
-                        source_ids.append(source_identity)
+                        source_definition = item.get("source")
+                        if not isinstance(source_definition, dict):
+                            source_definition = entry_sources.get(source_identity.removeprefix("source:"), {})
+                        source_relationships_by_identity[source_identity] = {
+                            "source_identity": source_identity,
+                            "availability": item.get(
+                                "availability",
+                                source_definition.get("availability"),
+                            ),
+                            "access_scope": source_definition.get("access_scope"),
+                        }
+
+        raw_section_relationships = entry.get("section_source_relationships")
+        if not isinstance(raw_section_relationships, list):
+            raise AppError(
+                status_code=422,
+                code="CANDIDATE_PARSER_FAILED",
+                message="editorial export section-source relationships are missing",
+            )
+        source_relationships_by_section: dict[str, list[dict[str, object]]] = {}
+        for relationship in raw_section_relationships:
+            if not isinstance(relationship, dict):
+                raise AppError(
+                    status_code=422,
+                    code="CANDIDATE_PARSER_FAILED",
+                    message="editorial export section-source relationship is invalid",
+                )
+            section_id = relationship.get("section_id")
+            source_ids = relationship.get("source_ids")
+            if (
+                not isinstance(section_id, str)
+                or not section_id
+                or section_id in source_relationships_by_section
+                or not isinstance(source_ids, list)
+                or not source_ids
+            ):
+                raise AppError(
+                    status_code=422,
+                    code="CANDIDATE_PARSER_FAILED",
+                    message="editorial export section-source relationship is invalid",
+                )
+            relationships: list[dict[str, object]] = []
+            for source_id in source_ids:
+                source_identity = f"source:{source_id}" if isinstance(source_id, str) else None
+                relationship_snapshot = (
+                    source_relationships_by_identity.get(source_identity)
+                    if source_identity is not None
+                    else None
+                )
+                if relationship_snapshot is None:
+                    raise AppError(
+                        status_code=422,
+                        code="CANDIDATE_PARSER_FAILED",
+                        message="editorial export section source is missing from the verified source snapshots",
+                    )
+                relationships.append(dict(relationship_snapshot))
+            source_relationships_by_section[section_id] = sorted(
+                relationships,
+                key=lambda item: str(item["source_identity"]),
+            )
         return {
             "entry": entry,
             "body": body,
-            "source_ids": source_ids,
+            "source_relationships_by_section": source_relationships_by_section,
+            "assurance_level": entry.get("assurance_level"),
+            "applicability_conditions": list(entry.get("applicability_conditions") or []),
+            "freshness_triggers": list(entry.get("freshness_triggers") or []),
             "editorial_revision_identity": artifact.get("editorial_revision_identity"),
         }
 
@@ -864,6 +951,13 @@ class CandidateBuildService:
         for section_id, value in body.items():
             if not isinstance(section_id, str) or not isinstance(value, str) or not value.strip():
                 continue
+            source_relationships = parsed_artifact["source_relationships_by_section"].get(section_id)
+            if not source_relationships:
+                raise AppError(
+                    status_code=422,
+                    code="CANDIDATE_PARSER_FAILED",
+                    message="editorial export body section has no verified source relationship",
+                )
             heading = section_id.replace("_", " ").strip().title()
             section_text = f"## {heading}\n\n{value.strip()}"
             for piece in self._split_section(section_text, maximum=maximum, overlap=overlap):
@@ -880,7 +974,14 @@ class CandidateBuildService:
                             "section_id": section_id,
                             "section_title": heading,
                             "chunk_strategy_id": frozen_input.chunk_strategy.get("strategy_id"),
-                            "source_identities": parsed_artifact["source_ids"],
+                            "source_identities": [
+                                relationship["source_identity"] for relationship in source_relationships
+                            ],
+                            "source_relationships": source_relationships,
+                            "assurance_level": parsed_artifact["assurance_level"],
+                            "applicability_conditions": parsed_artifact["applicability_conditions"],
+                            "freshness_triggers": parsed_artifact["freshness_triggers"],
+                            "lifecycle_state": "candidate_build",
                             "candidate_build": True,
                         },
                     }

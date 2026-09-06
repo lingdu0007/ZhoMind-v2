@@ -20,6 +20,8 @@ from app.rag.dense_contract import (
     build_milvus_collection_name,
 )
 from app.rag.interfaces import EmbeddingProvider, ProviderExecError, RetrieveResult
+from app.retrieval.candidate_pool import AuthorizedRetrievalCandidatePool, CurrentRetrievalAuthority
+from app.retrieval.policy import PILOT_RETRIEVAL_PROFILE_ID, get_retrieval_policy
 from app.settings.runtime import get_runtime_settings
 
 _DEFAULT_EMBEDDING_PROVIDER = "embedding-default"
@@ -72,6 +74,8 @@ def _normalize_provider_error(exc: Exception) -> ProviderExecError:
 
 
 class MixedModeDocumentRetrieverService:
+    """Dispatch the active retrieval profile and retain legacy diagnostics explicitly."""
+
     name = "inmemory-mixed-mode-retriever"
 
     def __init__(
@@ -81,6 +85,7 @@ class MixedModeDocumentRetrieverService:
         settings: Settings | None = None,
         embedding_provider: EmbeddingProvider | None = None,
         document_index: MilvusDocumentIndex | None = None,
+        editorial_authority: CurrentRetrievalAuthority | None = None,
         candidate_limit: int = 200,
         dense_search_multiplier: int = 4,
     ) -> None:
@@ -88,25 +93,59 @@ class MixedModeDocumentRetrieverService:
         self._settings = settings or get_runtime_settings()
         self._embedding_provider = embedding_provider
         self._document_index = document_index
+        self._editorial_authority = editorial_authority
         self._candidate_limit = candidate_limit
         self._dense_search_multiplier = max(1, dense_search_multiplier)
 
     async def retrieve(self, query: str, top_k: int) -> RetrieveResult:
+        policy = get_retrieval_policy(self._settings)
         normalized_query = query.strip()
-        strategy = "dense_plus_lexical_migration" if DenseEmbeddingContract.from_settings(self._settings).active else "sparse_only"
+        if policy.identity == PILOT_RETRIEVAL_PROFILE_ID:
+            return await AuthorizedRetrievalCandidatePool(
+                self._session,
+                settings=self._settings,
+                editorial_authority=self._editorial_authority,
+            ).retrieve(normalized_query, top_k=top_k)
+
+        return await self._retrieve_lexical_heuristic_migration(
+            normalized_query,
+            top_k=top_k,
+            profile_identity=policy.identity,
+        )
+
+    async def _retrieve_lexical_heuristic_migration(
+        self,
+        normalized_query: str,
+        *,
+        top_k: int,
+        profile_identity: str,
+    ) -> RetrieveResult:
+        strategy = (
+            "dense_plus_lexical_heuristic_migration"
+            if DenseEmbeddingContract.from_settings(self._settings).active
+            else "lexical_heuristic_migration"
+        )
         if not normalized_query:
-            return RetrieveResult(items=[], strategy=strategy, merged_count=0)
+            return RetrieveResult(
+                items=[],
+                strategy=strategy,
+                merged_count=0,
+                profile_identity=profile_identity,
+                candidate_pool_scope="legacy_migration_diagnostic",
+            )
 
         contract = DenseEmbeddingContract.from_settings(self._settings)
         if not contract.active:
             lexical_items = await self._lexical_search(normalized_query, top_k=top_k, lexical_scope="full_published_live")
             return RetrieveResult(
                 items=lexical_items,
-                strategy="sparse_only",
+                strategy="lexical_heuristic_migration",
                 lexical_candidate_count=len(lexical_items),
                 merged_count=len(lexical_items),
                 dense_query_failed=False,
                 lexical_scope="full_published_live",
+                profile_identity=profile_identity,
+                candidate_pool_scope="legacy_migration_diagnostic",
             )
 
         fingerprint = build_embedding_contract_fingerprint(self._settings)
@@ -138,7 +177,7 @@ class MixedModeDocumentRetrieverService:
         merged_items = self._merge_items(dense_items=dense_items, lexical_items=lexical_items, top_k=top_k)
         return RetrieveResult(
             items=merged_items,
-            strategy="dense_plus_lexical_migration",
+            strategy="dense_plus_lexical_heuristic_migration",
             dense_candidate_count=len(dense_candidates),
             dense_hydrated_count=len(dense_items),
             lexical_candidate_count=len(lexical_items),
@@ -148,6 +187,8 @@ class MixedModeDocumentRetrieverService:
             fallback_used=dense_query_failed,
             provider_error=dense_provider_error,
             embedding_provider_ms=embedding_provider_ms,
+            profile_identity=profile_identity,
+            candidate_pool_scope="legacy_migration_diagnostic",
         )
 
     def _tokenize(self, text: str) -> list[str]:
@@ -172,6 +213,7 @@ class MixedModeDocumentRetrieverService:
         return len(a_set & b_set)
 
     def _score_chunk(self, query: str, content: str) -> float:
+        """Score the explicitly selected legacy Lexical Heuristic migration mode."""
         query_norm = query.strip().lower()
         content_norm = (content or "").strip().lower()
         if not query_norm or not content_norm:
@@ -194,6 +236,7 @@ class MixedModeDocumentRetrieverService:
         return score
 
     def _has_lexical_anchor(self, query: str, content: str) -> bool:
+        """Apply the legacy migration-only lexical evidence anchor."""
         query_norm = query.strip().lower()
         content_norm = (content or "").strip().lower()
         if not query_norm or not content_norm:
@@ -226,6 +269,7 @@ class MixedModeDocumentRetrieverService:
         lexical_scope: str,
         fingerprint: str | None = None,
     ) -> list[dict[str, Any]]:
+        """Run the legacy Lexical Heuristic, never the Pilot Sparse BM25 profile."""
         stmt = select(DocumentChunk, Document).join(Document, DocumentChunk.document_id == Document.id).where(
             Document.deleted_at.is_(None),
             Document.published_generation > 0,

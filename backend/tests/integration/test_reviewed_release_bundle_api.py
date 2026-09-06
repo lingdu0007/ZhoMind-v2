@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import AsyncIterator, Generator
 from contextlib import asynccontextmanager
@@ -16,9 +17,10 @@ from app.infra.db import SessionLocal, get_db_session
 from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
-from app.model.canonical import CanonicalEventModel
+from app.model.canonical import CanonicalEventModel, CanonicalRecordModel
 from app.model.document import Document
-from app.reviewed_bundles.models import CandidateBuildJob
+from app.reviewed_bundles.inputs import frozen_candidate_build_input_sha256
+from app.reviewed_bundles.models import CandidateBuildChunk, CandidateBuildJob
 from tests.support.auth import create_authenticated_test_token
 
 
@@ -83,6 +85,8 @@ def _approved_export() -> dict:
             "title": "Inspect approved bundle intake",
             "coverage_position": "rag_source_admission_and_chunking",
             "assurance_level": "source_grounded",
+            "applicability_conditions": [{"condition_id": "bundle-api-applicability"}],
+            "freshness_triggers": [{"trigger_id": "bundle-api-freshness"}],
             "chunk_strategy": {
                 "strategy_id": "section-aware-900-120",
                 "max_characters": 900,
@@ -109,6 +113,13 @@ def _approved_export() -> dict:
                 "decision_query": "Which reviewed exports can become Candidate Build inputs?",
                 "recommendation_or_reviewed_branches": "Only retained approved exports may enter Candidate Build.",
             },
+            "section_source_relationships": [
+                {"section_id": "decision_query", "source_ids": ["source-bundle-api-001"]},
+                {
+                    "section_id": "recommendation_or_reviewed_branches",
+                    "source_ids": ["source-bundle-api-001"],
+                },
+            ],
             "sources": [
                 {
                     "source_id": "source-bundle-api-001",
@@ -126,6 +137,14 @@ def _approved_export() -> dict:
                 "availability": "verified_usable",
                 "source_definition_sha256": "b" * 64,
                 "availability_event": {"event_id": "event:bundle-api-source-availability-001"},
+                "source": {
+                    "source_id": "source-bundle-api-001",
+                    "source_tier": "primary_evidence_source",
+                    "authority": "ZhoMind architecture group",
+                    "access_scope": "public",
+                    "public_url": "https://example.com/bundle-api",
+                    "availability": "verified_usable",
+                },
             }
         ],
         "release_assurance_snapshot": None,
@@ -193,6 +212,206 @@ async def _headers(client: TestClient, *, username: str, role: str) -> dict[str,
 
 def _data(response) -> dict:
     return response.json()["data"]
+
+
+def test_candidate_preview_is_admin_only_and_never_marks_candidate_content_as_answer_evidence(
+    client: TestClient,
+) -> None:
+    job_id = "preview-candidate-job-001"
+    candidate_id = f"candidate:{job_id}-attempt-1"
+
+    async def seed() -> None:
+        session_factory = client.app.state.test_auth_session_factory
+        async with session_factory() as session:
+            artifact = _approved_export()
+            entry = artifact["entry"]
+            bundle_id = "bundle:preview-bundle-001"
+            bundle_item_id = "bundle_item:preview-item-001"
+            document_identity = "document:bundle-api-entry-001"
+            chunk_strategy = entry["chunk_strategy"]
+            embedding_configuration = {"active": False}
+            input_sha256 = _sha256(artifact)
+            bundle_item_sha256 = _sha256(
+                {
+                    "bundle_item_id": "preview-item-001",
+                    "operation": "create",
+                    "artifact_sha256": input_sha256,
+                    "artifact": artifact,
+                }
+            )
+            manifest = {
+                "schema": "reviewed_release_bundle/v1",
+                "schema_version": 1,
+                "bundle_id": "preview-bundle-001",
+                "editorial_source_revision": artifact["revision_sha256"],
+                "exported_at": "2026-09-06T12:00:00Z",
+                "items": [
+                    {
+                        "bundle_item_id": "preview-item-001",
+                        "operation": "create",
+                        "artifact_sha256": input_sha256,
+                        "artifact": artifact,
+                        "bundle_item_sha256": bundle_item_sha256,
+                    }
+                ],
+            }
+            bundle_sha256 = _sha256(manifest)
+            manifest["bundle_sha256"] = bundle_sha256
+            input_payload = {
+                "schema": "candidate_build_input/v1",
+                "bundle_id": bundle_id,
+                "bundle_sha256": bundle_sha256,
+                "bundle_item_id": bundle_item_id,
+                "bundle_item_sha256": bundle_item_sha256,
+                "entry_identity": artifact["entry_identity"],
+                "document_identity": document_identity,
+                "requested_generation": 1,
+                "editorial_source_revision": artifact["revision_sha256"],
+                "input_sha256": input_sha256,
+                "chunk_strategy": chunk_strategy,
+                "embedding_configuration": embedding_configuration,
+            }
+            frozen_input_sha256 = frozen_candidate_build_input_sha256(input_payload)
+            input_payload["frozen_input_sha256"] = frozen_input_sha256
+            content = "Candidate-only Sparse BM25 preview must remain isolated."
+            content_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            chunk_metadata = {
+                "entry_id": artifact["entry_id"],
+                "entry_identity": artifact["entry_identity"],
+                "editorial_revision_identity": artifact["editorial_revision_identity"],
+                "section_id": "recommendation_or_reviewed_branches",
+                "source_relationships": [
+                    {
+                        "source_identity": "source:source-bundle-api-001",
+                        "availability": "verified_usable",
+                        "access_scope": "public",
+                    }
+                ],
+                "assurance_level": "source_grounded",
+                "applicability_conditions": [{"condition_id": "bundle-api-applicability"}],
+                "freshness_triggers": [{"trigger_id": "bundle-api-freshness"}],
+                "candidate_build": True,
+            }
+            session.add_all(
+                [
+                    CanonicalRecordModel(
+                        stable_id=bundle_id,
+                        identity_kind="bundle",
+                        identity_value="preview-bundle-001",
+                        state="processing",
+                        record_class="immutable",
+                        payload={
+                            "schema": "reviewed_release_bundle/v1",
+                            "bundle_sha256": bundle_sha256,
+                            "manifest": manifest,
+                        },
+                    ),
+                    CanonicalRecordModel(
+                        stable_id=bundle_item_id,
+                        identity_kind="bundle_item",
+                        identity_value="preview-item-001",
+                        state="admitted",
+                        record_class="immutable",
+                        payload={
+                            "schema": "reviewed_release_bundle_item/v1",
+                            "bundle_id": bundle_id,
+                            "entry_identity": artifact["entry_identity"],
+                            "operation": "create",
+                            "artifact_sha256": input_sha256,
+                            "artifact": artifact,
+                            "bundle_item_sha256": bundle_item_sha256,
+                        },
+                    ),
+                    CanonicalRecordModel(
+                        stable_id=f"build_generation:{job_id}",
+                        identity_kind="build_generation",
+                        identity_value=job_id,
+                        state="frozen",
+                        record_class="immutable",
+                        payload=input_payload,
+                    ),
+                    CanonicalRecordModel(
+                        stable_id=candidate_id,
+                        identity_kind="candidate",
+                        identity_value=f"{job_id}-attempt-1",
+                        state="candidate_ready",
+                        record_class="immutable",
+                        payload={
+                            "schema": "candidate_build_candidate/v1",
+                            "bundle_id": bundle_id,
+                            "bundle_sha256": bundle_sha256,
+                            "bundle_item_id": bundle_item_id,
+                            "bundle_item_sha256": bundle_item_sha256,
+                            "build_generation_id": f"build_generation:{job_id}",
+                            "entry_identity": artifact["entry_identity"],
+                            "document_identity": document_identity,
+                            "requested_generation": 1,
+                            "editorial_source_revision": artifact["revision_sha256"],
+                            "input_sha256": input_sha256,
+                            "frozen_input_sha256": frozen_input_sha256,
+                            "chunk_strategy": chunk_strategy,
+                            "embedding_configuration": embedding_configuration,
+                            "attempt": 1,
+                            "chunk_count": 1,
+                            "chunk_sha256s": [content_sha256],
+                        },
+                    ),
+                    CandidateBuildJob(
+                        id=job_id,
+                        bundle_id=bundle_id,
+                        bundle_item_id=bundle_item_id,
+                        entry_identity=artifact["entry_identity"],
+                        document_identity=document_identity,
+                        requested_generation=1,
+                        editorial_source_revision=artifact["revision_sha256"],
+                        input_sha256=input_sha256,
+                        frozen_input_sha256=frozen_input_sha256,
+                        chunk_strategy=chunk_strategy,
+                        embedding_configuration=embedding_configuration,
+                        status="candidate_ready",
+                        stage="indexing",
+                        progress=100,
+                        attempt=1,
+                        terminal_state="candidate_ready",
+                        allowed_next_action="await_candidate_inspection",
+                        candidate_id=candidate_id,
+                    ),
+                    CandidateBuildChunk(
+                        id="preview-candidate-chunk-001",
+                        job_id=job_id,
+                        candidate_id=candidate_id,
+                        document_identity=document_identity,
+                        generation=1,
+                        attempt=1,
+                        chunk_index=0,
+                        content=content,
+                        content_sha256=content_sha256,
+                        chunk_metadata=chunk_metadata,
+                    ),
+                ]
+            )
+            await session.commit()
+
+    asyncio.run(seed())
+    user_headers = asyncio.run(_headers(client, username="candidate-preview-user", role="user"))
+    admin_headers = asyncio.run(_headers(client, username="candidate-preview-admin", role="admin"))
+    url = f"/api/v1/reviewed-release-bundles/candidates/{candidate_id}/preview?query=Sparse%20BM25"
+
+    assert client.get(url).status_code == 401
+    assert client.get(url, headers=user_headers).status_code == 403
+
+    response = client.get(url, headers=admin_headers)
+
+    assert response.status_code == 200
+    payload = _data(response)
+    assert payload["profile_identity"] == "retrieval-answer-policy/pilot-v1"
+    assert payload["candidate_pool_scope"] == "candidate_preview"
+    assert payload["items"][0]["candidate_id"] == candidate_id
+    assert payload["items"][0]["candidate_version"] == f"{candidate_id}:generation:1:attempt:1"
+    assert payload["items"][0]["answer_evidence_eligible"] is False
+    assert payload["items"][0]["diagnostic_only"] is True
+    assert payload["items"][0]["content_preview"].startswith("Candidate-only")
+    assert payload["candidate_exclusions"] == []
 
 
 def test_reviewed_bundle_intake_api_is_admin_only_and_exposes_a_recoverable_non_publishing_job(

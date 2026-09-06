@@ -10,6 +10,7 @@ from app.infra.db import get_db_session
 from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
+from app.retrieval.policy import LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID
 from tests.support.auth import create_authenticated_test_token
 
 
@@ -62,6 +63,7 @@ def test_chat_does_not_fallback_when_the_active_provider_fails(monkeypatch) -> N
 
     monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "ark")
     monkeypatch.setenv("RAG_LLM_FALLBACK_PROVIDERS", "openai")
+    monkeypatch.setenv("RUNTIME_RETRIEVAL_PROFILE", LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID)
     get_settings.cache_clear()
 
     async def _init_db() -> None:

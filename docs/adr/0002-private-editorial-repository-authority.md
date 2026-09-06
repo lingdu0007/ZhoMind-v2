@@ -175,6 +175,25 @@ authority boundary and make later reconstruction unauditable.
   rechecks each selected queued, running, or cleanup-pending job immediately
   before mutation. These paths cannot create or change a Published Knowledge
   Version or publication pointer.
+- Bind ordinary Pilot retrieval to a versioned authorization boundary. The
+  active `retrieval-answer-policy/pilot-v1` uses genuine literal-preserving
+  Sparse BM25 (`k1=1.5`, `b=0.75`, depth 20) only after it has constructed the
+  authorized pool from current published compatibility rows and a fresh
+  per-entry reconstruction of retained Private Editorial Repository authority.
+  Compatibility metadata must exactly bind the row to the current entry,
+  revision, section-source relationships, assurance, applicability, freshness,
+  and supported access scope; it can never grant eligibility by itself.
+  Candidate-derived chunks remain excluded. An explicit administrator-only
+  Candidate preview verifies the immutable Candidate record, current-attempt
+  job, frozen input, bundle/item artifact, and content-hashed chunk bindings
+  before producing its diagnostic-only result. It carries Candidate rather than
+  publication identity and cannot become answer evidence. Ordinary runtime
+  traces retain normalized exclusion reasons without excluded Candidate or
+  unpublished chunk identities. BM25 scores order the authorized
+  pre-sufficiency pool only; they do not grant eligibility or establish
+  sufficiency. The retained
+  `retrieval-answer-policy/lexical-heuristic-migration-v1` path is explicitly
+  migration/diagnostic and is never represented as Sparse BM25.
 
 ## Consequences
 
@@ -186,6 +205,14 @@ The bundle verifier rechecks current authority but never backfills or rewrites
 private editorial records. Source availability is already authoritative for
 fail-closed eligibility, while later publication and maintenance paths must
 consume that retained evidence rather than infer it from a runtime copy.
+The retrieval boundary now consumes those retained facts before ranking:
+ordinary Pilot queries cannot see Candidate content, stale or withdrawn
+generations, unavailable or unauthorized sources, expired review grace, known
+contradictions, or ineligible assurance. A compatibility-row metadata mismatch
+is an exclusion, not a fallback authority source. Candidate inspection is
+deliberately not ordinary retrieval: its isolated administrative preview
+remains diagnostic-only and cannot supply product answer evidence. This adds
+no publication capability and does not decide answer sufficiency.
 Candidate finalization serializes its final re-verification and persistence
 with source-availability and Release-Assured authority writers through their
 shared canonical authority records; this removes the interval in which a

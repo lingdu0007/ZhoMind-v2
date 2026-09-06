@@ -22,6 +22,7 @@ from app.model.base import Base
 from app.model.canonical import CanonicalEventModel, CanonicalRecordModel
 from app.model.document import Document
 from app.model.user import User
+from app.retrieval.candidate_pool import AuthorizedRetrievalCandidatePool
 from app.reviewed_bundles import build_service as candidate_build_module
 from app.reviewed_bundles import lifecycle as candidate_lifecycle
 from app.reviewed_bundles import runtime as reviewed_bundles_runtime
@@ -67,6 +68,21 @@ def _approved_export(entry_id: str = "source-admission-001") -> dict:
             "title": "Choose a source admission boundary",
             "coverage_position": "rag_source_admission_and_chunking",
             "assurance_level": "source_grounded",
+            "applicability_conditions": [
+                {
+                    "condition_id": "candidate-build-applicability",
+                    "field": "access_scope",
+                    "operator": "equals",
+                    "value": "public",
+                }
+            ],
+            "freshness_triggers": [
+                {
+                    "trigger_id": "candidate-build-freshness",
+                    "trigger_type": "source_change",
+                    "review_within_days": 7,
+                }
+            ],
             "chunk_strategy": {
                 "strategy_id": "section-aware-900-120",
                 "max_characters": 900,
@@ -93,6 +109,13 @@ def _approved_export(entry_id: str = "source-admission-001") -> dict:
                 "decision_query": "Which source admission conditions are required before indexing?",
                 "recommendation_or_reviewed_branches": "Require a reviewed source record before indexing.",
             },
+            "section_source_relationships": [
+                {"section_id": "decision_query", "source_ids": ["source-rag-admission-001"]},
+                {
+                    "section_id": "recommendation_or_reviewed_branches",
+                    "source_ids": ["source-rag-admission-001"],
+                },
+            ],
             "sources": [
                 {
                     "source_id": "source-rag-admission-001",
@@ -110,6 +133,14 @@ def _approved_export(entry_id: str = "source-admission-001") -> dict:
                 "availability": "verified_usable",
                 "source_definition_sha256": "b" * 64,
                 "availability_event": {"event_id": "event:source-availability-001"},
+                "source": {
+                    "source_id": "source-rag-admission-001",
+                    "source_tier": "primary_evidence_source",
+                    "authority": "ZhoMind architecture group",
+                    "access_scope": "public",
+                    "public_url": "https://example.com/rag/source-admission",
+                    "availability": "verified_usable",
+                },
             }
         ],
         "release_assurance_snapshot": None,
@@ -1291,6 +1322,46 @@ async def test_queued_item_builds_a_hidden_candidate_from_frozen_inputs_without_
     assert candidate_record is not None
     assert candidate_record.state == "candidate_ready"
     assert await db_session.scalar(select(func.count()).select_from(CandidateBuildChunk)) == candidate["chunk_count"]
+    candidate_chunks = (
+        await db_session.execute(
+            select(CandidateBuildChunk)
+            .where(CandidateBuildChunk.job_id == job_id)
+            .order_by(CandidateBuildChunk.chunk_index.asc())
+        )
+    ).scalars().all()
+    assert candidate_chunks
+    assert candidate_chunks[0].chunk_metadata["source_relationships"] == [
+        {
+            "source_identity": "source:source-rag-admission-001",
+            "availability": "verified_usable",
+            "access_scope": "public",
+        }
+    ]
+    assert candidate_chunks[0].chunk_metadata["assurance_level"] == "source_grounded"
+    assert candidate_chunks[0].chunk_metadata["applicability_conditions"] == [
+        {
+            "condition_id": "candidate-build-applicability",
+            "field": "access_scope",
+            "operator": "equals",
+            "value": "public",
+        }
+    ]
+    assert candidate_chunks[0].chunk_metadata["freshness_triggers"] == [
+        {
+            "trigger_id": "candidate-build-freshness",
+            "trigger_type": "source_change",
+            "review_within_days": 7,
+        }
+    ]
+    assert candidate_chunks[0].chunk_metadata["lifecycle_state"] == "candidate_build"
+    preview = await AuthorizedRetrievalCandidatePool(db_session, settings=Settings()).preview_candidate(
+        candidate["candidate_id"],
+        "source admission",
+    )
+    assert preview.candidate_pool_scope == "candidate_preview"
+    assert preview.items[0]["candidate_id"] == candidate["candidate_id"]
+    assert preview.items[0]["answer_evidence_eligible"] is False
+    assert preview.items[0]["diagnostic_only"] is True
     assert await db_session.scalar(select(func.count()).select_from(Document)) == 0
     completed_bundle = await intake.get_bundle("candidate-build-bundle-001")
     assert completed_bundle["state"] == "completed"
@@ -1306,6 +1377,97 @@ async def test_queued_item_builds_a_hidden_candidate_from_frozen_inputs_without_
         "chunking",
         "indexing",
         "candidate_ready",
+    }
+
+
+async def test_candidate_build_keeps_each_section_bound_to_its_verified_sources(db_session) -> None:
+    manifest = _bundle_manifest(bundle_id="candidate-build-section-sources-001")
+    artifact = manifest["items"][0]["artifact"]
+    entry = artifact["entry"]
+    secondary_source = {
+        "source_id": "source-candidate-section-002",
+        "source_tier": "reproducible_engineering_evidence",
+        "authority": "ZhoMind retrieval team",
+        "access_scope": "controlled_internal",
+        "public_url": "https://example.com/rag/section-source",
+        "availability": "verified_usable",
+    }
+    entry["body"]["failure_modes"] = "Do not attach every entry source to every Candidate section."
+    entry["sources"].append(secondary_source)
+    entry["section_source_relationships"] = [
+        {"section_id": "decision_query", "source_ids": ["source-rag-admission-001"]},
+        {
+            "section_id": "recommendation_or_reviewed_branches",
+            "source_ids": ["source-candidate-section-002"],
+        },
+        {
+            "section_id": "failure_modes",
+            "source_ids": ["source-rag-admission-001", "source-candidate-section-002"],
+        },
+    ]
+    artifact["sources"].append(
+        {
+            "source_identity": "source:source-candidate-section-002",
+            "availability": "verified_usable",
+            "source_definition_sha256": "c" * 64,
+            "availability_event": {"event_id": "event:source-availability-002"},
+            "source": secondary_source,
+        }
+    )
+    _rehash_manifest(manifest)
+
+    intake = ReviewedReleaseBundleService(
+        db_session,
+        editorial_export_verifier=_ApprovedExportVerifier(),
+    )
+    accepted = await intake.import_bundle(manifest, actor_identity="member:administrator-001")
+    job_id = accepted["items"][0]["job_id"]
+    await _dispatch_candidate_build(db_session, job_id)
+    await CandidateBuildService(
+        db_session,
+        dense_index_service=_DenseIndexSpy(),
+        editorial_export_verifier=_ApprovedExportVerifier(),
+    ).process_job(job_id)
+
+    candidate_chunks = (
+        await db_session.execute(
+            select(CandidateBuildChunk)
+            .where(CandidateBuildChunk.job_id == job_id)
+            .order_by(CandidateBuildChunk.chunk_index.asc())
+        )
+    ).scalars().all()
+    relationships_by_section = {
+        str(chunk.chunk_metadata["section_id"]): chunk.chunk_metadata["source_relationships"]
+        for chunk in candidate_chunks
+    }
+
+    assert relationships_by_section == {
+        "decision_query": [
+            {
+                "source_identity": "source:source-rag-admission-001",
+                "availability": "verified_usable",
+                "access_scope": "public",
+            }
+        ],
+        "recommendation_or_reviewed_branches": [
+            {
+                "source_identity": "source:source-candidate-section-002",
+                "availability": "verified_usable",
+                "access_scope": "controlled_internal",
+            }
+        ],
+        "failure_modes": [
+            {
+                "source_identity": "source:source-candidate-section-002",
+                "availability": "verified_usable",
+                "access_scope": "controlled_internal",
+            },
+            {
+                "source_identity": "source:source-rag-admission-001",
+                "availability": "verified_usable",
+                "access_scope": "public",
+            },
+        ],
     }
 
 

@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -94,6 +95,35 @@ class _RetrieverMixedOrder:
             merged_count=3,
             dense_query_failed=False,
             lexical_scope="not_dense_ready_published",
+        )
+
+
+class _PilotProfileRetriever:
+    async def retrieve(self, query: str, top_k: int) -> RetrieveResult:
+        return RetrieveResult(
+            items=[
+                {
+                    "chunk_id": "pilot-candidate-1",
+                    "document_id": "published-doc-1",
+                    "chunk_index": 0,
+                    "raw_score": 2.4,
+                    "score": 2.4,
+                    "content_preview": "pilot candidate",
+                    "metadata": {},
+                    "retrieval_source": "sparse_bm25",
+                    "answer_evidence_eligible": False,
+                }
+            ],
+            strategy="sparse_bm25",
+            lexical_candidate_count=1,
+            merged_count=1,
+            profile_identity="retrieval-answer-policy/pilot-v1",
+            candidate_pool_scope="published_knowledge",
+            candidate_exclusions=[
+                {"chunk_id": "candidate-only-private-001", "reason": "candidate_not_in_preview"},
+                {"chunk_id": "stale-published-001", "reason": "withdrawn"},
+                {"chunk_id": "candidate-only-private-001", "reason": "candidate_not_in_preview"},
+            ],
         )
 
 
@@ -215,6 +245,26 @@ def test_graph_runner_retrieve_step_exposes_mixed_mode_diagnostics() -> None:
     assert provider_trace["merged_count"] == 0
     assert provider_trace["dense_query_failed"] is False
     assert provider_trace["lexical_scope"] == "full_published_live"
+
+
+def test_graph_runner_retains_the_effective_retrieval_profile_in_request_trace() -> None:
+    runner = RagGraphRunner(retriever=_PilotProfileRetriever())
+
+    result = asyncio.run(
+        runner.run(
+            request_id="rid-profile-1",
+            user_id="u-profile-1",
+            session_id="s-profile-1",
+            question="pilot profile trace",
+        )
+    )
+
+    retrieve_step = next(step for step in result["steps"] if step["step"] == "retrieve")
+    assert retrieve_step["detail"]["profile_identity"] == "retrieval-answer-policy/pilot-v1"
+    assert retrieve_step["detail"]["candidate_pool_scope"] == "published_knowledge"
+    assert retrieve_step["detail"]["candidate_exclusions"] == ["candidate_not_in_preview", "withdrawn"]
+    assert "candidate-only-private-001" not in json.dumps(retrieve_step["detail"])
+    assert result["provider_trace"]["retrieve"]["profile_identity"] == "retrieval-answer-policy/pilot-v1"
 
 
 def test_graph_runner_dense_query_failure_marks_runtime_fallback_and_provider_error() -> None:

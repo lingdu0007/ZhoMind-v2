@@ -13,6 +13,7 @@ from app.main import app
 from app.model.base import Base
 from app.model.document import Document, DocumentChunk
 from app.repository.chat_repository import ChatRepository
+from app.retrieval.policy import LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID
 from app.service.chat_service import CHAT_JUDGE_PROVIDER, CHAT_RERANK_PROVIDER, CHAT_RETRIEVER_PROVIDER
 from tests.support.auth import create_authenticated_test_token
 
@@ -281,6 +282,7 @@ def test_chat_and_sessions_flow(monkeypatch) -> None:
     monkeypatch.setenv("RAG_DISABLE_GATE", "false")
     monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "missing-test-llm")
     monkeypatch.setenv("RAG_LLM_FALLBACK_PROVIDERS", "")
+    monkeypatch.setenv("RUNTIME_RETRIEVAL_PROFILE", LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID)
     get_settings.cache_clear()
 
     async def _init_db() -> None:
@@ -458,6 +460,7 @@ def test_chat_reject_gate_when_no_evidence(monkeypatch) -> None:
     monkeypatch.setenv("RAG_DISABLE_GATE", "false")
     monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "missing-test-llm")
     monkeypatch.setenv("RAG_LLM_FALLBACK_PROVIDERS", "")
+    monkeypatch.setenv("RUNTIME_RETRIEVAL_PROFILE", LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID)
     get_settings.cache_clear()
 
     async def _init_db() -> None:
@@ -525,6 +528,7 @@ def test_chat_returns_non_knowledge_base_reply_without_retrieval_evidence(monkey
     monkeypatch.setenv("RAG_DISABLE_GATE", "false")
     monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "missing-test-llm")
     monkeypatch.setenv("RAG_LLM_FALLBACK_PROVIDERS", "")
+    monkeypatch.setenv("RUNTIME_RETRIEVAL_PROFILE", LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID)
     get_settings.cache_clear()
 
     async def _init_db() -> None:
@@ -600,6 +604,7 @@ def test_chat_dense_trace_uses_default_mixed_mode_retriever(monkeypatch) -> None
     get_extension_registry.cache_clear()
 
     settings = Settings(
+        RUNTIME_RETRIEVAL_PROFILE=LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID,
         EMBEDDING_API_KEY="emb-key",
         EMBEDDING_BASE_URL="https://emb.example.com/v1",
         EMBEDDING_MODEL="emb-model",
@@ -672,7 +677,7 @@ def test_chat_dense_trace_uses_default_mixed_mode_retriever(monkeypatch) -> None
             assert saved_trace["steps"][0]["detail"]["retriever"] == "inmemory-mixed-mode-retriever"
 
             retrieve_trace = saved_trace["runtime"]["provider_trace"]["retrieve"]
-            assert retrieve_trace["strategy"] == "dense_plus_lexical_migration"
+            assert retrieve_trace["strategy"] == "dense_plus_lexical_heuristic_migration"
             assert retrieve_trace["dense_candidate_count"] == 1
             assert retrieve_trace["dense_hydrated_count"] == 1
             assert retrieve_trace["lexical_candidate_count"] == 1
@@ -716,10 +721,12 @@ def test_dense_only_candidate_without_lexical_anchor_is_insufficient_evidence(mo
     monkeypatch.setenv("RAG_DISABLE_GATE", "false")
     monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "missing-test-llm")
     monkeypatch.setenv("RAG_LLM_FALLBACK_PROVIDERS", "")
+    monkeypatch.setenv("RUNTIME_RETRIEVAL_PROFILE", LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID)
     get_settings.cache_clear()
     get_extension_registry.cache_clear()
 
     settings = Settings(
+        RUNTIME_RETRIEVAL_PROFILE=LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID,
         EMBEDDING_API_KEY="emb-key",
         EMBEDDING_BASE_URL="https://emb.example.com/v1",
         EMBEDDING_MODEL="emb-model",
@@ -840,10 +847,12 @@ def test_knowledge_user_chat_hydrates_published_evidence_beyond_stale_dense_cand
 
     monkeypatch.delenv("RUNTIME_RETRIEVAL_TOP_K", raising=False)
     monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "ark")
+    monkeypatch.setenv("RUNTIME_RETRIEVAL_PROFILE", LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID)
     get_settings.cache_clear()
     get_extension_registry.cache_clear()
 
     settings = Settings(
+        RUNTIME_RETRIEVAL_PROFILE=LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID,
         EMBEDDING_API_KEY="emb-key",
         EMBEDDING_BASE_URL="https://emb.example.com/v1",
         EMBEDDING_MODEL="emb-model",
@@ -980,10 +989,12 @@ def test_chat_dense_failure_trace_marks_runtime_fallback_and_error(monkeypatch) 
     monkeypatch.setenv("RAG_DISABLE_GATE", "false")
     monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "missing-test-llm")
     monkeypatch.setenv("RAG_LLM_FALLBACK_PROVIDERS", "")
+    monkeypatch.setenv("RUNTIME_RETRIEVAL_PROFILE", LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID)
     get_settings.cache_clear()
     get_extension_registry.cache_clear()
 
     settings = Settings(
+        RUNTIME_RETRIEVAL_PROFILE=LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID,
         EMBEDDING_API_KEY="emb-key",
         EMBEDDING_BASE_URL="https://emb.example.com/v1",
         EMBEDDING_MODEL="emb-model",
@@ -1101,10 +1112,12 @@ def test_chat_dense_failure_full_lexical_fallback_reads_tail_of_published_live_c
     monkeypatch.setenv("RAG_DISABLE_GATE", "false")
     monkeypatch.setenv("RAG_PRIMARY_LLM_PROVIDER", "missing-test-llm")
     monkeypatch.setenv("RAG_LLM_FALLBACK_PROVIDERS", "")
+    monkeypatch.setenv("RUNTIME_RETRIEVAL_PROFILE", LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID)
     get_settings.cache_clear()
     get_extension_registry.cache_clear()
 
     settings = Settings(
+        RUNTIME_RETRIEVAL_PROFILE=LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID,
         EMBEDDING_API_KEY="emb-key",
         EMBEDDING_BASE_URL="https://emb.example.com/v1",
         EMBEDDING_MODEL="emb-model",
