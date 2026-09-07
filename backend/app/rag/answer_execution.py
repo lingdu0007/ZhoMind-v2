@@ -10,11 +10,73 @@ from typing import Any
 from app.extensions.provider_router import ProviderRouter
 from app.rag.answer_evidence import AnswerEvidence, evidence_summary_from_trace
 from app.rag.claim_evidence import ClaimResolver
-from app.rag.evidence_sufficiency import AnswerEvidenceSet, EvidenceSufficiencyDecision
-from app.rag.generation_observation import provider_visible_snapshot_ids
+from app.rag.evidence_sufficiency import (
+    AnswerEvidenceSet,
+    EvidenceSufficiencyDecision,
+    QueryConditionSet,
+    decide_answer_evidence,
+)
+from app.rag.generation_observation import provider_visible_generation_input
 from app.rag.interfaces import RelevanceJudge, Reranker, Retriever
-from app.rag.prompt_regions import build_generation_prompt, validate_agent_response
+from app.rag.prompt_regions import (
+    build_generation_prompt,
+    frozen_generation_input_record,
+    validate_agent_response,
+)
 from app.rag.runtime.graph_runner import RagGraphRunner
+from app.retrieval.policy import LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID, get_retrieval_policy
+from app.settings.runtime import get_runtime_settings
+
+_PERSISTED_DIAGNOSTIC_DETAIL_FIELDS = frozenset(
+    {
+        "allow",
+        "calls",
+        "candidate_pool_scope",
+        "deduped",
+        "dense_candidate_count",
+        "dense_count",
+        "dense_hydrated_count",
+        "dense_query_failed",
+        "embedding_provider_ms",
+        "enabled",
+        "errors",
+        "evidence_count",
+        "fallback_used",
+        "gate_passed",
+        "gate_reason",
+        "intent",
+        "items",
+        "judge",
+        "language",
+        "lexical_candidate_count",
+        "lexical_scope",
+        "llm",
+        "max_calls",
+        "max_latency_ms",
+        "max_parallel",
+        "merged",
+        "merged_count",
+        "model",
+        "ok",
+        "outcome",
+        "passed",
+        "profile_identity",
+        "provider",
+        "reason",
+        "reranked_count",
+        "retriever",
+        "retrieved_count",
+        "session_keys",
+        "sparse_count",
+        "strategy",
+        "top_k",
+        "used_evidence",
+        "user_fact_count",
+    }
+)
+_PERSISTED_DIAGNOSTIC_PROVIDER_ATTEMPT_FIELDS = frozenset(
+    {"attempt", "error_code", "fallback", "latency_ms", "provider", "success"}
+)
 
 
 class AnswerOutcomeKind(str, Enum):
@@ -22,6 +84,10 @@ class AnswerOutcomeKind(str, Enum):
     INSUFFICIENT_EVIDENCE_REPLY = "insufficient_evidence_reply"
     NON_KNOWLEDGE_BASE_REPLY = "non_knowledge_base_reply"
     GENERATION_UNAVAILABLE = "generation_unavailable"
+
+
+class AnswerExecutionContractError(RuntimeError):
+    """The deterministic execution contract could not form a closed result."""
 
 
 def _freeze(value: Any) -> Any:
@@ -40,12 +106,86 @@ def _thaw(value: Any) -> Any:
     return value
 
 
+def _persisted_provider_error(value: object) -> dict[str, object] | None:
+    if not isinstance(value, Mapping):
+        return None
+    error: dict[str, object] = {}
+    for key in ("code", "type"):
+        item = value.get(key)
+        if isinstance(item, str) and item:
+            error[key] = item
+    return error or None
+
+
+def _persisted_diagnostic_detail(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        return {}
+    detail: dict[str, object] = {}
+    for key in _PERSISTED_DIAGNOSTIC_DETAIL_FIELDS:
+        item = value.get(key)
+        if isinstance(item, (str, bool, int, float)):
+            detail[key] = item
+    provider_error = _persisted_provider_error(value.get("provider_error"))
+    if provider_error is not None:
+        detail["provider_error"] = provider_error
+    return detail
+
+
+def _persisted_diagnostic_steps(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    steps: list[dict[str, object]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        step = item.get("step")
+        if not isinstance(step, str) or not step:
+            continue
+        record: dict[str, object] = {"step": step}
+        detail = _persisted_diagnostic_detail(item.get("detail"))
+        if detail:
+            record["detail"] = detail
+        steps.append(record)
+    return steps
+
+
+def _persisted_provider_trace(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        return {}
+    trace: dict[str, object] = {}
+    for stage, item in value.items():
+        if not isinstance(stage, str) or not stage:
+            continue
+        detail = _persisted_diagnostic_detail(item)
+        if detail:
+            trace[stage] = detail
+    return trace
+
+
+def _persisted_provider_attempts(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    attempts: list[dict[str, object]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        attempt: dict[str, object] = {}
+        for key in _PERSISTED_DIAGNOSTIC_PROVIDER_ATTEMPT_FIELDS:
+            candidate = item.get(key)
+            if isinstance(candidate, (str, bool, int, float)):
+                attempt[key] = candidate
+        if attempt:
+            attempts.append(attempt)
+    return attempts
+
+
 @dataclass(frozen=True)
 class AnswerExecutionOutcome:
     kind: AnswerOutcomeKind
     text: str
     evidence: tuple[AnswerEvidence, ...]
     question: str
+    query_conditions: QueryConditionSet
     request_id: str
     session_id: str
     gate_passed: bool | None
@@ -64,6 +204,7 @@ class AnswerExecutionOutcome:
         trace = {
             "outcome": self.kind.value,
             "query": self.question,
+            "query_condition_set": self.query_conditions.to_record(),
             "steps": _thaw(self.steps),
             "gate": {"passed": self.gate_passed, "reason": self.gate_reason},
             "evidence": [item.to_record() for item in self.evidence],
@@ -85,6 +226,43 @@ class AnswerExecutionOutcome:
             if self.sufficiency_decision.insufficient_reply is not None:
                 trace["insufficient_evidence_reply"] = self.sufficiency_decision.insufficient_reply.to_record()
         return trace
+
+    def to_persisted_rag_trace(self) -> dict[str, Any]:
+        """Return compatibility diagnostics without retaining private turn content."""
+
+        runtime_value = _thaw(self.runtime)
+        runtime = runtime_value if isinstance(runtime_value, Mapping) else {}
+        runtime_steps = _persisted_diagnostic_steps(runtime.get("steps"))
+        timing_value = runtime.get("timing_ms")
+        timing = (
+            {
+                str(key): item
+                for key, item in timing_value.items()
+                if isinstance(key, str) and isinstance(item, (int, float)) and not isinstance(item, bool)
+            }
+            if isinstance(timing_value, Mapping)
+            else {}
+        )
+        runtime_gate = _persisted_diagnostic_detail(runtime.get("gate"))
+        persisted_runtime: dict[str, object] = {
+            key: item
+            for key in ("request_id", "session_id", "graph_alias", "final_provider", "fallback_hops")
+            if isinstance((item := runtime.get(key)), (str, int)) and not isinstance(item, bool)
+        }
+        persisted_runtime["steps"] = runtime_steps
+        persisted_runtime["step_names"] = [step["step"] for step in runtime_steps]
+        persisted_runtime["provider_trace"] = _persisted_provider_trace(runtime.get("provider_trace"))
+        persisted_runtime["provider_attempts"] = _persisted_provider_attempts(runtime.get("provider_attempts"))
+        persisted_runtime["timing_ms"] = timing
+        if runtime_gate:
+            persisted_runtime["gate"] = runtime_gate
+
+        return {
+            "outcome": self.kind.value,
+            "steps": _persisted_diagnostic_steps(self.steps),
+            "gate": {"passed": self.gate_passed, "reason": self.gate_reason},
+            "runtime": persisted_runtime,
+        }
 
     def evidence_summary(self) -> dict[str, Any]:
         return evidence_summary_from_trace(self.to_rag_trace())
@@ -221,6 +399,7 @@ class EvidenceGatedAnswerExecutor:
         request_id: str,
         session_id: str,
         question: str,
+        query_conditions: QueryConditionSet,
     ) -> AnswerExecutionOutcome:
         runtime_steps = [{"step": "classify", "detail": {"outcome": AnswerOutcomeKind.NON_KNOWLEDGE_BASE_REPLY.value}}]
         runtime = {
@@ -242,6 +421,7 @@ class EvidenceGatedAnswerExecutor:
             text=self._SMALLTALK_REPLY,
             evidence=(),
             question=question,
+            query_conditions=query_conditions,
             request_id=request_id,
             session_id=session_id,
             gate_passed=None,
@@ -250,6 +430,22 @@ class EvidenceGatedAnswerExecutor:
             runtime=runtime,
         )
 
+    @staticmethod
+    def _expected_provider_visible_input(
+        *,
+        question: str,
+        query_conditions: QueryConditionSet,
+        evidence_set: AnswerEvidenceSet,
+    ) -> dict[str, object]:
+        if evidence_set.query_conditions != query_conditions:
+            raise AnswerExecutionContractError("frozen Answer Evidence Set changed the admitted query condition set")
+        try:
+            return frozen_generation_input_record(question, evidence_set)
+        except ValueError as exc:
+            raise AnswerExecutionContractError(
+                "frozen Answer Evidence Set has no valid provider-visible input"
+            ) from exc
+
     async def execute(
         self,
         *,
@@ -257,14 +453,19 @@ class EvidenceGatedAnswerExecutor:
         user_id: str,
         session_id: str,
         question: str,
+        query_conditions: QueryConditionSet | None = None,
         progress: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> AnswerExecutionOutcome:
         normalized_question = question.strip()
+        resolved_conditions = query_conditions or QueryConditionSet.from_question(normalized_question)
+        if resolved_conditions.normalized_question != normalized_question:
+            raise AnswerExecutionContractError("query condition set does not match the normalized question")
         if self._is_smalltalk(normalized_question):
             return self._smalltalk_outcome(
                 request_id=request_id,
                 session_id=session_id,
                 question=normalized_question,
+                query_conditions=resolved_conditions,
             )
         if progress is not None:
             await progress("retrieval", "正在检索知识库并核验证据…")
@@ -274,24 +475,31 @@ class EvidenceGatedAnswerExecutor:
             user_id=user_id,
             session_id=session_id,
             question=normalized_question,
+            query_conditions=resolved_conditions,
+            require_closed_evidence_decision=query_conditions is not None,
         )
         retrieval_ms = round((perf_counter() - retrieval_started) * 1000)
         decision = runtime_result.get("evidence_sufficiency_decision")
-        evidence_set = decision.evidence_set if isinstance(decision, EvidenceSufficiencyDecision) else None
-        if isinstance(decision, EvidenceSufficiencyDecision):
-            evidence = evidence_set.items if evidence_set is not None else ()
-            gate_passed = decision.is_sufficient
-            gate_reason = "sufficient_evidence" if gate_passed else str(decision.reason)
-        else:
-            evidence = tuple(
-                item
-                for candidate in runtime_result.get("answer_evidence") or []
-                if (item := AnswerEvidence.from_candidate(candidate, max_excerpt_chars=self._max_excerpt_chars)) is not None
+        if not isinstance(decision, EvidenceSufficiencyDecision):
+            policy = get_retrieval_policy(get_runtime_settings())
+            if query_conditions is not None or policy.identity != LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID:
+                raise AnswerExecutionContractError("closed answer execution requires an evidence sufficiency decision")
+            decision = decide_answer_evidence(
+                normalized_question=normalized_question,
+                query_conditions=resolved_conditions,
+                candidates=(),
             )
-            _gate_value = runtime_result.get("gate")
-            gate = _gate_value if isinstance(_gate_value, Mapping) else {}
-            gate_passed = bool(gate.get("passed")) and bool(evidence)
-            gate_reason = str(gate.get("reason") or "reject_insufficient_evidence")
+        if decision.query_conditions != resolved_conditions:
+            raise AnswerExecutionContractError("evidence decision changed the admitted query condition set")
+        evidence_set = decision.evidence_set
+        evidence = evidence_set.items if evidence_set is not None else ()
+        gate_passed = decision.is_sufficient
+        if gate_passed:
+            gate_reason = "sufficient_evidence"
+        else:
+            if decision.reason is None:
+                raise AnswerExecutionContractError("insufficient evidence decision has no reason")
+            gate_reason = decision.reason
         provider_result: dict[str, Any] = {
             "text": "",
             "final_provider": None,
@@ -304,54 +512,70 @@ class EvidenceGatedAnswerExecutor:
             kind = AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
             text = self._INSUFFICIENT_REPLY
             evidence = ()
-            if not isinstance(decision, EvidenceSufficiencyDecision) and not gate_reason.startswith("reject_"):
-                gate_reason = "reject_insufficient_evidence"
         else:
             if progress is not None:
                 await progress("generating", "证据核验通过，正在生成回答（深度生成约需 1~5 分钟）…")
-            generation_input = evidence_set if evidence_set is not None else evidence
+            if evidence_set is None:
+                raise AnswerExecutionContractError(
+                    "evidence-gated generation requires a frozen Answer Evidence Set"
+                )
+            generation_input = evidence_set
             generation_prompt = build_generation_prompt(normalized_question, generation_input)
-            expected_snapshot_ids = tuple(item.snapshot_id for item in evidence)
-            provider_prompt_snapshot_ids = list(provider_visible_snapshot_ids(generation_prompt.user_prompt))
-            if tuple(provider_prompt_snapshot_ids) != expected_snapshot_ids:
+            expected_provider_input = self._expected_provider_visible_input(
+                question=normalized_question,
+                query_conditions=resolved_conditions,
+                evidence_set=evidence_set,
+            )
+            observed_provider_input = provider_visible_generation_input(generation_prompt.user_prompt)
+            if observed_provider_input is None or observed_provider_input != expected_provider_input:
+                raise AnswerExecutionContractError(
+                    "provider-visible prompt input contradicts the frozen answer execution"
+                )
+            provider_prompt_snapshot_ids = [item.snapshot_id for item in evidence_set.items]
+            generation_started = perf_counter()
+            provider_result = await self._provider_router.complete(
+                primary=self._primary_provider,
+                fallbacks=[],
+                prompt=generation_prompt.user_prompt,
+                system_prompt=generation_prompt.system_prompt,
+            )
+            generation_provider_ms = round((perf_counter() - generation_started) * 1000)
+            if provider_result.get("generation_envelope_invalid") is True:
+                raise AnswerExecutionContractError(
+                    "provider generation envelope is malformed"
+                )
+            if provider_result.get("provider_failure") is True:
+                raise AnswerExecutionContractError(
+                    "provider generation failed without a completed provider result"
+                )
+            completion = str(provider_result.get("text") or "").strip()
+            observed_envelope = provider_result.get("generation_envelope")
+            observed_snapshot_ids = (
+                observed_envelope.get("snapshot_ids")
+                if isinstance(observed_envelope, Mapping)
+                else None
+            )
+            if observed_snapshot_ids is not None and (
+                not isinstance(observed_snapshot_ids, list)
+                or observed_snapshot_ids != provider_prompt_snapshot_ids
+            ):
+                raise AnswerExecutionContractError(
+                    "provider generation envelope snapshots contradict the frozen Answer Evidence Set"
+                )
+            if completion and validate_agent_response(
+                completion,
+                question=normalized_question,
+                evidence=generation_input,
+            ):
+                kind = AnswerOutcomeKind.EVIDENCE_GATED_ANSWER
+                text = completion
+            else:
                 kind = AnswerOutcomeKind.GENERATION_UNAVAILABLE
                 text = self._GENERATION_UNAVAILABLE_REPLY
-            else:
-                generation_started = perf_counter()
-                provider_result = await self._provider_router.complete(
-                    primary=self._primary_provider,
-                    fallbacks=[],
-                    prompt=generation_prompt.user_prompt,
-                    system_prompt=generation_prompt.system_prompt,
-                )
-                generation_provider_ms = round((perf_counter() - generation_started) * 1000)
-                completion = str(provider_result.get("text") or "").strip()
-                observed_envelope = provider_result.get("generation_envelope")
-                observed_snapshot_ids = (
-                    observed_envelope.get("snapshot_ids")
-                    if isinstance(observed_envelope, Mapping)
-                    else None
-                )
-                observed_matches = (
-                    observed_snapshot_ids is None
-                    or (
-                        isinstance(observed_snapshot_ids, list)
-                        and tuple(observed_snapshot_ids) == expected_snapshot_ids
-                    )
-                )
-                if (
-                    completion
-                    and observed_matches
-                    and validate_agent_response(completion, question=normalized_question, evidence=generation_input)
-                ):
-                    kind = AnswerOutcomeKind.EVIDENCE_GATED_ANSWER
-                    text = completion
-                else:
-                    kind = AnswerOutcomeKind.GENERATION_UNAVAILABLE
-                    text = self._GENERATION_UNAVAILABLE_REPLY
 
         runtime_result["gate"] = {"passed": gate_passed, "reason": gate_reason}
-        runtime_result["evidence_sufficiency_decision"] = decision.to_record() if isinstance(decision, EvidenceSufficiencyDecision) else {}
+        runtime_result["query_condition_set"] = resolved_conditions.to_record()
+        runtime_result["evidence_sufficiency_decision"] = decision.to_record()
         runtime_result["answer_evidence_set"] = evidence_set.to_record() if evidence_set is not None else None
         runtime_result["provider_prompt_snapshot_ids"] = provider_prompt_snapshot_ids
         runtime_result["provider_generation_envelope"] = provider_result.get("generation_envelope")
@@ -383,6 +607,7 @@ class EvidenceGatedAnswerExecutor:
             text=text,
             evidence=evidence,
             question=normalized_question,
+            query_conditions=resolved_conditions,
             request_id=request_id,
             session_id=session_id,
             gate_passed=gate_passed,
@@ -397,5 +622,5 @@ class EvidenceGatedAnswerExecutor:
             ),
             runtime=self._runtime_trace(runtime_result),
             evidence_set=evidence_set,
-            sufficiency_decision=decision if isinstance(decision, EvidenceSufficiencyDecision) else None,
+            sufficiency_decision=decision,
         )

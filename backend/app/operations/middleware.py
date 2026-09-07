@@ -3,6 +3,7 @@ from time import perf_counter
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.common.config import get_settings
 from app.infra.db import SessionLocal
@@ -60,7 +61,7 @@ class _DeferredOperationalEventResponse:
     until the wrapped response finishes sending.
     """
 
-    def __init__(self, inner: object, *, request: Request, started: float) -> None:
+    def __init__(self, inner: ASGIApp, *, request: Request, started: float) -> None:
         self._inner = inner
         self._request = request
         self._started = started
@@ -85,7 +86,7 @@ class _DeferredOperationalEventResponse:
             context=context,
         )
 
-    async def __call__(self, scope, receive, send) -> None:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         try:
             await self._inner(scope, receive, send)
         finally:

@@ -32,6 +32,8 @@ from app.model.chat import ChatMessage
 from app.model.document import Document, DocumentChunk, DocumentJob
 from app.operations.limits import MAX_PUBLISHED_SOURCES, MAX_UPLOAD_BYTES
 from app.rag.answer_evidence import evidence_snapshot_id
+from app.repository.chat_repository import ChatRepository
+from app.service.answer_execution_store import AnswerExecutionStore
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 _job_dispatcher = DocumentJobDispatcher()
@@ -479,6 +481,11 @@ def _redact_nested_frozen_answer_evidence(value: object, *, document_id: str) ->
 
 
 async def _tombstone_document(session: AsyncSession, *, document: Document) -> None:
+    await session.execute(
+        select(Document.id)
+        .where(Document.id == document.id)
+        .with_for_update()
+    )
     document.deleted_at = datetime.now(UTC)
     document.status = "pending"
     document.latest_requested_generation = document.published_generation
@@ -520,6 +527,8 @@ async def _tombstone_document(session: AsyncSession, *, document: Document) -> N
             changed = _redact_nested_frozen_answer_evidence(trace, document_id=document.id) or changed
         if changed:
             message.rag_trace = trace
+
+    await AnswerExecutionStore(session, ChatRepository(session)).redact_document_evidence(document_id=document.id)
 
 
 @router.get("")

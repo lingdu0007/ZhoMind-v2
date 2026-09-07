@@ -161,16 +161,22 @@ export const apiAdapter = {
   }
 };
 
-export const streamChat = async ({ message, session_id, signal, token }, handlers = {}) => {
+export const streamChat = async (
+  { message, session_id, query_conditions, inherit_conditions, signal, token },
+  handlers = {}
+) => {
   const authToken = token || localStorage.getItem('access_token');
   const base = resolveApiBaseURL();
+  const payload = { message, session_id };
+  if (query_conditions !== undefined) payload.query_conditions = query_conditions;
+  if (inherit_conditions === true) payload.inherit_conditions = true;
   const response = await fetch(`${base}/chat/stream`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       ...(authToken ? { Authorization: `Bearer ${authToken}` } : {})
     },
-    body: JSON.stringify({ message, session_id }),
+    body: JSON.stringify(payload),
     signal
   });
 
@@ -209,9 +215,21 @@ export const streamChat = async ({ message, session_id, signal, token }, handler
   const dispatch = (event) => {
     if (!event) return;
 
+    if (event.type === 'protocol_error') {
+      throw new Error(event.error || 'stream emitted a malformed terminal done event');
+    }
+
+    if (doneDispatched && event.type !== 'unknown') {
+      throw new Error(
+        event.type === 'done'
+          ? 'stream emitted a repeated terminal done event'
+          : 'stream emitted a semantic event after terminal done'
+      );
+    }
+
     if (event.type === 'done') {
-      doneDispatched = true;
       handlers.onDone?.();
+      doneDispatched = true;
       return;
     }
 
@@ -222,6 +240,21 @@ export const streamChat = async ({ message, session_id, signal, token }, handler
 
     if (event.type === 'answer_identity') {
       handlers.onAnswerIdentity?.(event.answer_id || '');
+      return;
+    }
+
+    if (event.type === 'answer_execution') {
+      handlers.onAnswerExecution?.(event.answer_execution);
+      return;
+    }
+
+    if (event.type === 'outcome') {
+      handlers.onOutcome?.(event.outcome || '');
+      return;
+    }
+
+    if (event.type === 'insufficient_evidence_reply') {
+      handlers.onInsufficientEvidenceReply?.(event.insufficient_evidence_reply);
       return;
     }
 
@@ -268,12 +301,14 @@ export const streamChat = async ({ message, session_id, signal, token }, handler
     if (done) break;
 
     parser.feed(decoder.decode(value, { stream: true }));
-    if (doneDispatched) return;
   }
 
   parser.feed(decoder.decode());
   parser.finish();
   if (!doneDispatched) {
-    handlers.onDone?.();
+    const error = new Error('流式响应在完成前中断。');
+    error.code = 'CHAT_STREAM_INTERRUPTED';
+    handlers.onError?.(error);
+    throw error;
   }
 };

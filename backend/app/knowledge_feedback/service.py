@@ -12,7 +12,9 @@ from app.knowledge_feedback.schemas import KnowledgeFeedbackCreate, ReviewWorkIt
 from app.model.chat import ChatMessage
 from app.model.document import Document, DocumentChunk
 from app.model.knowledge_feedback import KnowledgeFeedbackSignal, ReviewWorkItem
-from app.rag.answer_evidence import evidence_summary_from_trace
+from app.rag.answer_evidence import evidence_summary_from_execution, evidence_summary_from_trace
+from app.repository.chat_repository import ChatRepository
+from app.service.answer_execution_store import AnswerExecutionStore
 
 FEEDBACK_RETENTION_DAYS = 180
 REVIEW_AGE_DAYS = 90
@@ -61,7 +63,21 @@ class KnowledgeFeedbackService:
         if answer is None:
             raise AppError(status_code=404, code="RESOURCE_NOT_FOUND", message="answer not found")
 
-        summary = evidence_summary_from_trace(answer.rag_trace)
+        loaded = await AnswerExecutionStore(
+            self._session,
+            ChatRepository(self._session),
+        ).load_for_message(
+            user_id=user_id,
+            session_id=answer.session_id,
+            message_id=answer.id,
+            message_type=answer.type,
+            indexed_execution_id=answer.answer_execution_id,
+        )
+        summary = (
+            evidence_summary_from_execution(loaded.result)
+            if loaded is not None and loaded.result is not None
+            else evidence_summary_from_trace(answer.rag_trace)
+        )
         sources = summary.get("sources") if isinstance(summary, dict) else []
         sources = sources if isinstance(sources, list) else []
         entry_sources = [source for source in sources if _source_entry_id(source) == payload.entry_id]
@@ -72,7 +88,10 @@ class KnowledgeFeedbackService:
                 message="entry is not part of the answer evidence",
             )
 
-        edition = self._knowledge_edition(answer.rag_trace, entry_sources)
+        edition = self._knowledge_edition(
+            loaded.result if loaded is not None else answer.rag_trace,
+            entry_sources,
+        )
         existing_result = await self._session.execute(
             select(KnowledgeFeedbackSignal).where(
                 KnowledgeFeedbackSignal.user_id == user_id,

@@ -4,7 +4,6 @@ from collections.abc import Generator, Mapping
 from typing import cast
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.common.config import get_settings
@@ -13,7 +12,6 @@ from app.infra.db import get_db_session
 from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
-from app.model.chat import ChatMessage
 from app.rag.claim_evidence import ClaimEvidenceContract, ClaimResolution, ResolvedClaim, parse_claim_evidence_contract
 from app.rag.interfaces import RetrieveResult
 from app.retrieval.policy import LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID
@@ -186,7 +184,7 @@ def _event_data(payload: str, event: str) -> dict | None:
     return None
 
 
-def test_authenticated_chat_claim_gate_allows_reviewed_claims_and_refuses_boundary_before_generation(monkeypatch) -> None:
+def test_legacy_claim_gate_cannot_promote_a_migration_profile_to_product_evidence(monkeypatch) -> None:
     db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     redis = _InMemoryRedis()
@@ -251,10 +249,14 @@ def test_authenticated_chat_claim_gate_allows_reviewed_claims_and_refuses_bounda
                 response = client.post("/api/v1/chat", headers=headers, json={"message": message, "session_id": session_id})
                 assert response.status_code == 200
                 data = response.json()["data"]
-                assert data["outcome"] == "evidence_gated_answer", data
-                assert data["message"]["evidence_summary"]["coverage"] == "sufficient"
-                assert data["message"]["evidence_summary"]["source_count"] == 2
+                assert data["outcome"] == "insufficient_evidence_reply", data
+                assert data["message"]["evidence_summary"] == {
+                    "coverage": "insufficient",
+                    "source_count": 0,
+                    "sources": [],
+                }
                 assert "claim_evidence_contract" not in json.dumps(data)
+            assert provider.prompts == []
 
             normal = client.post(
                 "/api/v1/chat",
@@ -262,7 +264,9 @@ def test_authenticated_chat_claim_gate_allows_reviewed_claims_and_refuses_bounda
                 json={"message": "Should known execution paths use a deterministic workflow?", "session_id": "claim-identity"},
             )
             assert normal.status_code == 200
-            normal_summary = normal.json()["data"]["message"]["evidence_summary"]
+            normal_data = normal.json()["data"]
+            assert normal_data["outcome"] == "insufficient_evidence_reply"
+            normal_summary = normal_data["message"]["evidence_summary"]
             stream = client.post(
                 "/api/v1/chat/stream",
                 headers=headers,
@@ -276,6 +280,10 @@ def test_authenticated_chat_claim_gate_allows_reviewed_claims_and_refuses_bounda
             assert history.status_code == 200
             assistants = [item for item in history.json()["data"]["messages"] if item["type"] == "assistant"]
             assert [item["evidence_summary"] for item in assistants] == [normal_summary, normal_summary]
+            assert [item["outcome"] for item in assistants] == [
+                "insufficient_evidence_reply",
+                "insufficient_evidence_reply",
+            ]
 
             calls_before_boundary = len(provider.prompts)
             forged_boundary = client.post(
@@ -317,54 +325,6 @@ def test_authenticated_chat_claim_gate_allows_reviewed_claims_and_refuses_bounda
             assert universal_variant.json()["data"]["outcome"] == "insufficient_evidence_reply"
             assert len(provider.prompts) == calls_before_boundary
 
-            async def _trace(session_id: str) -> dict:
-                async with session_factory() as session:
-                    result = await session.execute(
-                        select(ChatMessage.rag_trace)
-                        .where(ChatMessage.session_id == session_id, ChatMessage.type == "assistant")
-                        .order_by(ChatMessage.created_at.desc())
-                    )
-                    trace = result.scalar_one()
-                    assert isinstance(trace, dict)
-                    return trace
-
-            direct_trace = asyncio.run(_trace("claim-direct"))
-            direct_audit = direct_trace["runtime"]["claim_evidence_audit"]
-            assert direct_audit["passed"] is True
-            assert direct_audit["reason"] == "sufficient_claim_evidence"
-            assert direct_audit["required_evidence_links"] == [
-                {
-                    "entry_id": "pae-workflow-gate-001",
-                    "claim_id": "claim-control-topology",
-                    "section_id": "stable-principle",
-                    "source_id": "source-workflow",
-                }
-            ]
-            assert len(direct_audit["covered_snapshot_ids"]) == 1
-
-            unconfigured_trace = asyncio.run(_trace("claim-unconfigured"))
-            assert unconfigured_trace["runtime"]["claim_evidence_audit"] == {
-                "contract_count": 0,
-                "passed": False,
-                "reason": "reject_evidence_gate_unavailable",
-            }
-
-            boundary_trace = asyncio.run(_trace("claim-boundary"))
-            assert boundary_trace["gate"] == {"passed": False, "reason": "reject_claim_scope"}
-            audit = boundary_trace["runtime"]["claim_evidence_audit"]
-            assert audit["passed"] is False
-            assert audit["reason"] == "reject_claim_scope"
-            assert audit["resolver_id"] == "fixture-calibrated-claim-resolver-v1"
-            assert audit["contract_hashes"] == [parse_claim_evidence_contract(_contract()).sha256]
-            assert audit["contracts"] == [
-                {
-                    "entry_id": "pae-workflow-gate-001",
-                    "review_id": "editorial-review-20260813-chat-gate",
-                    "review_revision": "2026-08-13.1",
-                    "sha256": parse_claim_evidence_contract(_contract()).sha256,
-                }
-            ]
-
             registry.register_claim_resolver("chat-default-claim-resolver", _MalformedFixtureClaimResolver())
             calls_before_malformed = len(provider.prompts)
             malformed = client.post(
@@ -378,12 +338,6 @@ def test_authenticated_chat_claim_gate_allows_reviewed_claims_and_refuses_bounda
             assert malformed.status_code == 200
             assert malformed.json()["data"]["outcome"] == "insufficient_evidence_reply"
             assert len(provider.prompts) == calls_before_malformed
-
-            malformed_trace = asyncio.run(_trace("claim-malformed-resolution"))
-            malformed_audit = malformed_trace["runtime"]["claim_evidence_audit"]
-            assert malformed_audit["passed"] is False
-            assert malformed_audit["reason"] == "reject_claim_resolution_invalid"
-            assert malformed_audit["required_claims"] == []
     finally:
         app.dependency_overrides.clear()
         get_extension_registry.cache_clear()

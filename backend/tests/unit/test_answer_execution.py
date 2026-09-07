@@ -159,7 +159,7 @@ def test_smalltalk_returns_closed_non_knowledge_outcome_before_retrieval() -> No
     assert provider.prompts == []
 
 
-def test_evidence_gated_answer_uses_one_bounded_snapshot_everywhere() -> None:
+def test_legacy_migration_candidates_freeze_explicit_insufficiency() -> None:
     long_content = "  第一条证据\n包含   多余空白。" + ("甲" * 200)
     candidates = [
         _candidate(1, content=long_content),
@@ -174,26 +174,21 @@ def test_evidence_gated_answer_uses_one_bounded_snapshot_everywhere() -> None:
 
     outcome = _execute(_executor(retriever=retriever, provider=provider, judge=judge))
 
-    assert outcome.kind is AnswerOutcomeKind.EVIDENCE_GATED_ANSWER
-    assert [item.source_id for item in outcome.evidence] == ["chunk-1", "chunk-2", "chunk-3"]
-    snapshots = [item.excerpt for item in outcome.evidence]
-    assert snapshots[0].startswith("第一条证据 包含 多余空白。")
-    assert len(snapshots[0]) == 160
-    assert [item["content_preview"] for item in judge.contexts[0]] == snapshots
-    assert len(provider.prompts) == 1
-    assert all(snapshot in provider.prompts[0] for snapshot in snapshots)
-    assert "第 4 条已发布证据" not in provider.prompts[0]
+    assert outcome.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
+    assert outcome.gate_reason == "no_eligible_published_evidence"
+    assert outcome.evidence == ()
+    assert outcome.evidence_set is None
+    assert outcome.sufficiency_decision is not None
+    assert provider.prompts == []
 
     trace = outcome.to_rag_trace()
-    assert trace["outcome"] == "evidence_gated_answer"
-    assert set(trace["runtime"]["timing_ms"]) == {
-        "retrieval_ms",
-        "generation_provider_ms",
-        "embedding_provider_ms",
+    assert trace["outcome"] == "insufficient_evidence_reply"
+    assert trace["evidence_sufficiency_decision"]["insufficient_evidence_reply"] == {
+        "outcome": "insufficient_evidence_reply",
+        "reason": "no_eligible_published_evidence",
+        "query_condition_set_identity": outcome.query_conditions.identity,
     }
-    assert [item["content_preview"] for item in trace["evidence"]] == snapshots
-    assert [source["excerpt"] for source in outcome.evidence_summary()["sources"]] == snapshots
-    assert all(len(item["snapshot_id"]) == 64 for item in trace["evidence"])
+    assert outcome.evidence_summary() == {"coverage": "insufficient", "source_count": 0, "sources": []}
     with pytest.raises(TypeError):
         outcome.runtime["final_provider"] = "other-provider"
 
@@ -236,17 +231,17 @@ def test_malformed_candidates_cannot_open_the_evidence_gate() -> None:
     assert provider.prompts == []
 
 
-def test_generation_unavailable_preserves_the_exact_answer_evidence_set() -> None:
+def test_legacy_migration_never_reports_generation_unavailable() -> None:
     retriever = _RecordingRetriever([_candidate(1), _candidate(2)])
     provider = _RecordingProvider(error=TimeoutError("upstream timeout"))
 
     outcome = _execute(_executor(retriever=retriever, provider=provider))
 
-    assert outcome.kind is AnswerOutcomeKind.GENERATION_UNAVAILABLE
-    assert outcome.text.startswith("【生成不可用】")
-    assert [item.source_id for item in outcome.evidence] == ["chunk-1", "chunk-2"]
-    assert outcome.evidence_summary()["coverage"] == "sufficient"
-    assert outcome.to_rag_trace()["runtime"]["provider_attempts"][0]["error_code"] == "TimeoutError"
+    assert outcome.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
+    assert outcome.gate_reason == "no_eligible_published_evidence"
+    assert outcome.evidence == ()
+    assert outcome.evidence_set is None
+    assert provider.prompts == []
 
 
 def test_agent_answer_fails_closed_until_a_real_evidence_gate_exists() -> None:
@@ -267,7 +262,7 @@ def test_agent_answer_fails_closed_until_a_real_evidence_gate_exists() -> None:
     )
 
     assert outcome.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
-    assert outcome.gate_reason == "reject_evidence_gate_unavailable"
+    assert outcome.gate_reason == "no_eligible_published_evidence"
     assert outcome.evidence == ()
 
 
@@ -344,7 +339,7 @@ mode = "workflow"
     )
 
     assert outcome.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
-    assert outcome.gate_reason == "reject_evidence_gate_unavailable"
+    assert outcome.gate_reason == "no_eligible_published_evidence"
 
 
 def test_snapshot_identity_binds_public_source_identity() -> None:
@@ -394,7 +389,7 @@ def test_agent_evidence_rejects_an_uncalibrated_gate_before_generation() -> None
     )
 
     assert outcome.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
-    assert outcome.gate_reason == "reject_evidence_gate_unavailable"
+    assert outcome.gate_reason == "no_eligible_published_evidence"
     assert provider.prompts == []
 
 
@@ -413,7 +408,7 @@ def test_agent_evidence_rejects_any_unverified_gate_before_generation() -> None:
     )
 
     assert outcome.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
-    assert outcome.gate_reason == "reject_evidence_gate_unavailable"
+    assert outcome.gate_reason == "no_eligible_published_evidence"
     assert provider.prompts == []
 
 

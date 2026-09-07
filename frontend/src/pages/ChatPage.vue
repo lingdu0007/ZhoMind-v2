@@ -52,6 +52,66 @@
           placeholder="请输入需要检索的问题"
           aria-describedby="composer-feedback"
         />
+        <section class="query-conditions" aria-label="查询条件">
+          <div class="query-conditions__header">
+            <h2>查询条件</h2>
+            <div class="query-conditions__actions">
+              <el-checkbox v-model="inheritConditions" :disabled="chatStore.loading">沿用上一轮条件</el-checkbox>
+              <el-tooltip content="重置查询条件" placement="top">
+                <el-button
+                  circle
+                  :disabled="chatStore.loading"
+                  aria-label="重置查询条件"
+                  @click="resetQueryConditions"
+                >
+                  <RotateCcw :size="15" aria-hidden="true" />
+                </el-button>
+              </el-tooltip>
+              <el-tooltip content="添加查询条件" placement="top">
+                <el-button
+                  circle
+                  :disabled="chatStore.loading || inheritConditions"
+                  aria-label="添加查询条件"
+                  @click="addQueryCondition"
+                >
+                  <Plus :size="16" aria-hidden="true" />
+                </el-button>
+              </el-tooltip>
+            </div>
+          </div>
+          <div v-if="!inheritConditions && queryConditions.length" class="query-conditions__rows">
+            <div v-for="(condition, index) in queryConditions" :key="condition.condition_id" class="query-conditions__row">
+              <el-input
+                v-model="condition.field"
+                :aria-label="`条件 ${index + 1} 字段`"
+                placeholder="字段"
+                :disabled="chatStore.loading"
+              />
+              <el-input
+                v-model="condition.operator"
+                :aria-label="`条件 ${index + 1} 运算符`"
+                placeholder="运算符"
+                :disabled="chatStore.loading"
+              />
+              <el-input
+                v-model="condition.value"
+                :aria-label="`条件 ${index + 1} 值`"
+                placeholder="值"
+                :disabled="chatStore.loading"
+              />
+              <el-tooltip content="删除查询条件" placement="top">
+                <el-button
+                  circle
+                  :disabled="chatStore.loading"
+                  :aria-label="`删除条件 ${index + 1}`"
+                  @click="removeQueryCondition(index)"
+                >
+                  <Trash2 :size="15" aria-hidden="true" />
+                </el-button>
+              </el-tooltip>
+            </div>
+          </div>
+        </section>
         <p v-if="composerError" id="composer-feedback" class="composer-feedback" role="alert">{{ composerError }}</p>
         <div class="composer-actions">
           <el-button class="btn-ghost" :disabled="!chatStore.loading" @click="chatStore.stopStreaming">停止</el-button>
@@ -107,10 +167,12 @@
 <script setup>
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import { Plus, RotateCcw, Trash2 } from 'lucide-vue-next';
 import ChatMessageList from '../components/ChatMessageList.vue';
 import SessionDrawer from '../components/SessionDrawer.vue';
 import { useChatStore } from '../store/chat';
 import { useAuthStore } from '../store/auth';
+import { resolveRetryTurn } from '../store/chat-state';
 import { getEvidenceSourceLabel, getEvidenceSourceUrl } from '../app/evidence-summary';
 import { useRoute } from 'vue-router';
 
@@ -118,6 +180,9 @@ const chatStore = useChatStore();
 const authStore = useAuthStore();
 const route = useRoute();
 const input = ref('');
+const queryConditions = ref([]);
+const inheritConditions = ref(false);
+const nextConditionNumber = ref(1);
 const chatSectionRef = ref(null);
 const sessionVisible = ref(false);
 const composerError = ref('');
@@ -159,6 +224,7 @@ const openSession = async (sessionId) => {
   sessionsLoading.value = true;
   try {
     await chatStore.loadSessionMessages(sessionId);
+    resetQueryConditions();
     sessionVisible.value = false;
   } catch (error) {
     ElMessage.error(error.message || '加载会话消息失败');
@@ -168,6 +234,7 @@ const openSession = async (sessionId) => {
 };
 
 const removeSession = async (sessionId) => {
+  const removedActiveSession = chatStore.activeSessionId === sessionId;
   try {
     await ElMessageBox.confirm('确认删除该会话？', '删除会话', {
       type: 'warning',
@@ -176,6 +243,7 @@ const removeSession = async (sessionId) => {
     });
     sessionsLoading.value = true;
     await chatStore.deleteSession(sessionId);
+    if (removedActiveSession) resetQueryConditions();
     ElMessage.success('会话已删除');
   } catch (error) {
     if (error !== 'cancel') ElMessage.error(error.message || '删除会话失败');
@@ -198,6 +266,7 @@ const toggleSessions = async () => {
 const startNewSession = () => {
   chatStore.activeSessionId = '';
   chatStore.messages = [];
+  resetQueryConditions();
   sessionVisible.value = false;
 };
 
@@ -214,6 +283,45 @@ const closeSourceExcerpt = async () => {
   sourceTrigger.value?.focus();
 };
 
+const addQueryCondition = () => {
+  queryConditions.value.push({
+    condition_id: `condition-${Date.now().toString(36)}-${nextConditionNumber.value++}`,
+    field: '',
+    operator: 'equals',
+    value: ''
+  });
+};
+
+const removeQueryCondition = (index) => {
+  queryConditions.value.splice(index, 1);
+};
+
+const resetQueryConditions = () => {
+  queryConditions.value = [];
+  inheritConditions.value = false;
+};
+
+const preparedQueryConditions = () => {
+  const normalized = queryConditions.value.map((condition) => ({
+    condition_id: condition.condition_id,
+    field: condition.field.trim(),
+    operator: condition.operator.trim(),
+    value: condition.value.trim()
+  }));
+  if (normalized.some((condition) => !condition.field || !condition.operator || !condition.value)) {
+    throw new Error('请完整填写每个查询条件。');
+  }
+  const keys = new Set();
+  for (const condition of normalized) {
+    const key = `${condition.field}\u0000${condition.operator}`;
+    if (keys.has(key)) {
+      throw new Error('同一字段与运算符只能保留一个查询条件。');
+    }
+    keys.add(key);
+  }
+  return normalized;
+};
+
 const onSend = async () => {
   if (!authStore.isLoggedIn) {
     ElMessage.warning('请先登录');
@@ -224,20 +332,36 @@ const onSend = async () => {
     composerError.value = '请输入问题后再发送。';
     return;
   }
+  let conditions;
+  try {
+    conditions = inheritConditions.value ? undefined : preparedQueryConditions();
+  } catch (error) {
+    composerError.value = error.message || '查询条件无效。';
+    return;
+  }
   composerError.value = '';
   input.value = '';
-  await chatStore.sendMessage(question, { token: authStore.token });
+  await chatStore.sendMessage(question, {
+    token: authStore.token,
+    query_conditions: conditions?.length ? conditions : undefined,
+    inherit_conditions: inheritConditions.value
+  });
 };
 
-const retryAssistantMessage = async (assistantIndex) => {
+const retryAssistantMessage = async (messageIndex) => {
   if (chatStore.loading) return;
-  const previousUserMessage = chatStore.messages
-    .slice(0, assistantIndex)
-    .reverse()
-    .find((message) => message.role === 'user');
-  if (!previousUserMessage?.content) return;
-  composerError.value = '';
-  await chatStore.sendMessage(previousUserMessage.content, { token: authStore.token });
+  try {
+    const retry = resolveRetryTurn(chatStore.messages, messageIndex);
+    if (retry === null) return;
+    composerError.value = '';
+    await chatStore.sendMessage(retry.question, {
+      token: authStore.token,
+      query_conditions: retry.query_conditions,
+      inherit_conditions: retry.inherit_conditions
+    });
+  } catch (error) {
+    composerError.value = error.message || '无法恢复已冻结的查询条件。';
+  }
 };
 
 watch(
@@ -309,15 +433,71 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  position: sticky;
-  bottom: 24px;
-  backdrop-filter: blur(10px);
 }
 
 .composer-actions {
   display: flex;
   justify-content: flex-end;
   gap: 12px;
+}
+
+.query-conditions {
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-rule);
+}
+
+.query-conditions__header,
+.query-conditions__actions {
+  display: flex;
+  align-items: center;
+}
+
+.query-conditions__header {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.query-conditions__header h2 {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.query-conditions__actions {
+  gap: 8px;
+}
+
+.query-conditions__actions :deep(.el-checkbox) {
+  min-width: 0;
+  margin-right: 4px;
+}
+
+.query-conditions__actions :deep(.el-checkbox__label) {
+  padding-left: 6px;
+  color: var(--color-ink-soft);
+  font-size: 12px;
+}
+
+.query-conditions__rows {
+  display: grid;
+  gap: 8px;
+}
+
+.query-conditions__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.78fr) minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 8px;
+}
+
+.query-conditions__row :deep(.el-button) {
+  width: 32px;
+  height: 32px;
+  margin: 0;
 }
 
 .composer-feedback {
@@ -511,8 +691,24 @@ onMounted(() => {
   }
 
   .composer {
-    bottom: 12px;
     padding: 16px;
+  }
+
+  .query-conditions__header {
+    align-items: flex-start;
+  }
+
+  .query-conditions__actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .query-conditions__row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 32px;
+  }
+
+  .query-conditions__row :deep(.el-input:nth-child(3)) {
+    grid-column: 1 / span 2;
   }
 }
 </style>

@@ -37,6 +37,7 @@ class RagStateDict(TypedDict):
     candidates_fused: list[dict]
     candidates_reranked: list[dict]
     query_condition_set: QueryConditionSet
+    require_closed_evidence_decision: bool
     evidence_sufficiency_decision: EvidenceSufficiencyDecision | None
     retrieval_profile_identity: str | None
     candidate_pool_scope: str | None
@@ -60,8 +61,19 @@ class RagStateDict(TypedDict):
 
 class RagState:
     @staticmethod
-    def new(*, request_id: str, user_id: str, session_id: str, query_raw: str) -> RagStateDict:
+    def new(
+        *,
+        request_id: str,
+        user_id: str,
+        session_id: str,
+        query_raw: str,
+        query_condition_set: QueryConditionSet | None = None,
+        require_closed_evidence_decision: bool = False,
+    ) -> RagStateDict:
         query_norm = query_raw.strip()
+        conditions = query_condition_set or QueryConditionSet.from_question(query_norm)
+        if conditions.normalized_question != query_norm:
+            raise ValueError("query condition set does not match the normalized question")
         return {
             "request_id": request_id,
             "user_id": user_id,
@@ -73,7 +85,8 @@ class RagState:
             "candidates_dense": [],
             "candidates_fused": [],
             "candidates_reranked": [],
-            "query_condition_set": QueryConditionSet.from_question(query_norm),
+            "query_condition_set": conditions,
+            "require_closed_evidence_decision": require_closed_evidence_decision,
             "evidence_sufficiency_decision": None,
             "retrieval_profile_identity": None,
             "candidate_pool_scope": None,

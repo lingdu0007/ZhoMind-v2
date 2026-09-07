@@ -1,13 +1,15 @@
+import asyncio
 import json
 import math
 import re
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
-from time import perf_counter
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.contracts.canonical import AnswerExecutionState, AnswerOutcome
 from app.extensions.provider_router import ProviderRouter
 from app.extensions.registry import get_extension_registry
 from app.rag.answer_evidence import evidence_summary_from_trace
@@ -16,6 +18,7 @@ from app.rag.claim_evidence import ClaimResolver
 from app.rag.interfaces import RelevanceJudge, Reranker, Retriever
 from app.repository.chat_repository import ChatRepository
 from app.retrieval.policy import get_retrieval_policy
+from app.service.answer_execution_store import AnswerExecutionHandle, AnswerExecutionStore
 from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
 from app.settings.runtime import get_runtime_settings
 
@@ -104,6 +107,7 @@ class ChatService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.repo = ChatRepository(session)
+        self.answer_execution_store = AnswerExecutionStore(session, self.repo)
 
     def _resolve_retriever(self) -> tuple[Retriever, str]:
         policy = get_retrieval_policy(get_runtime_settings())
@@ -371,7 +375,61 @@ class ChatService:
             "content": message.get("content") or "",
             "timestamp": message.get("timestamp"),
         }
+        execution = message.get("answer_execution")
+        if projection["type"] == "user" and isinstance(execution, dict):
+            admitted_question = execution.get("question")
+            if not isinstance(admitted_question, str) or projection["content"] != admitted_question:
+                raise ValueError("user message text contradicts the admitted answer execution question")
+            projection["answer_execution"] = execution
         if projection["type"] == "assistant":
+            execution_result = message.get("answer_execution_result")
+            if isinstance(execution, dict):
+                state = AnswerExecutionState(str(execution.get("state") or ""))
+                projection["answer_execution"] = execution
+                if state is AnswerExecutionState.COMPLETED:
+                    if not isinstance(execution_result, dict):
+                        raise ValueError("completed answer execution has no closed result")
+                    text = execution_result.get("text")
+                    frozen_text = execution.get("answer_text")
+                    if (
+                        not isinstance(text, str)
+                        or not isinstance(frozen_text, str)
+                        or projection["content"] != text
+                        or frozen_text != text
+                    ):
+                        raise ValueError("assistant message text contradicts the closed answer execution")
+                    outcome = execution.get("outcome")
+                    if not isinstance(outcome, str):
+                        raise ValueError("completed answer execution has no closed outcome")
+                    completed_outcome = AnswerOutcome(outcome)
+                    frozen_summary = execution.get("evidence_summary")
+                    if not isinstance(frozen_summary, dict):
+                        raise ValueError("completed answer execution has no frozen evidence summary")
+                    projection["content"] = text
+                    projection["outcome"] = completed_outcome.value
+                    projection["evidence_summary"] = frozen_summary
+                    if completed_outcome is AnswerOutcome.INSUFFICIENT_EVIDENCE_REPLY:
+                        insufficient_reply = execution.get("insufficient_evidence_reply")
+                        if not isinstance(insufficient_reply, dict):
+                            raise ValueError("insufficient answer execution has no structured insufficiency reply")
+                        projection["insufficient_evidence_reply"] = dict(insufficient_reply)
+                elif (
+                    state
+                    not in {
+                        AnswerExecutionState.STOPPED,
+                        AnswerExecutionState.FAILED,
+                        AnswerExecutionState.THROTTLED,
+                        AnswerExecutionState.REJECTED,
+                    }
+                    or not isinstance(execution_result, dict)
+                    or execution_result.get("state") != state.value
+                    or projection["content"]
+                ):
+                    raise ValueError("assistant message has no closed terminal answer execution")
+                if role == "admin":
+                    projection["retrieval_diagnostics"] = self._retrieval_diagnostics(message.get("rag_trace"))
+                return projection
+
             rag_trace = message.get("rag_trace")
             projection["evidence_summary"] = self._evidence_summary(rag_trace)
             if isinstance(rag_trace, dict) and isinstance(rag_trace.get("outcome"), str):
@@ -387,8 +445,12 @@ class ChatService:
             "answer": message["content"],
             "message": message,
         }
+        if message.get("answer_execution") is not None:
+            projection["answer_execution"] = message["answer_execution"]
         if message.get("outcome") is not None:
             projection["outcome"] = message["outcome"]
+        if message.get("insufficient_evidence_reply") is not None:
+            projection["insufficient_evidence_reply"] = message["insufficient_evidence_reply"]
         if role == "admin":
             projection["retrieval_diagnostics"] = message["retrieval_diagnostics"]
         return projection
@@ -421,19 +483,65 @@ class ChatService:
         if session is None:
             return []
         messages = await self.repo.list_messages(session_id=session_id, user_id=user_id)
-        return [
-            self.project_message(
-                {
+        projections: list[dict] = []
+        for item in messages:
+            message = {
                 "id": item.id,
                 "type": item.type,
                 "content": item.content,
                 "timestamp": item.created_at.isoformat(),
+                "answer_execution_id": item.answer_execution_id,
                 "rag_trace": item.rag_trace,
-                },
-                role,
+            }
+            loaded = await self.answer_execution_store.load_for_message(
+                user_id=user_id,
+                session_id=item.session_id,
+                message_id=item.id,
+                message_type=item.type,
+                indexed_execution_id=item.answer_execution_id,
             )
-            for item in messages
-        ]
+            if loaded is not None:
+                message["answer_execution"] = loaded.projection
+                message["answer_execution_result"] = loaded.result
+            projections.append(self.project_message(message, role))
+        return projections
+
+    async def get_answer_execution_projection(
+        self,
+        *,
+        execution_id: str,
+        user_id: str,
+        session_id: str,
+    ) -> dict:
+        loaded = await self.answer_execution_store.load(
+            execution_id=execution_id,
+            user_id=user_id,
+            session_id=session_id,
+        )
+        if loaded is None:
+            raise ValueError("private answer execution is missing after admission")
+        return loaded.projection
+
+    async def refresh_pending_stream_message(
+        self,
+        message: Mapping[str, Any],
+        *,
+        execution_id: str,
+        user_id: str,
+        session_id: str,
+        role: str,
+    ) -> dict:
+        if message.get("answer_execution_id") != execution_id:
+            raise ValueError("completed stream message has no frozen execution binding")
+        loaded = await self.answer_execution_store.load_pending_stream_result(
+            execution_id=execution_id,
+            user_id=user_id,
+            session_id=session_id,
+        )
+        refreshed = dict(message)
+        refreshed["answer_execution"] = loaded.projection
+        refreshed["answer_execution_result"] = loaded.result
+        return self.project_message(refreshed, role)
 
     async def delete_session(self, session_id: str, user_id: str) -> bool:
         deleted = await self.repo.delete_session(session_id=session_id, user_id=user_id)
@@ -441,85 +549,237 @@ class ChatService:
             await self.session.commit()
         return deleted
 
+    async def record_stream_delivery_interruption(
+        self,
+        *,
+        execution_id: str,
+        user_id: str,
+        session_id: str,
+    ) -> bool:
+        try:
+            recorded = await self.answer_execution_store.record_stream_delivery_interruption(
+                execution_id=execution_id,
+                user_id=user_id,
+                session_id=session_id,
+            )
+            await self.session.commit()
+            return recorded
+        except BaseException:
+            await self.session.rollback()
+            raise
+
+    async def record_stream_delivery_pending(
+        self,
+        *,
+        execution_id: str,
+        user_id: str,
+        session_id: str,
+    ) -> bool:
+        try:
+            recorded = await self.answer_execution_store.record_stream_delivery_pending(
+                execution_id=execution_id,
+                user_id=user_id,
+                session_id=session_id,
+            )
+            await self.session.commit()
+            return recorded
+        except BaseException:
+            await self.session.rollback()
+            raise
+
+    async def record_stream_delivery_completion(
+        self,
+        *,
+        execution_id: str,
+        user_id: str,
+        session_id: str,
+    ) -> bool:
+        try:
+            recorded = await self.answer_execution_store.record_stream_delivery_completion(
+                execution_id=execution_id,
+                user_id=user_id,
+                session_id=session_id,
+            )
+            await self.session.commit()
+            return recorded
+        except BaseException:
+            await self.session.rollback()
+            raise
+
+    async def _persist_noncompleted_terminal(
+        self,
+        *,
+        execution: AnswerExecutionHandle,
+        state: AnswerExecutionState,
+        failure_code: str,
+    ) -> None:
+        """Roll back an interrupted completion before retaining its terminal state."""
+
+        await self.session.rollback()
+        loaded = await self.answer_execution_store.load(
+            execution_id=execution.execution_id,
+            user_id=execution.user_id,
+            session_id=execution.session_id,
+        )
+        if loaded is None or loaded.projection["state"] in {
+            AnswerExecutionState.COMPLETED.value,
+            AnswerExecutionState.STOPPED.value,
+            AnswerExecutionState.FAILED.value,
+            AnswerExecutionState.THROTTLED.value,
+            AnswerExecutionState.REJECTED.value,
+        }:
+            return
+        if loaded.projection["state"] != AnswerExecutionState.RUNNING.value:
+            raise ValueError("answer execution cannot be terminalized from its retained state")
+        try:
+            if state is AnswerExecutionState.STOPPED:
+                await self.answer_execution_store.stop(handle=execution)
+            elif state is AnswerExecutionState.FAILED:
+                await self.answer_execution_store.fail(
+                    handle=execution,
+                    failure_code=failure_code,
+                )
+            else:
+                raise ValueError("unsupported answer execution terminal state")
+        except Exception as terminal_persistence_error:
+            await self.session.rollback()
+            loaded = await self.answer_execution_store.load(
+                execution_id=execution.execution_id,
+                user_id=execution.user_id,
+                session_id=execution.session_id,
+            )
+            if loaded is None:
+                raise ValueError(
+                    "private answer execution is missing after persistence rollback"
+                ) from terminal_persistence_error
+            if loaded.projection["state"] in {
+                AnswerExecutionState.COMPLETED.value,
+                AnswerExecutionState.STOPPED.value,
+                AnswerExecutionState.FAILED.value,
+                AnswerExecutionState.THROTTLED.value,
+                AnswerExecutionState.REJECTED.value,
+            }:
+                return
+            if loaded.projection["state"] != AnswerExecutionState.RUNNING.value:
+                raise ValueError("answer execution cannot recover from its retained state") from terminal_persistence_error
+            try:
+                await self.answer_execution_store.fail_persistence_without_assistant_message(handle=execution)
+                session = await self.repo.get_session(
+                    session_id=execution.session_id,
+                    user_id=execution.user_id,
+                )
+                if session is None:
+                    raise ValueError("private conversation is missing for its answer execution")
+                session.updated_at = datetime.now(UTC)
+                await self.session.commit()
+            except BaseException:
+                await self.session.rollback()
+                raise
+            return
+        try:
+            session = await self.repo.get_session(
+                session_id=execution.session_id,
+                user_id=execution.user_id,
+            )
+            if session is None:
+                raise ValueError("private conversation is missing for its answer execution")
+            session.updated_at = datetime.now(UTC)
+            await self.session.commit()
+        except BaseException:
+            await self.session.rollback()
+            raise
+
     async def run_chat(
         self,
         user_id: str,
         question: str,
         session_id: str | None,
+        query_conditions: list[dict] | None = None,
+        inherit_conditions: bool = False,
         progress: Callable[[str, str], Awaitable[None]] | None = None,
+        on_admitted: Callable[[AnswerExecutionHandle], Awaitable[None]] | None = None,
     ) -> dict:
         # Capture generation dependencies at request admission. A later provider
         # replacement only affects requests admitted after its atomic cutover.
         generation_settings = get_runtime_settings()
         provider_router = self._provider_router()
+        await self.repo.acquire_private_conversation_write_fence()
         await self.repo.purge_expired_sessions()
         sid = await self.ensure_session_id(session_id)
-        session = await self.repo.get_or_create_session(session_id=sid, user_id=user_id)
+        session = await self.repo.get_or_create_session_for_admission(session_id=sid, user_id=user_id)
 
         normalized_question = question.strip()
-
-        await self.repo.add_message(
-            session_id=session.id,
-            user_id=user_id,
-            message_type="user",
-            content=normalized_question,
-        )
-
-        retriever, retriever_name = self._resolve_retriever()
-        reranker, reranker_name = self._resolve_reranker()
-        judge, judge_name = self._resolve_judge()
-        claim_resolver = self._resolve_claim_resolver()
-
-        executor = EvidenceGatedAnswerExecutor(
-            retriever=retriever,
-            reranker=reranker,
-            judge=judge,
-            claim_resolver=claim_resolver,
-            provider_router=provider_router,
-            primary_provider=generation_settings.rag_primary_llm_provider,
-            retriever_name=retriever_name,
-            reranker_name=reranker_name,
-            judge_name=judge_name,
-            retrieval_top_k=generation_settings.runtime_retrieval_top_k,
-            max_evidence_items=generation_settings.runtime_answer_evidence_max_items,
-            max_excerpt_chars=generation_settings.runtime_answer_evidence_max_chars_per_source,
-        )
-        outcome = await executor.execute(
-            request_id=f"chat-{uuid.uuid4().hex[:8]}",
+        resolution = await self.answer_execution_store.resolve_query_conditions(
             user_id=user_id,
             session_id=session.id,
             question=normalized_question,
-            progress=progress,
+            explicit_conditions=query_conditions,
+            inherit_conditions=inherit_conditions,
         )
-        rag_trace = outcome.to_rag_trace()
-
-        persistence_started = perf_counter()
-        assistant_message = await self.repo.add_message(
-            session_id=session.id,
+        request_id = f"chat-{uuid.uuid4().hex[:8]}"
+        execution = await self.answer_execution_store.admit(
+            request_id=request_id,
             user_id=user_id,
-            message_type="assistant",
-            content=outcome.text,
-            rag_trace=rag_trace,
+            session_id=session.id,
+            question=normalized_question,
+            resolution=resolution,
         )
 
-        session.updated_at = datetime.now(UTC)
-        await self.session.commit()
-        runtime = rag_trace.get("runtime")
-        if isinstance(runtime, dict):
-            timing = runtime.get("timing_ms")
-            if not isinstance(timing, dict):
-                timing = {}
-                runtime["timing_ms"] = timing
-            timing["persistence_ms"] = round((perf_counter() - persistence_started) * 1000)
+        try:
+            # A cancellation during final persistence can only become a durable
+            # stopped execution if this admitted running record already exists.
+            await self.session.commit()
+            if on_admitted is not None:
+                await on_admitted(execution)
+            retriever, retriever_name = self._resolve_retriever()
+            reranker, reranker_name = self._resolve_reranker()
+            judge, judge_name = self._resolve_judge()
+            claim_resolver = self._resolve_claim_resolver()
+            executor = EvidenceGatedAnswerExecutor(
+                retriever=retriever,
+                reranker=reranker,
+                judge=judge,
+                claim_resolver=claim_resolver,
+                provider_router=provider_router,
+                primary_provider=generation_settings.rag_primary_llm_provider,
+                retriever_name=retriever_name,
+                reranker_name=reranker_name,
+                judge_name=judge_name,
+                retrieval_top_k=generation_settings.runtime_retrieval_top_k,
+                max_evidence_items=generation_settings.runtime_answer_evidence_max_items,
+                max_excerpt_chars=generation_settings.runtime_answer_evidence_max_chars_per_source,
+            )
+            outcome = await executor.execute(
+                request_id=request_id,
+                user_id=user_id,
+                session_id=session.id,
+                question=normalized_question,
+                query_conditions=resolution.query_conditions,
+                progress=progress,
+            )
+            assistant_message, _loaded_execution = await self.answer_execution_store.complete(
+                handle=execution,
+                outcome=outcome,
+            )
+            session.updated_at = datetime.now(UTC)
+            await self.session.commit()
+        except asyncio.CancelledError:
+            await self._persist_noncompleted_terminal(
+                execution=execution,
+                state=AnswerExecutionState.STOPPED,
+                failure_code="ANSWER_EXECUTION_STOPPED",
+            )
+            raise
+        except Exception:
+            await self._persist_noncompleted_terminal(
+                execution=execution,
+                state=AnswerExecutionState.FAILED,
+                failure_code="ANSWER_EXECUTION_FAILED",
+            )
+            raise
 
         return {
             "session_id": session.id,
-            "message": {
-                "id": assistant_message.id,
-                "type": assistant_message.type,
-                "content": assistant_message.content,
-                "timestamp": assistant_message.created_at.isoformat(),
-                "rag_trace": rag_trace,
-            },
-            "rag_steps": list(rag_trace["steps"]),
+            "message": assistant_message,
+            "rag_steps": list(outcome.to_rag_trace()["steps"]),
         }

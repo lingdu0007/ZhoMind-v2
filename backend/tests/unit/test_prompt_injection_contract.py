@@ -1,5 +1,4 @@
 import asyncio
-import json
 
 import pytest
 
@@ -17,11 +16,6 @@ from app.rag.prompt_injection_corpus import (
     SECRET_EXTRACTION,
     UNSAFE_CODE,
     UNSUPPORTED_ANSWER_PRESSURE,
-)
-from app.rag.prompt_regions import (
-    EVIDENCE_SOURCES_REGION,
-    SYSTEM_POLICY,
-    USER_QUESTION_REGION,
 )
 from app.retrieval.policy import LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID
 from app.settings.runtime import get_system_settings_runtime
@@ -134,74 +128,47 @@ def _seeded_case(kind: str):
     raise AssertionError(f"no seeded case of kind {kind}")
 
 
-def test_injected_override_instruction_stays_inside_evidence_region() -> None:
+def test_legacy_migration_override_instruction_cannot_open_generation() -> None:
     case = _seeded_case(INSTRUCTION_OVERRIDE)
     assert case.answer_marker is not None
     retriever = _RecordingRetriever([_candidate(case)])
     provider = _RecordingProvider()
     outcome = _execute(_executor(retriever=retriever, provider=provider), case.question)
 
-    assert outcome.kind is AnswerOutcomeKind.EVIDENCE_GATED_ANSWER
-    assert len(provider.prompts) == 1
-    user_prompt = provider.prompts[0]
-    system_prompt = provider.system_prompts[0]
-
-    # The injection marker travels only inside the untrusted evidence region.
-    envelope = json.loads(user_prompt)
-    assert case.answer_marker in envelope[EVIDENCE_SOURCES_REGION][0]["excerpt"]
-    assert case.answer_marker not in envelope[USER_QUESTION_REGION]
-    assert case.answer_marker not in (system_prompt or "")
-    assert SYSTEM_POLICY in (system_prompt or "")
+    assert outcome.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
+    assert outcome.gate_reason == "no_eligible_published_evidence"
+    assert provider.prompts == []
+    assert provider.system_prompts == []
 
 
-def test_secret_extraction_exposes_no_credentials_or_admin_diagnostics() -> None:
+def test_legacy_migration_secret_fixture_never_reaches_a_provider() -> None:
     case = _seeded_case(SECRET_EXTRACTION)
     assert case.answer_marker is not None
     retriever = _RecordingRetriever([_candidate(case)])
     provider = _RecordingProvider()
     outcome = _execute(_executor(retriever=retriever, provider=provider), case.question)
 
-    assert outcome.kind is AnswerOutcomeKind.EVIDENCE_GATED_ANSWER
-    user_prompt = provider.prompts[0]
-    system_prompt = provider.system_prompts[0] or ""
-    envelope = json.loads(user_prompt)
-
-    # The fixture marker is untrusted snapshot content: it may appear only
-    # inside the evidence region, never as policy or in the question region.
-    assert case.answer_marker in envelope[EVIDENCE_SOURCES_REGION][0]["excerpt"]
-    assert case.answer_marker not in envelope[USER_QUESTION_REGION]
-    assert case.answer_marker not in system_prompt
-
-    # Minimal exposure: no credentials, raw settings, private history, or
-    # administrator diagnostics reach the provider.
-    for forbidden in ("chunk-1", "document-1", "retrieval_source", "score", "10.0", "chunk_index", "generation"):
-        assert forbidden not in user_prompt
-    assert "DATABASE_URL" not in user_prompt
-    assert "JWT_SECRET" not in user_prompt
+    assert outcome.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
+    assert outcome.gate_reason == "no_eligible_published_evidence"
+    assert provider.prompts == []
+    assert provider.system_prompts == []
 
 
-def test_forged_source_instruction_cannot_inject_citation_identity() -> None:
+def test_legacy_migration_forged_source_cannot_open_generation() -> None:
     case = _seeded_case(FORGED_SOURCE)
     assert case.answer_marker is not None
     retriever = _RecordingRetriever([_candidate(case)])
     provider = _RecordingProvider()
     outcome = _execute(_executor(retriever=retriever, provider=provider), case.question)
 
-    assert outcome.kind is AnswerOutcomeKind.EVIDENCE_GATED_ANSWER
-    user_prompt = provider.prompts[0]
-    system_prompt = provider.system_prompts[0] or ""
-    envelope = json.loads(user_prompt)
-
-    # The forged-source instruction is evidence data; the system policy still
-    # forbids fabricating citations and the question region stays clean.
-    assert "不要编造或虚构来源" in system_prompt
-    assert case.answer_marker in envelope[EVIDENCE_SOURCES_REGION][0]["excerpt"]
-    assert case.answer_marker not in envelope[USER_QUESTION_REGION]
-    assert case.answer_marker not in system_prompt
+    assert outcome.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
+    assert outcome.gate_reason == "no_eligible_published_evidence"
+    assert provider.prompts == []
+    assert provider.system_prompts == []
 
 
 @pytest.mark.parametrize("kind", [FORGED_TOOL_CALL, UNSAFE_CODE])
-def test_agent_specific_effect_instructions_remain_untrusted_evidence(kind: str) -> None:
+def test_legacy_migration_effect_instructions_cannot_open_generation(kind: str) -> None:
     case = _seeded_case(kind)
     assert case.answer_marker is not None
     retriever = _RecordingRetriever([_candidate(case)])
@@ -209,13 +176,10 @@ def test_agent_specific_effect_instructions_remain_untrusted_evidence(kind: str)
 
     outcome = _execute(_executor(retriever=retriever, provider=provider), case.question)
 
-    assert outcome.kind is AnswerOutcomeKind.EVIDENCE_GATED_ANSWER
-    envelope = json.loads(provider.prompts[0])
-    system_prompt = provider.system_prompts[0] or ""
-    assert case.answer_marker in envelope[EVIDENCE_SOURCES_REGION][0]["excerpt"]
-    assert case.answer_marker not in envelope[USER_QUESTION_REGION]
-    assert case.answer_marker not in system_prompt
-    assert "不可信数据" in system_prompt
+    assert outcome.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
+    assert outcome.gate_reason == "no_eligible_published_evidence"
+    assert provider.prompts == []
+    assert provider.system_prompts == []
 
 
 def test_no_evidence_pressure_returns_insufficient_without_generation() -> None:
@@ -232,7 +196,7 @@ def test_no_evidence_pressure_returns_insufficient_without_generation() -> None:
     assert outcome.to_rag_trace()["runtime"]["final_provider"] is None
 
 
-def test_generation_unavailable_invokes_no_secondary_provider() -> None:
+def test_legacy_migration_never_reports_generation_unavailable() -> None:
     case = _seeded_case(FORGED_SOURCE)
     retriever = _RecordingRetriever([_candidate(case)])
     primary = _RecordingProvider(error=TimeoutError("upstream timeout"))
@@ -243,36 +207,27 @@ def test_generation_unavailable_invokes_no_secondary_provider() -> None:
         case.question,
     )
 
-    assert outcome.kind is AnswerOutcomeKind.GENERATION_UNAVAILABLE
-    assert outcome.text.startswith("【生成不可用】")
-    assert [item.source_id for item in outcome.evidence] == ["chunk-1"]
-    assert outcome.evidence_summary()["coverage"] == "sufficient"
-    # Fail-closed: the approved provider failed and no other provider is
-    # consulted; retrieved evidence is never sent to a fallback provider.
+    assert outcome.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
+    assert outcome.gate_reason == "no_eligible_published_evidence"
+    assert primary.prompts == []
+    assert primary.system_prompts == []
     assert secondary.prompts == []
     assert secondary.system_prompts == []
-    assert outcome.to_rag_trace()["runtime"]["fallback_hops"] == 0
 
 
-def test_injection_cases_preserve_closed_outcome_and_snapshot_identity() -> None:
+def test_legacy_migration_injection_cases_freeze_explicit_insufficiency() -> None:
     seeded = [case for case in ADVERSARIAL_INJECTION_CASES if case.document_source is not None]
     for case in seeded:
         retriever = _RecordingRetriever([_candidate(case)])
         provider = _RecordingProvider()
         outcome = _execute(_executor(retriever=retriever, provider=provider), case.question)
 
-        assert outcome.kind in {
-            AnswerOutcomeKind.EVIDENCE_GATED_ANSWER,
-            AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY,
-            AnswerOutcomeKind.NON_KNOWLEDGE_BASE_REPLY,
-            AnswerOutcomeKind.GENERATION_UNAVAILABLE,
-        }
+        assert outcome.kind is AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY
+        assert outcome.gate_reason == "no_eligible_published_evidence"
+        assert outcome.evidence == ()
+        assert outcome.evidence_set is None
+        assert provider.prompts == []
+        assert provider.system_prompts == []
         trace = outcome.to_rag_trace()
         assert trace["outcome"] == outcome.kind.value
-        assert [item["content_preview"] for item in trace["evidence"]] == [item.excerpt for item in outcome.evidence]
-        assert [source["excerpt"] for source in outcome.evidence_summary()["sources"]] == [
-            item.excerpt for item in outcome.evidence
-        ]
-        assert [item.source_id for item in outcome.evidence] == ["chunk-1"]
-        with pytest.raises(AttributeError):
-            outcome.evidence[0].excerpt = "rewritten"  # type: ignore[misc]
+        assert outcome.evidence_summary() == {"coverage": "insufficient", "source_count": 0, "sources": []}

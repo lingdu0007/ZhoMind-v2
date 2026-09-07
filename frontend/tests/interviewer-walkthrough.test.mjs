@@ -122,7 +122,7 @@ const parseSse = (text) => {
   return events;
 };
 
-test('Production Interviewer Walkthrough publishes a Candidate and proves the Knowledge User path', { timeout: 90000 }, async (t) => {
+test('published Agent evidence without Claim-Evidence Links closes as explicit insufficient evidence', { timeout: 90000 }, async (t) => {
   const { page, baseUrl, api } = await startWorkbench(t, {
     built: true,
     env: {
@@ -143,6 +143,7 @@ test('Production Interviewer Walkthrough publishes a Candidate and proves the Kn
   await page.addInitScript(({ token }) => localStorage.setItem('access_token', token), { token: userToken });
   await page.goto(`${baseUrl}knowledge`);
   await page.getByRole('heading', { name: '知识地图' }).waitFor();
+  await page.locator('section.knowledge-map[aria-busy="false"]').waitFor();
   const entry = page.getByRole('article', { name: 'Bound a deterministic workflow before adding agent autonomy' });
   await entry.waitFor();
   assert.equal(await entry.getByText('v1', { exact: true }).isVisible(), true);
@@ -151,18 +152,16 @@ test('Production Interviewer Walkthrough publishes a Candidate and proves the Kn
   await entry.getByRole('button', { name: '基于此条提问' }).click();
   await page.getByRole('button', { name: '发送' }).click();
   const browserAnswer = page.getByLabel('助手消息').last();
-  await browserAnswer.getByRole('status').filter({ hasText: '已完成' }).waitFor();
-  const citationButton = browserAnswer.getByRole('button', { name: /查看来源/ }).first();
-  await citationButton.click();
-  const citation = page.getByRole('complementary', { name: '来源摘录' });
-  await citation.waitFor();
-  assert.equal(await citation.getByRole('link', { name: '打开公开来源' }).getAttribute('href'), SOURCE_URL);
-  await citation.getByRole('button', { name: '关闭来源摘录' }).click();
-
-  const feedback = browserAnswer.getByLabel('知识反馈');
-  await feedback.getByRole('radio', { name: '有帮助' }).click();
-  await feedback.getByRole('button', { name: '提交反馈' }).click();
-  await feedback.getByText('反馈已提交').waitFor();
+  await browserAnswer.getByRole('status').filter({ hasText: '证据不足' }).waitFor();
+  assert.equal(
+    await browserAnswer.getByText('未检索到足够相关的知识片段，请补充更具体的问题或关键词。').isVisible(),
+    true
+  );
+  const browserSummary = browserAnswer.getByLabel('证据摘要');
+  assert.equal(await browserSummary.getByText('证据不足').isVisible(), true);
+  assert.equal(await browserSummary.getByText('0 个来源').isVisible(), true);
+  assert.equal(await browserAnswer.getByRole('button', { name: /查看来源/ }).count(), 0);
+  assert.equal(await browserAnswer.getByLabel('知识反馈').count(), 0);
 
   const normal = await apiRequest(api, '/chat', {
     token: userToken,
@@ -170,11 +169,14 @@ test('Production Interviewer Walkthrough publishes a Candidate and proves the Kn
     body: { message: DIRECT_QUERY, session_id: 'walkthrough-normal' }
   });
   assert.equal(normal.response.status, 200);
-  assert.equal(normal.data.outcome, 'evidence_gated_answer');
+  assert.equal(normal.data.outcome, 'insufficient_evidence_reply');
+  assert.equal(normal.data.message.evidence_summary.coverage, 'insufficient');
+  assert.equal(normal.data.message.evidence_summary.source_count, 0);
   const normalHistory = await apiRequest(api, '/sessions/walkthrough-normal', { token: userToken });
   assert.equal(normalHistory.response.status, 200);
   const normalHistoryAnswer = normalHistory.data.messages.find((item) => item.type === 'assistant');
   assert.equal(normalHistoryAnswer.id, normal.data.message.id);
+  assert.equal(normalHistoryAnswer.outcome, normal.data.outcome);
   assert.equal(normalHistoryAnswer.content, normal.data.message.content);
   assert.deepEqual(normalHistoryAnswer.evidence_summary, normal.data.message.evidence_summary);
 
@@ -185,7 +187,9 @@ test('Production Interviewer Walkthrough publishes a Candidate and proves the Kn
   });
   assert.equal(streamedResponse.status, 200);
   const streamEvents = parseSse(await streamedResponse.text());
+  const streamOutcome = streamEvents.find((item) => item.event === 'outcome')?.data.outcome;
   const streamSummary = streamEvents.find((item) => item.event === 'evidence_summary')?.data.evidence_summary;
+  assert.equal(streamOutcome, 'insufficient_evidence_reply');
   assert.deepEqual(streamSummary, normal.data.message.evidence_summary);
   const streamAnswerId = streamEvents.find((item) => item.event === 'answer_identity')?.data.answer_id;
   assert.ok(streamAnswerId);
@@ -197,6 +201,7 @@ test('Production Interviewer Walkthrough publishes a Candidate and proves the Kn
   const history = await apiRequest(api, '/sessions/walkthrough-stream', { token: userToken });
   assert.equal(history.response.status, 200);
   const historyAnswer = history.data.messages.find((item) => item.type === 'assistant');
+  assert.equal(historyAnswer.outcome, streamOutcome);
   assert.deepEqual(historyAnswer.evidence_summary, streamSummary);
   assert.equal(historyAnswer.id, streamAnswerId);
   assert.equal(historyAnswer.content, streamContent);
@@ -207,7 +212,8 @@ test('Production Interviewer Walkthrough publishes a Candidate and proves the Kn
     body: { message: PARAPHRASE_QUERY, session_id: 'walkthrough-paraphrase' }
   });
   assert.equal(paraphrase.response.status, 200);
-  assert.equal(paraphrase.data.outcome, 'evidence_gated_answer');
+  assert.equal(paraphrase.data.outcome, 'insufficient_evidence_reply');
+  assert.equal(paraphrase.data.message.evidence_summary.source_count, 0);
 
   const boundary = await apiRequest(api, '/chat', {
     token: userToken,

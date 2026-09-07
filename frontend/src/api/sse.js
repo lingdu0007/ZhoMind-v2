@@ -1,22 +1,141 @@
 const DONE_MARKER = '[DONE]';
+const PARSER_ERROR_EVENT = '__sse_parser_error__';
+const EVENTS_REQUIRING_DATA = new Set([
+  'answer_identity',
+  'answer_execution',
+  'outcome',
+  'insufficient_evidence_reply',
+  'evidence_summary',
+  'retrieval_diagnostics',
+  'error'
+]);
+
+class DuplicateJSONKeyError extends Error {}
+
+const skipJSONWhitespace = (source, index) => {
+  let cursor = index;
+  while (source[cursor] === ' ' || source[cursor] === '\n' || source[cursor] === '\r' || source[cursor] === '\t') {
+    cursor += 1;
+  }
+  return cursor;
+};
+
+const consumeJSONString = (source, index) => {
+  let cursor = index + 1;
+  while (cursor < source.length) {
+    if (source[cursor] === '\\') {
+      cursor += 2;
+    } else if (source[cursor] === '"') {
+      return cursor + 1;
+    } else {
+      cursor += 1;
+    }
+  }
+  throw new SyntaxError('unterminated JSON string');
+};
+
+const consumeJSONValue = (source, index) => {
+  let cursor = skipJSONWhitespace(source, index);
+  if (source[cursor] === '{') {
+    cursor = skipJSONWhitespace(source, cursor + 1);
+    const keys = new Set();
+    if (source[cursor] === '}') return cursor + 1;
+    while (true) {
+      if (source[cursor] !== '"') throw new SyntaxError('JSON object key must be a string');
+      const keyStart = cursor;
+      cursor = consumeJSONString(source, cursor);
+      const key = JSON.parse(source.slice(keyStart, cursor));
+      if (keys.has(key)) throw new DuplicateJSONKeyError('JSON object contains a duplicate key');
+      keys.add(key);
+      cursor = skipJSONWhitespace(source, cursor);
+      if (source[cursor] !== ':') throw new SyntaxError('JSON object key has no value');
+      cursor = consumeJSONValue(source, cursor + 1);
+      cursor = skipJSONWhitespace(source, cursor);
+      if (source[cursor] === '}') return cursor + 1;
+      if (source[cursor] !== ',') throw new SyntaxError('JSON object members are malformed');
+      cursor = skipJSONWhitespace(source, cursor + 1);
+    }
+  }
+  if (source[cursor] === '[') {
+    cursor = skipJSONWhitespace(source, cursor + 1);
+    if (source[cursor] === ']') return cursor + 1;
+    while (true) {
+      cursor = consumeJSONValue(source, cursor);
+      cursor = skipJSONWhitespace(source, cursor);
+      if (source[cursor] === ']') return cursor + 1;
+      if (source[cursor] !== ',') throw new SyntaxError('JSON array members are malformed');
+      cursor = skipJSONWhitespace(source, cursor + 1);
+    }
+  }
+  if (source[cursor] === '"') return consumeJSONString(source, cursor);
+  const primitive = source
+    .slice(cursor)
+    .match(/^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/);
+  if (!primitive) throw new SyntaxError('JSON value is malformed');
+  return cursor + primitive[0].length;
+};
+
+const assertUniqueJSONKeys = (source) => {
+  const end = consumeJSONValue(source, skipJSONWhitespace(source, 0));
+  if (skipJSONWhitespace(source, end) !== source.length) {
+    throw new SyntaxError('JSON payload has trailing data');
+  }
+};
 
 const parsePayload = (raw) => {
-  if (!raw) return null;
-  if (raw === DONE_MARKER) return DONE_MARKER;
+  if (!raw) return { value: null, hasDuplicateKeys: false };
+  if (raw === DONE_MARKER) return { value: DONE_MARKER, hasDuplicateKeys: false };
 
   try {
-    return JSON.parse(raw);
-  } catch {
-    return raw;
+    const value = JSON.parse(raw);
+    assertUniqueJSONKeys(raw);
+    return { value, hasDuplicateKeys: false };
+  } catch (error) {
+    if (error instanceof DuplicateJSONKeyError) {
+      return { value: null, hasDuplicateKeys: true };
+    }
+    return { value: raw, hasDuplicateKeys: false };
   }
 };
 
 export const normalizeSSEFrame = (frame) => {
   const eventName = frame?.event || 'message';
-  const payload = parsePayload(frame?.data || '');
+  const rawData = frame?.data ?? '';
 
-  if (eventName === 'done' || payload === DONE_MARKER) {
-    return { type: 'done' };
+  if (eventName === PARSER_ERROR_EVENT) {
+    return {
+      type: 'protocol_error',
+      error: rawData || 'stream ended before an SSE frame separator'
+    };
+  }
+  if (eventName === 'done') {
+    if (rawData === DONE_MARKER) {
+      return { type: 'done' };
+    }
+    return {
+      type: 'protocol_error',
+      error: 'stream emitted a malformed terminal done event'
+    };
+  }
+  if (!rawData && EVENTS_REQUIRING_DATA.has(eventName)) {
+    return {
+      type: 'protocol_error',
+      error: 'stream emitted a semantic event without data'
+    };
+  }
+  const parsedPayload = parsePayload(rawData);
+  if (parsedPayload.hasDuplicateKeys) {
+    return {
+      type: 'protocol_error',
+      error: 'stream emitted a JSON payload with duplicate keys'
+    };
+  }
+  const payload = parsedPayload.value;
+  if (payload === DONE_MARKER) {
+    return {
+      type: 'protocol_error',
+      error: 'stream emitted a terminal marker on a non-done event'
+    };
   }
 
   if (eventName === 'content') {
@@ -28,6 +147,21 @@ export const normalizeSSEFrame = (frame) => {
 
   if (eventName === 'answer_identity') {
     return { type: 'answer_identity', answer_id: payload?.answer_id || '' };
+  }
+
+  if (eventName === 'answer_execution') {
+    return { type: 'answer_execution', answer_execution: payload?.answer_execution ?? payload };
+  }
+
+  if (eventName === 'outcome') {
+    return { type: 'outcome', outcome: payload?.outcome || '' };
+  }
+
+  if (eventName === 'insufficient_evidence_reply') {
+    return {
+      type: 'insufficient_evidence_reply',
+      insufficient_evidence_reply: payload?.insufficient_evidence_reply ?? payload
+    };
   }
 
   if (eventName === 'evidence_summary') {
@@ -56,10 +190,22 @@ export const normalizeSSEFrame = (frame) => {
 
   // 兼容后端直接推送 JSON 行，而不是标准 event/data 对。
   if (payload && typeof payload === 'object') {
-    if (payload.type === 'done') return { type: 'done' };
     if (payload.type === 'content') return { type: 'content', content: payload.content || payload.delta || '' };
     if (payload.type === 'answer_identity') {
       return { type: 'answer_identity', answer_id: payload.answer_id || '' };
+    }
+    if (payload.type === 'answer_execution') {
+      return { type: 'answer_execution', answer_execution: payload.answer_execution ?? payload.data ?? payload };
+    }
+    if (payload.type === 'outcome') {
+      return { type: 'outcome', outcome: payload.outcome || payload.data?.outcome || '' };
+    }
+    if (payload.type === 'insufficient_evidence_reply') {
+      return {
+        type: 'insufficient_evidence_reply',
+        insufficient_evidence_reply:
+          payload.insufficient_evidence_reply ?? payload.data?.insufficient_evidence_reply ?? payload.data ?? payload
+      };
     }
     if (payload.type === 'evidence_summary') {
       return { type: 'evidence_summary', evidence_summary: payload.evidence_summary ?? payload.data ?? payload };
@@ -92,7 +238,11 @@ export const createSSEParser = (onFrame) => {
 
   const flushEvent = () => {
     if (!dataLines.length) {
+      if (currentEvent !== 'message') {
+        onFrame({ event: currentEvent, data: '' });
+      }
       currentEvent = 'message';
+      dataLines = [];
       return;
     }
 
@@ -147,11 +297,17 @@ export const createSSEParser = (onFrame) => {
   };
 
   const finish = () => {
-    if (lineBuffer) {
-      consumeLine(lineBuffer);
-      lineBuffer = '';
+    // SSE frames are complete only after their blank-line separator. EOF
+    // cannot synthesize a terminal from an unterminated final frame.
+    if (lineBuffer || currentEvent !== 'message' || dataLines.length) {
+      onFrame({
+        event: PARSER_ERROR_EVENT,
+        data: 'stream ended before an SSE frame separator'
+      });
     }
-    flushEvent();
+    lineBuffer = '';
+    currentEvent = 'message';
+    dataLines = [];
   };
 
   return { feed, finish };

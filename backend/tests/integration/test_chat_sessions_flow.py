@@ -328,23 +328,35 @@ def test_chat_and_sessions_flow(monkeypatch) -> None:
             chat_data = _extract_data(chat_body)
             assert chat_data["session_id"] == "session_test_1"
             assert isinstance(chat_data["answer"], str)
-            assert chat_data["answer"] == "【生成不可用】生成服务暂不可用，请稍后重试。"
+            assert chat_data["outcome"] == "insufficient_evidence_reply"
+            assert chat_data["answer"] == "未检索到足够相关的知识片段，请补充更具体的问题或关键词。"
             assert chat_data["message"]["type"] == "assistant"
+            assert chat_data["message"]["evidence_summary"] == {
+                "coverage": "insufficient",
+                "source_count": 0,
+                "sources": [],
+            }
             diagnostics = chat_data["retrieval_diagnostics"]
             assert diagnostics["candidate_counts"] == {"retrieved": 2, "reranked": 1}
-            assert diagnostics["evidence_gate"] == {"outcome": "passed", "reason": "sufficient_evidence"}
+            assert diagnostics["evidence_gate"] == {
+                "outcome": "rejected",
+                "reason": "no_eligible_published_evidence",
+            }
             assert "rag_steps" not in chat_data
             assert "rag_trace" not in chat_data
 
             saved_trace = asyncio.run(_load_assistant_trace(session_factory, "session_test_1", "chat-user"))
-            assert saved_trace["query"] == "请介绍系统当前状态"
+            assert "query" not in saved_trace
+            assert "query_condition_set" not in saved_trace
+            assert "answer_preview" not in saved_trace
+            assert "evidence" not in saved_trace
             runtime_trace = saved_trace["runtime"]
             assert runtime_trace["request_id"].startswith("chat-")
             assert runtime_trace["session_id"] == "session_test_1"
             assert runtime_trace["graph_alias"] == "default_v1"
-            assert isinstance(runtime_trace.get("tool_errors", []), list)
-            assert runtime_trace["gate"]["passed"] is True
-            assert runtime_trace["gate"]["reason"] == "sufficient_evidence"
+            assert "tool_errors" not in runtime_trace
+            assert runtime_trace["gate"]["passed"] is False
+            assert runtime_trace["gate"]["reason"] == "no_eligible_published_evidence"
             assert runtime_trace["step_names"] == [
                 "normalize",
                 "memory_read",
@@ -365,11 +377,10 @@ def test_chat_and_sessions_flow(monkeypatch) -> None:
             assert runtime_trace["steps"][0]["step"] == "normalize"
             assert saved_trace["steps"][0]["step"] == "retrieve"
             assert saved_trace["steps"][0]["detail"]["retriever"] == CHAT_RETRIEVER_PROVIDER
-            assert saved_trace["steps"][0]["detail"]["gate_passed"] is True
-            assert saved_trace["steps"][0]["detail"]["gate_reason"] == "sufficient_evidence"
+            assert saved_trace["steps"][0]["detail"]["gate_passed"] is False
+            assert saved_trace["steps"][0]["detail"]["gate_reason"] == "no_eligible_published_evidence"
             assert saved_trace["steps"][1]["detail"]["model"] == CHAT_RERANK_PROVIDER
             assert saved_trace["steps"][2]["detail"]["judge"] == CHAT_JUDGE_PROVIDER
-            assert len(saved_trace["evidence"]) == 1
             assert "request_id" in chat_body
 
             stream_response = client.post(
@@ -382,7 +393,9 @@ def test_chat_and_sessions_flow(monkeypatch) -> None:
             text = stream_response.text
             assert "event: stage" in text
             assert '"stage": "retrieval"' in text
-            assert '"stage": "generating"' in text
+            assert '"stage": "generating"' not in text
+            assert "event: answer_execution" in text
+            assert 'event: outcome\ndata: {"outcome": "insufficient_evidence_reply"}' in text
             assert "event: content" in text
             assert "event: retrieval_diagnostics" in text
             assert "event: rag_step" not in text
@@ -405,6 +418,8 @@ def test_chat_and_sessions_flow(monkeypatch) -> None:
             assert len(detail_data["messages"]) == 4
             assert detail_data["messages"][0]["type"] == "user"
             assert detail_data["messages"][1]["type"] == "assistant"
+            assert detail_data["messages"][1]["outcome"] == "insufficient_evidence_reply"
+            assert detail_data["messages"][1]["evidence_summary"] == chat_data["message"]["evidence_summary"]
             assert "retrieval_diagnostics" in detail_data["messages"][1]
 
             delete_response = client.delete("/api/v1/sessions/session_test_1", headers=headers)
@@ -505,7 +520,7 @@ def test_chat_reject_gate_when_no_evidence(monkeypatch) -> None:
             data = _extract_data(body)
             assert data["retrieval_diagnostics"]["evidence_gate"] == {
                 "outcome": "rejected",
-                "reason": "reject_insufficient_evidence",
+                "reason": "no_eligible_published_evidence",
             }
             assert "rag_trace" not in data
             assert "未检索到足够相关的知识片段" in data["answer"]
@@ -591,7 +606,7 @@ def test_chat_returns_non_knowledge_base_reply_without_retrieval_evidence(monkey
         asyncio.run(db_engine.dispose())
 
 
-def test_chat_dense_trace_uses_default_mixed_mode_retriever(monkeypatch) -> None:
+def test_chat_dense_trace_preserves_migration_diagnostics_without_product_evidence(monkeypatch) -> None:
     from app.rag.dense_contract import build_embedding_contract_fingerprint
     from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
 
@@ -675,7 +690,16 @@ def test_chat_dense_trace_uses_default_mixed_mode_retriever(monkeypatch) -> None
             )
             assert response.status_code == 200
             data = _extract_data(response.json())
-            assert data["retrieval_diagnostics"]["evidence_gate"]["outcome"] == "passed"
+            assert data["outcome"] == "insufficient_evidence_reply"
+            assert data["message"]["evidence_summary"] == {
+                "coverage": "insufficient",
+                "source_count": 0,
+                "sources": [],
+            }
+            assert data["retrieval_diagnostics"]["evidence_gate"] == {
+                "outcome": "rejected",
+                "reason": "no_eligible_published_evidence",
+            }
             saved_trace = asyncio.run(_load_assistant_trace(session_factory, "session_dense_default_1", "dense-default-admin"))
             assert saved_trace["steps"][0]["detail"]["retriever"] == "inmemory-mixed-mode-retriever"
 
@@ -688,9 +712,8 @@ def test_chat_dense_trace_uses_default_mixed_mode_retriever(monkeypatch) -> None
             assert retrieve_trace["dense_query_failed"] is False
             assert retrieve_trace["lexical_scope"] == "not_dense_ready_published"
 
-            evidence = saved_trace["evidence"]
-            assert [item["retrieval_source"] for item in evidence] == ["dense", "lexical"]
-            assert data["answer"] == "【生成不可用】生成服务暂不可用，请稍后重试。"
+            assert "evidence" not in saved_trace
+            assert data["answer"] == "未检索到足够相关的知识片段，请补充更具体的问题或关键词。"
     finally:
         if prev_retriever is not None:
             registry.register_retriever(CHAT_RETRIEVER_PROVIDER, prev_retriever)
@@ -811,12 +834,12 @@ def test_dense_only_candidate_without_lexical_anchor_is_insufficient_evidence(mo
             }
             assert data["retrieval_diagnostics"]["evidence_gate"] == {
                 "outcome": "rejected",
-                "reason": "reject_insufficient_evidence",
+                "reason": "no_eligible_published_evidence",
             }
             saved_trace = asyncio.run(
                 _load_assistant_trace(session_factory, "session_dense_unmatched_1", "dense-unmatched-admin")
             )
-            assert saved_trace["evidence"] == []
+            assert "evidence" not in saved_trace
     finally:
         if prev_retriever is not None:
             registry.register_retriever(CHAT_RETRIEVER_PROVIDER, prev_retriever)
@@ -840,7 +863,7 @@ def test_dense_only_candidate_without_lexical_anchor_is_insufficient_evidence(mo
         asyncio.run(db_engine.dispose())
 
 
-def test_knowledge_user_chat_hydrates_published_evidence_beyond_stale_dense_candidates(monkeypatch) -> None:
+def test_migration_profile_diagnostics_do_not_promote_stale_candidates_to_product_evidence(monkeypatch) -> None:
     from app.rag.dense_contract import build_embedding_contract_fingerprint
     from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
 
@@ -962,20 +985,14 @@ def test_knowledge_user_chat_hydrates_published_evidence_beyond_stale_dense_cand
 
             assert response.status_code == 200
             data = _extract_data(response.json())
-            assert data["answer"] == "已基于发布资料生成回答。"
+            assert data["outcome"] == "insufficient_evidence_reply"
+            assert data["answer"] == "未检索到足够相关的知识片段，请补充更具体的问题或关键词。"
             assert data["message"]["evidence_summary"] == {
-                "coverage": "sufficient",
-                "source_count": 1,
-                "sources": [
-                    {
-                        "source_id": "chunk-chat-current-published",
-                        "metadata": {"title": "当前发布验收.md", "publication_version": "v1"},
-                        "excerpt": published_content,
-                    }
-                ],
+                "coverage": "insufficient",
+                "source_count": 0,
+                "sources": [],
             }
-            assert len(provider.prompts) == 1
-            assert published_content in provider.prompts[0]
+            assert provider.prompts == []
     finally:
         app.dependency_overrides.clear()
         get_settings.cache_clear()
@@ -1069,7 +1086,6 @@ def test_chat_dense_failure_trace_marks_runtime_fallback_and_error(monkeypatch) 
             assert retrieve_trace["fallback_used"] is True
             assert retrieve_trace["provider_error"] == {
                 "code": "PROVIDER_EXEC_FAILED",
-                "message": "milvus unavailable",
                 "type": "RuntimeError",
             }
 
@@ -1080,7 +1096,6 @@ def test_chat_dense_failure_trace_marks_runtime_fallback_and_error(monkeypatch) 
             assert retrieve_step["detail"]["fallback_used"] is True
             assert retrieve_step["detail"]["provider_error"] == {
                 "code": "PROVIDER_EXEC_FAILED",
-                "message": "milvus unavailable",
                 "type": "RuntimeError",
             }
     finally:
@@ -1106,7 +1121,7 @@ def test_chat_dense_failure_trace_marks_runtime_fallback_and_error(monkeypatch) 
         asyncio.run(db_engine.dispose())
 
 
-def test_chat_dense_failure_full_lexical_fallback_reads_tail_of_published_live_corpus(monkeypatch) -> None:
+def test_chat_dense_failure_preserves_diagnostic_fallback_without_product_evidence(monkeypatch) -> None:
     from app.rag.dense_contract import build_embedding_contract_fingerprint
     from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
 
@@ -1195,9 +1210,9 @@ def test_chat_dense_failure_full_lexical_fallback_reads_tail_of_published_live_c
             assert retrieve_trace["lexical_scope"] == "full_published_live"
             assert retrieve_trace["lexical_candidate_count"] == 1
 
-            evidence = saved_trace["evidence"]
-            assert [item["document_id"] for item in evidence] == ["doc-chat-tail-match"]
-            assert data["answer"] == "【生成不可用】生成服务暂不可用，请稍后重试。"
+            assert "evidence" not in saved_trace
+            assert data["outcome"] == "insufficient_evidence_reply"
+            assert data["answer"] == "未检索到足够相关的知识片段，请补充更具体的问题或关键词。"
     finally:
         if prev_retriever is not None:
             registry.register_retriever(CHAT_RETRIEVER_PROVIDER, prev_retriever)

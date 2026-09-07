@@ -35,6 +35,8 @@ class ProviderRouter:
         text = ""
         final_provider = primary
         generation_envelope: dict | None = None
+        generation_envelope_invalid = False
+        completed_provider_call = False
 
         for idx, provider_name in enumerate(order, start=1):
             provider = self.providers.get(provider_name)
@@ -55,10 +57,14 @@ class ProviderRouter:
                 # not recreate it here from the generic protocol arguments.
                 completion = await provider.complete(prompt=prompt, system_prompt=system_prompt)
                 text = completion.text if isinstance(completion, GenerationCompletion) else str(completion or "")
+                raw_envelope = completion.generation_envelope if isinstance(completion, GenerationCompletion) else None
                 observed = observed_generation_envelope(
-                    completion.generation_envelope if isinstance(completion, GenerationCompletion) else None
+                    raw_envelope
                 )
+                invalid_observation = raw_envelope is not None and observed is None
+                generation_envelope_invalid = generation_envelope_invalid or invalid_observation
                 generation_envelope = observed
+                completed_provider_call = True
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 final_provider = provider_name
                 attempts.append(
@@ -68,12 +74,16 @@ class ProviderRouter:
                         "latency_ms": latency_ms,
                         "error_code": None,
                         "generation_envelope": observed,
+                        "generation_envelope_invalid": invalid_observation,
                     }
                 )
                 if text:
                     break
             except Exception as exc:
-                observed = observed_generation_envelope(getattr(exc, "generation_envelope", None))
+                raw_envelope = getattr(exc, "generation_envelope", None)
+                observed = observed_generation_envelope(raw_envelope)
+                invalid_observation = raw_envelope is not None and observed is None
+                generation_envelope_invalid = generation_envelope_invalid or invalid_observation
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 attempts.append(
                     {
@@ -82,6 +92,7 @@ class ProviderRouter:
                         "latency_ms": latency_ms,
                         "error_code": type(exc).__name__,
                         "generation_envelope": observed,
+                        "generation_envelope_invalid": invalid_observation,
                     }
                 )
                 generation_envelope = observed
@@ -96,4 +107,6 @@ class ProviderRouter:
             "provider_attempts": attempts,
             "fallback_hops": hops,
             "generation_envelope": generation_envelope,
+            "generation_envelope_invalid": generation_envelope_invalid,
+            "provider_failure": not completed_provider_call,
         }

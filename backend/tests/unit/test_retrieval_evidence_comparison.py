@@ -179,6 +179,7 @@ def test_evaluate_cli_selects_requested_comparison_modes(
         embedding_model_normalized="fixture-model",
     )
     captured: dict[str, object] = {}
+    embedding_provider_kwargs: dict[str, object] = {}
 
     async def fake_run_retrieval_evaluation(**kwargs: object) -> dict[str, object]:
         captured.update(kwargs)
@@ -192,9 +193,13 @@ def test_evaluate_cli_selects_requested_comparison_modes(
     monkeypatch.setattr(
         retrieval_evidence.DenseEmbeddingContract,
         "from_settings",
-        lambda _settings: SimpleNamespace(active=True),
+        lambda _settings: SimpleNamespace(active=True, dimension=1536),
     )
-    monkeypatch.setattr(retrieval_evidence, "OpenAIEmbeddingProvider", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        retrieval_evidence,
+        "OpenAIEmbeddingProvider",
+        lambda **kwargs: embedding_provider_kwargs.update(kwargs) or object(),
+    )
     monkeypatch.setattr(retrieval_evidence, "build_embedding_contract_fingerprint", lambda _settings: "fixture")
     monkeypatch.setattr(retrieval_evidence, "run_retrieval_evaluation", fake_run_retrieval_evaluation)
 
@@ -217,6 +222,12 @@ def test_evaluate_cli_selects_requested_comparison_modes(
     assert exit_code == 0
     assert captured["modes"] == expected_modes
     assert captured["embedding_identity"] == "fixture-model:fixture"
+    assert embedding_provider_kwargs == {
+        "api_key": "fixture-api-key",
+        "base_url": "https://fixture.invalid/v1",
+        "dimensions": 1536,
+        "model": "fixture-model",
+    }
     assert json.loads(capsys.readouterr().out) == {
         "modes": list(expected_modes),
         "outcome": "passed",

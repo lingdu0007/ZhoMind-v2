@@ -1,6 +1,6 @@
 # Canonical Product Contracts
 
-Status: normative product contract; additive foundation for tickets 13 through 19
+Status: normative product contract; additive foundation for tickets 13 through 20
 
 ## Purpose
 
@@ -457,16 +457,38 @@ inputs and are not provider-visible or user-facing citation data.
 
 The provider-visible prompt is derived only from that same frozen set. Its
 structural regions keep the normalized question, QCS, selected evidence
-sources, and response contract separate. The response contract names only the
-selected citations and governing citation. Each provider-visible source carries
-the frozen `snapshot_id`, `item_identity`, and `citation_identity` from that
-same set, while scores, chunk locators, and selection diagnostics remain
-excluded. Retrieved text cannot modify policy, permissions, provider routing,
-QCS conditions, evidence identities, or citation identities. Generated output
-may cite only the frozen selected items, must cite every material nonblank line
-in each required response section, and cannot introduce an unknown or
+sources, Evidence Set identity, ordered knowledge-version identities, and
+response contract separate. The response contract names only the selected
+citations and governing citation. Each provider-visible source carries the
+frozen `snapshot_id`, `item_identity`, and `citation_identity` from that same
+set, while scores, chunk locators, and selection diagnostics remain excluded.
+Retrieved text cannot modify policy, permissions, provider routing, QCS
+conditions, evidence identities, or citation identities. Generated output may
+cite only the frozen selected items, must cite every material nonblank line in
+each required response section, and cannot introduce an unknown or
 contradictory QCS assignment, secret value, unsupported quantified assurance,
 or universalization of a bounded internal case.
+
+Before any provider call, the complete parsed provider-visible input must equal
+the one record deterministically built from the frozen normalized question,
+exact QCS identity and ordered condition records, Evidence Set, every selected
+source field including its citation marker, ordered item and citation
+identities, ordered snapshots, ordered knowledge-version identities, and the
+complete response contract when one is present. JSON object parsing rejects a
+duplicate key at every nesting depth; a later key must never silently overwrite
+an earlier frozen field. The comparison does not trim, normalize, omit, or
+reconstruct provider-visible fields: non-canonical QCS strings, an altered
+citation marker, or an altered response contract are mismatches. Each
+source-declared `snapshot_id` must equal the snapshot
+recomputed from that source's provider-visible content. A valid observed
+generation envelope must carry the same snapshot sequence. A malformed or
+mismatched provider input or observed envelope is an application failure, not
+`generation_unavailable`, insufficiency, or a supported answer. A provider
+envelope that is present but cannot be validated is malformed rather than
+absent. An unrecovered provider exception, or a route configuration that
+produces no completed provider call, is likewise an application failure;
+`generation_unavailable` remains reserved only for a completed provider call
+that yields no usable answer under the frozen boundary.
 
 The historical first-three selector, non-empty-context gate, and
 candidate-derived citation projection are superseded for active Pilot
@@ -474,6 +496,186 @@ production decisions. They may remain only behind the explicit
 `lexical_heuristic_migration` / `legacy_migration_diagnostic` profile and
 must not produce a product sufficiency decision, immutable Answer Evidence
 Set, or product citation identity.
+
+## Closed Answer Execution And Private Conversation Persistence
+
+An authenticated chat request is admitted as one private Answer Execution. It
+retains one immutable `answer_execution_request/v1` request header and an
+append-only `answer_execution_event/v1` trail while the private conversation is
+retained. Event sequence is unique per execution, and every terminal,
+redaction, or stream-delivery lifecycle writer locks that execution before
+reading and appending its next event. Conversation deletion and retention purge
+acquire those execution locks before deleting its event trail or header, so
+retention cannot leave private events without their owning execution. On
+SQLite, admission, event writers, deletion, and expiry share a transaction-wide
+writer fence before their relevant reads: a fresh transaction begins it with
+`BEGIN IMMEDIATE`; an already-open deferred read transaction upgrades it with a
+no-op `chat_sessions` write. Cleanup locks matching execution headers, locks
+the verified conversation session, then re-scans headers before delete;
+admission locks that verified session behind the same fence. Thus an admission
+or event write cannot race private deletion or expiry into an orphaned header,
+event, or message. This is not a
+`canonical_records` aggregate: it is private conversation data, so verified
+conversation deletion or expiry may delete its header and events together with
+its linked messages and session. While it is retained, neither the request
+header nor an event may be rewritten. Admission durably binds its exact
+user-message identity before execution can run.
+
+Execution states are distinct from answer outcomes. The admitted path is
+`admitted -> queued -> running`; its terminal states are `completed`,
+`stopped`, `failed`, `throttled`, and `rejected`. A `completed` execution has
+exactly one outcome: `evidence_gated_answer`,
+`insufficient_evidence_reply`, `non_knowledge_base_reply`, or
+`generation_unavailable`. A stopped, failed, throttled, or rejected execution
+has no completed answer outcome, Answer Evidence Set, citation, or fabricated
+answer text. `completed` is an execution state, not a fifth outcome.
+
+Admission normalizes and records a visible Query Condition Set (QCS) with the
+question. A QCS contains its identity, normalized question, and ordered,
+explicit decisive conditions such as versions, environment, scale, and
+targets. A caller may submit editable conditions explicitly, or inherit only
+the latest completed QCS from the same private conversation and same owner.
+Inheritance copies the conditions into a new QCS bound to the new normalized
+question and records the source execution identity; it never reuses the prior
+QCS identity, including when the user repeats the same normalized question. A
+new conversation cannot inherit conditions. When no conditions
+are submitted, admission derives them only from the admitted question text; a
+hidden conversation memory, user profile, global profile, or retrieval result
+cannot supply a decisive condition. Every completed turn freezes its QCS and
+provenance, and the owner-visible Answer Execution projection exposes both.
+A composer is only a pre-admission draft: opening a conversation, starting a
+new conversation, or deleting the active conversation clears its draft
+conditions and inheritance flag. A retry with any retained execution,
+including a non-completed failure projected over SSE or history, submits that
+turn's frozen QCS as explicit conditions. Missing client-side terminal data
+does not authorize re-inheritance: a retry marked as inherited but lacking the
+retained execution must fail locally until that execution is recovered. Only a
+pre-admission transport failure may repeat the original requested conditions or
+inheritance request. A client accepts a streamed execution only after binding it
+to that submitted turn: an implicit QCS must exactly match conditions derived
+from the submitted question, and an inherited QCS must name a completed source
+execution already projected in the same private conversation and copy its exact
+conditions. A completed execution becomes retry authority only after the full
+terminal projection validates; a contradictory terminal projection clears local
+retry authority until the persisted execution is recovered.
+
+Before retrieval, the narrow non-knowledge-base allowlist may select
+`non_knowledge_base_reply`. That result has no knowledge claim, Answer
+Evidence Set, citation, or provider call. All other admitted knowledge
+requests use the deterministic evidence-sufficiency decision from the
+admitted QCS. A missing decisive condition remains reviewed conditional
+branches or a structured insufficiency; it is never silently filled by memory
+or inference.
+
+A completed `answer_execution_result/v1` retains the exact normalized
+question, frozen QCS and provenance, outcome, frozen text, Evidence Set
+identity, ordered item identities, snapshot identities, and knowledge-version
+identities. Its owner-visible completed execution projection also carries the
+exact assistant-message binding, frozen answer text, and frozen
+outcome-specific evidence summary so a transport projection can compare rather
+than infer. Evidence-Gated Answer and Generation Unavailable also retain a
+provider-input identity record containing that same question, QCS identity,
+Evidence Set identity, item identities, snapshots, and knowledge versions.
+An Insufficient Evidence Reply retains one structured
+`insufficient_evidence_reply` record with its outcome, exact reason, and QCS
+identity; no other completed outcome retains that record.
+`generation_unavailable` retains those identities only to prove its closed
+execution boundary. Its answer projection carries no knowledge claim,
+citation, source, or evidence preview, and it cannot be presented as a
+supported-answer projection.
+The request header binds its exact user-message identity. Every completed
+result, and every non-completed terminal represented by a persisted assistant
+message, binds that exact assistant-message identity. If assistant-message
+persistence fails after admission, completion is rolled back and the retained
+record may instead append only a `failed` terminal with
+`ANSWER_EXECUTION_PERSISTENCE_FAILED`, no assistant-message identity, no
+answer text, and no outcome; it is owner-visible only through its frozen
+user-message binding. `ChatMessage.answer_execution_id` is a mutable lookup
+index, not an authority: readers discover and validate the immutable request
+or terminal binding in the same private conversation, so clearing the index
+cannot turn a bound message into a legacy trace projection, moving that
+message to another private conversation fails closed, and a non-null
+contradictory index is an application failure. Normal HTTP, SSE terminal events, the linked persisted assistant
+message, reload, and private history are projections of this one result only
+after validating those frozen message bindings. They may not retrieve again,
+reselect evidence, re-slice snapshots, invoke a provider, derive an outcome
+from text, a flag, a source count, a score, or a trace, or upgrade
+insufficiency, a stop, or a failure to a supported answer.
+SSE admission appends `stream_delivery_pending` before a closed result can be
+delivered. A completed result with that pending record but without a delivery
+completion or interruption record is not projectable through reload or history:
+it is an application failure, not a completed-answer replay. Normal HTTP does
+not create an SSE delivery lifecycle record and may project the same closed
+result after ordinary persistence completes.
+An SSE client accepts a completed terminal only when its assistant identity
+equals the execution's assistant binding; its completed execution identity and
+state, answer text, normalized question, complete non-duplicated QCS and
+provenance, explicit outcome, and full outcome-specific evidence summary all
+equal the frozen execution projection, and that question, QCS, and provenance
+also equal the normalized submitted turn. For an Insufficient Evidence Reply,
+the structured reply carried by both terminal stream and execution must exactly
+match; no other outcome may carry one. A valid terminal is only a fully framed
+SSE `event: done` whose data payload is the exact unquoted literal `[DONE]`.
+EOF before that frame's blank-line separator, a quoted or otherwise altered
+marker, or that marker on any other event is a missing or contradictory
+terminal. A repeated `done`, or any semantic frame after `done`, is also an
+application failure. Missing, duplicated, or contradictory terminal fields are
+an application failure; a client cannot invent an insufficiency reply or other
+replacement result. An error or
+cancellation received after completed terminal fields is an application
+failure, not a stop: the client clears the completed outcome, structured
+insufficiency reply, evidence summary, and diagnostics rather than retaining a
+completed projection.
+
+`ChatMessage.rag_trace` is a compatibility diagnostic only. A linked Answer
+Execution never reads outcome, evidence, citation, snapshot, or condition
+semantics from that trace. For a linked execution, the persisted diagnostic
+projection retains only bounded operational metadata such as gate state, step
+names, candidate counts, provider identities, timing, and error
+classifications; it does not retain the question, QCS, answer text or preview,
+evidence content, provider-visible generation envelope, or private history. A
+legacy message has no immutable request or terminal binding, not merely a null
+mutable index; it may remain readable through its bounded compatibility
+projection during retention, but it cannot become a new Answer Execution
+result.
+
+Authentication failure occurs before admission and creates no answer outcome.
+An unrecovered retrieval or provider failure, and every execution, stream, or
+persistence failure, is an application failure, never insufficiency. A
+retrieval implementation may retain a diagnostic for a recovered fallback only
+when it returns an actual candidate result; it may not synthesize an empty
+result and label that provider failure as insufficient evidence. An interrupted
+stream while the execution is running cancels it and waits until its private
+stopped terminal event is durable. An ASGI send exception or disconnect uses
+the same durable cleanup. A completed SSE delivery is not finished until an
+outer ASGI transport observer has successfully written its terminal `done`
+body and completed the response finalization beyond every response-buffering
+middleware, then appended `stream_delivery_completed`. If delivery
+interrupts after projection of a closed result has begun, an append-only
+`stream_delivery_interrupted` record leaves the original result immutable but
+makes it non-projectable; reload and history fail as an application failure
+rather than reclassifying it as failed, insufficient, or supported. A missing
+terminal event, a contradictory terminal state payload, or a persisted message
+that contradicts the frozen binding is an application failure on projection,
+not an invitation to infer a replacement answer. When a post-admission stream
+fails, SSE projects the retained non-completed execution and its frozen QCS
+(plus an assistant binding when persistence produced one) before its `error`
+and `done`; it still exposes no completed outcome or evidence summary. A
+persistence failure rolls back uncommitted completion rather than leaving a
+partial completed result; if an assistant message still cannot be persisted,
+the existing user binding retains only the explicit failed persistence terminal.
+
+A separately authorized later document tombstone may append a private
+evidence-redaction event. It redacts the historical excerpt in the execution
+projection and marks the retained item as withdrawn while preserving its
+Evidence Set, item, snapshot, and knowledge-version identities. It never
+rewrites the original completed terminal result to make a new semantic answer.
+Completion locks the frozen evidence documents before it appends its terminal
+event, and tombstoning locks those same documents before it marks them
+withdrawn. If a frozen document is already withdrawn when completion obtains
+the lock, completion appends the redaction event in that same transaction and
+uses the redacted projection immediately; it never reselects evidence or
+removes its retained identities.
 
 ## Pilot Identity Authority And Audit
 
@@ -532,8 +734,8 @@ administrator issues a new invitation for any pending admission.
 | 17 | Upload and batch build dispatch | Reviewed Release Bundle, bundle item, build generation, recoverable Candidate Build | Reviewed bundles are the only new authority-bearing intake; Candidate work has no publication side effect and legacy publication paths remain compatibility-only |
 | 18 | Unqualified legacy retrieval and Candidate-derived chunks | Versioned Pilot Sparse BM25 and an authorized current-Published Candidate Pool | Ordinary retrieval returns only current, authorized compatibility-published chunks; Candidate preview remains administrator-only and diagnostic |
 | 19 | First-three selection, non-empty context gate, and candidate-derived citations | Deterministic evidence sufficiency and immutable Answer Evidence Set | Active Pilot uses only an authorized pool, exact QCS and assurance rules, one frozen selected set, and its bound citation identities |
-| 20 | `ChatMessage.rag_trace` and answer inference | Answer execution, conditions, evidence set, snapshot | Every answer persists the closed canonical outcome |
-| 21 | HTTP, SSE and history adapters | Canonical execution projection | All surfaces read one canonical execution |
+| 20 | `ChatMessage.rag_trace`, transport-specific gates/generation, persistence, snapshot slicing, and outcome inference | Private append-only Answer Execution with frozen QCS and closed result | Normal HTTP, SSE, linked persistence, reload, and private history project one retained execution; legacy trace is diagnostic only |
+| 21 | Chat UI view state and later interaction adapters | Private Answer Execution projection | Browser and later UI paths display the retained execution state and completed result without adding a second semantic owner |
 | 24 | Candidate inspection and publication | Candidate and Published Knowledge Version | Publication checks canonical generation, hash and acceptance identities |
 | 25 | Tombstone and redaction | Withdrawal event and retained publication identity | All withdrawal reads and writes use canonical publication identity |
 | 27 | Feedback and review work items | Maintenance item and validated finding | Raw feedback references can expire without losing the durable canonical decision |

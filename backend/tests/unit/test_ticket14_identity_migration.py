@@ -117,6 +117,12 @@ def test_ticket14_tail_migration_fails_closed_for_legacy_active_invitations(
                 "SELECT code_hash, consumed_at, consumed_by_user_id FROM team_invitations ORDER BY code_hash"
             )
         }
+        tables = {
+            row[0]
+            for row in migrated.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
         revision = migrated.execute("SELECT version_num FROM alembic_version").fetchone()
     finally:
         migrated.close()
@@ -126,4 +132,7 @@ def test_ticket14_tail_migration_fails_closed_for_legacy_active_invitations(
     assert invitations["active-legacy"] == ("2026-01-02 03:04:05", None)
     assert invitations["expired-legacy"] == (None, None)
     assert invitations["revoked-legacy"] == (None, None)
-    assert revision == ("20260905_0017",)
+    assert "answer_executions" in tables
+    assert "answer_execution_events" in tables
+    assert "chat_messages" not in tables
+    assert revision == ("20260906_0019",)

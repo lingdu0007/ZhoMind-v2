@@ -1,6 +1,6 @@
 # 规范化产品契约
 
-状态：规范性产品契约；ticket 13 至 19 的增量基础
+状态：规范性产品契约；ticket 13 至 20 的增量基础
 
 ## 目的
 
@@ -373,21 +373,179 @@ reader 在信任 item、snapshot 或 citation 前必须重新计算它。set ide
 输入，也不会进入 provider-visible 或 user-facing citation data。
 
 provider-visible prompt 只能从同一个冻结 set 派生。它的结构化 region 会分离
-normalized question、QCS、selected evidence source 和 response contract。response
-contract 只能列出 selected citation 和 governing citation。每个 provider-visible source
-都携带来自同一 frozen set 的 `snapshot_id`、`item_identity`
-和 `citation_identity`，但 score、chunk locator 与 selection diagnostic 仍被排除。
-retrieved text 不能修改 policy、permission、provider routing、QCS condition、evidence
-identity 或 citation identity。generated output 只能引用冻结的 selected item；每一个
-required response section 中每条 material nonblank line 都必须引用，且不得引入 unknown 或
-矛盾的 QCS assignment、secret value、unsupported quantified assurance，或将 bounded
-internal case universalize。
+normalized question、QCS、selected evidence source、Evidence Set identity、有序的
+knowledge-version identity 和 response contract。response contract 只能列出 selected
+citation 和 governing citation。每个 provider-visible source 都携带来自同一 frozen set
+的 `snapshot_id`、`item_identity` 和 `citation_identity`，但 score、chunk locator
+与 selection diagnostic 仍被排除。retrieved text 不能修改 policy、permission、provider
+routing、QCS condition、evidence identity 或 citation identity。generated output 只能引用
+冻结的 selected item；每一个 required response section 中每条 material nonblank line 都必须
+引用，且不得引入 unknown 或矛盾的 QCS assignment、secret value、unsupported quantified
+assurance，或将 bounded internal case universalize。
+
+在任何 provider call 之前，解析出的完整 provider-visible input 必须等于从冻结的 normalized
+question、精确 QCS identity 与有序 condition record、Evidence Set、每个 selected source 的
+全部 field（包括 citation marker）、有序 item/citation identity、有序 snapshot、有序
+knowledge-version identity，以及存在时完整 response contract 确定性构建出的同一份 record。
+JSON object parsing 会在任意嵌套层级拒绝 duplicate key；后出现的 key 绝不能静默覆盖较早的
+frozen field。比较不得 trim、normalize、省略或重建 provider-visible field：非 canonical 的
+QCS string、被修改的 citation marker 或被修改的 response contract 都是不匹配。每个 source
+声明的 `snapshot_id` 必须等于从该 source provider-visible content 重新计算的 snapshot。有效的
+observed generation envelope 也必须携带相同的 snapshot 序列。provider input 或 observed
+envelope 格式错误或不匹配都是 application failure，而不是
+`generation_unavailable`、insufficiency 或 supported answer。已存在但无法验证的 provider
+envelope 属于格式错误，不能当作 observation 缺失。未恢复的 provider exception，或 route
+configuration 没有产生任何已完成 provider call，同样是 application failure；
+`generation_unavailable` 只保留给已经完成 provider call、但在冻结 boundary 下没有产生可用
+answer 的情况。
 
 对于活跃 Pilot 的 production decision，历史的 first-three selector、non-empty-context
 gate 和 candidate-derived citation projection 已被替代。它们只能保留在显式的
 `lexical_heuristic_migration` / `legacy_migration_diagnostic` profile 后面，且不能产生
 product sufficiency decision、immutable Answer Evidence Set 或 product citation
 identity。
+
+## 封闭回答执行与私有会话持久化
+
+每个已认证的 chat request 都会被接纳为一个私有 Answer Execution。只要私有
+conversation 仍被保留，它就保存一个不可变的 `answer_execution_request/v1` request
+header 和一条只追加的 `answer_execution_event/v1` 轨迹。每个 execution 的 event sequence
+必须唯一；每个 terminal、redaction 或 stream-delivery lifecycle writer 都会在读取并追加下一条
+event 前锁定该 execution。conversation deletion 与 retention purge 会在删除其 event trail 或
+header 前取得同一把 execution lock，因此 retention 不会留下失去 owner execution 的 private
+event。在 SQLite 上，admission、event writer、deletion 与 expiry 会在各自相关 read 前共享
+一个 transaction-wide writer fence：fresh transaction 通过 `BEGIN IMMEDIATE` 开始它；已打开的
+deferred read transaction 则通过一个 no-op `chat_sessions` write 升级到同一 fence。cleanup 会先锁定
+匹配的 execution header、再锁定经过验证的 conversation session，然后在 delete 前重新扫描
+header；admission 会在同一个 fence 之后锁定该经过验证的 session。因此 admission 或 event write
+不会与 private deletion 或 expiry 竞态，从而留下 orphaned header、event 或 message。这不是
+`canonical_records` aggregate：它属于私有
+conversation data，因此经验证的
+conversation 删除或过期可以连同其关联 message 与 session 一起删除 header 和 event。只要仍被
+保留，request header 与 event 都不能被改写。admission 会在 execution 运行前耐久地绑定精确的
+user-message identity。
+
+execution state 与 answer outcome 相互独立。接纳后的路径为
+`admitted -> queued -> running`；其 terminal state 为 `completed`、`stopped`、
+`failed`、`throttled` 和 `rejected`。一个 `completed` execution 恰好拥有一个
+outcome：`evidence_gated_answer`、`insufficient_evidence_reply`、
+`non_knowledge_base_reply` 或 `generation_unavailable`。stopped、failed、throttled
+或 rejected execution 没有 completed answer outcome、Answer Evidence Set、citation
+或伪造的 answer text。`completed` 是 execution state，而不是第五种 outcome。
+
+接纳会将 normalized question 与可见的 Query Condition Set（QCS）一起记录。QCS 包含
+其 identity、normalized question，以及按顺序排列、显式的 decisive condition，例如
+version、environment、scale 和 target。caller 可以显式提交可编辑的 condition，或只从
+同一 private conversation、同一 owner 最近的 completed QCS 继承。inheritance 会将
+condition 复制到绑定新 normalized question 的新 QCS 中，并记录 source execution
+identity；即使 user 重复同一个 normalized question，它也绝不会复用先前的 QCS
+identity。新的 conversation 不能继承 condition。
+未提交 condition 时，admission 只能从 admitted question text 派生它们；hidden
+conversation memory、user profile、global profile 或 retrieval result 都不能提供 decisive
+condition。每个 completed turn 都会冻结 QCS 与 provenance，且仅 owner 可见的 Answer
+Execution projection 会暴露二者。
+composer 只是 admission 前的草稿：打开 conversation、开始新的 conversation 或删除 active
+conversation 时，都会清空其 draft condition 与 inheritance flag。若 retry 的旧 turn 已有
+保留的 execution，包括经 SSE 或 history 投影的 non-completed failure，它必须把该 turn
+冻结的 QCS 作为 explicit condition 再次提交。缺失 client-side terminal data 不能授权重新
+inherit：带有 inherited 标记、但缺少 retained execution 的 retry 必须在本地失败，直到该
+execution 被恢复。只有 admission 前的 transport failure 才能重复原始请求的 condition 或
+inheritance request。client 只有在将 streamed execution 绑定到该 submitted turn 后才可接受它：
+implicit QCS 必须精确等于从 submitted question 派生的 condition，inherited QCS 必须指向
+同一 private conversation 中已投影的 completed source execution，并复制其精确 condition。
+completed execution 只有在完整 terminal projection 校验成功后才成为 retry authority；矛盾的
+terminal projection 会清除本地 retry authority，直到该 persisted execution 被恢复。
+
+在 retrieval 之前，狭窄的 non-knowledge-base allowlist 可以选择
+`non_knowledge_base_reply`。该 result 没有 knowledge claim、Answer Evidence Set、
+citation 或 provider call。其他所有已接纳的 knowledge request 都使用从 admitted QCS
+得出的确定性 evidence-sufficiency decision。缺失 decisive condition 时只会得到经过
+review 的 conditional branch 或结构化 insufficiency；绝不会由 memory 或 inference
+静默填补。
+
+已完成的 `answer_execution_result/v1` 保留精确的 normalized question、冻结的 QCS 与
+provenance、outcome、冻结的 text、Evidence Set identity、有序 item identity、snapshot
+identity 与 knowledge-version identity。其仅 owner 可见的 completed execution projection
+还携带精确的 assistant-message binding、冻结 answer text 与冻结的 outcome-specific evidence
+summary，使 transport projection 可以比较而不是推断。Evidence-Gated Answer 和 Generation
+Unavailable 还会保留 provider-input identity record，其中包含相同的 question、QCS
+identity、Evidence Set identity、item identity、snapshot 与 knowledge version。
+Insufficient Evidence Reply 会保留一个结构化的 `insufficient_evidence_reply` record，其中有
+其 outcome、精确 reason 与 QCS identity；其他 completed outcome 都不会保留该 record。
+`generation_unavailable` 只为证明其 closed execution boundary 而保留这些 identity。其
+answer projection 不包含 knowledge claim、citation、source 或 evidence preview，也不能被
+呈现为 supported-answer projection。normal HTTP、SSE 的
+terminal event、关联的已持久化 assistant message、reload 和 private history 都是这一个
+result 的 projection。request header 会绑定其精确的 user-message identity。每个
+completed result，以及每个由已持久化 assistant message 表示的 non-completed terminal，
+都会绑定精确的 assistant-message identity。若 admission 后 assistant-message persistence
+失败，completion 会 rollback，保留记录只能追加一个没有 assistant-message identity、
+没有 answer text、没有 outcome 且代码为 `ANSWER_EXECUTION_PERSISTENCE_FAILED` 的 `failed`
+terminal；它只能通过其冻结的 user-message binding 对 owner 可见。
+`ChatMessage.answer_execution_id` 是可变的 lookup index，而不是 authority：reader 会在同一
+private conversation 中发现并验证不可变的 request 或 terminal binding，因此清空该 index
+不会把已绑定的 message 变成 legacy trace projection；将该 message 移到另一个 private
+conversation 会 fail closed，非空但相互矛盾的 index 则是 application failure。projection 必须先
+验证这些被冻结的 message binding。它们不得重新 retrieval、重新选择 evidence、重新切分
+snapshot、调用 provider、根据 text、flag、source count、score 或 trace 推断 outcome，或将
+insufficiency、stop 或 failure 提升为 supported answer。
+SSE admission 会在 closed result 可被 delivery 前追加 `stream_delivery_pending`。一个
+completed result 若带有该 pending record、但没有 delivery-completion 或 interruption record，
+就不能通过 reload 或 history projection：这是 application failure，而不是 completed-answer
+replay。normal HTTP 不创建 SSE delivery lifecycle record，并可在普通 persistence 完成后
+projection 同一份 closed result。
+SSE client 只有在 assistant identity 等于 execution 的 assistant binding、completed
+execution identity/state、answer text、normalized question、完整且不重复的 QCS/provenance、
+显式 outcome 与完整的 outcome-specific evidence summary 全部等于冻结 execution projection
+且该 question、QCS 与 provenance 也等于 normalized submitted turn 时，才可接受 completed
+terminal。对于 Insufficient Evidence Reply，terminal stream 与 execution 携带的 structured
+reply 必须完全相等；其他 outcome 都不能携带它。有效 terminal 只能是完整 framed 的 SSE
+`event: done`，且 data payload 必须是未加引号的精确字面量 `[DONE]`。该 frame 的 blank-line
+separator 之前 EOF、带引号或其他被修改的 marker，或在任何其他 event 上出现该 marker，都是
+缺失或相互矛盾的 terminal。重复的 `done`，或 `done` 后出现任何 semantic frame，同样是
+application failure。terminal field 缺失、重复或相互矛盾时是 application failure；client
+不能伪造 insufficiency reply 或其他替代 result。在收到 completed terminal field 后再收到
+error 或 cancellation，是 application failure 而非 stop：client 会
+清除 completed outcome、structured insufficiency reply、evidence summary 与 diagnostics，
+而不是保留 completed projection。
+
+`ChatMessage.rag_trace` 只是一种 compatibility diagnostic。关联的 Answer Execution
+绝不会从该 trace 读取 outcome、evidence、citation、snapshot 或 condition 的语义。对于关联
+execution，持久化的 diagnostic projection 只保留有界的 operational metadata，例如 gate
+state、step name、candidate count、provider identity、timing 与 error classification；它不会
+保留 question、QCS、answer text 或 preview、evidence content、provider-visible generation
+envelope 或 private history。legacy message 必须没有不可变的 request 或 terminal binding，
+而不只是可变 index 为 null；它在 retention 期间仍可通过受限的 compatibility projection 被
+读取，但不能成为新的 Answer Execution result。
+
+authentication failure 发生在 admission 之前，不会创建 answer outcome。未恢复的
+retrieval 或 provider failure，以及每个 execution、stream 或 persistence failure 都是
+application failure，绝不是 insufficiency。只有 retrieval implementation 已返回实际
+candidate result 时，才可以为已恢复的 fallback 保留 diagnostic；它不能伪造空 result，
+再把该 provider failure 标记为证据不足。execution 仍在 running 时中断 stream，会取消
+execution 并等待其私有 stopped terminal event 耐久化。ASGI send exception 或 disconnect
+会使用相同的耐久清理。只有外层 ASGI transport observer 已越过所有 response-buffering
+middleware 成功写入 terminal `done` body 并完成 response finalization、随后追加
+`stream_delivery_completed` 后，completed SSE delivery 才算完成。若 closed result 已开始
+projection 后 delivery 中断，只追加的
+`stream_delivery_interrupted` record 会保留原始 result 的 immutability，但使它不可再
+projection；reload 与 history 会以 application failure 失败，而不会将其重新分类为 failed、
+insufficient 或 supported。缺失 terminal event、相互矛盾的 terminal state payload，或已持久化
+message 与冻结 binding 矛盾时，projection 是 application failure，而不是推断替代 answer 的
+机会。admission 之后 stream 失败时，SSE 会在其 `error` 与 `done` 前 projection 已保留的
+non-completed execution 及冻结 QCS（若 persistence 产生 assistant binding 则一并投影）；
+它仍不会暴露 completed outcome 或 evidence summary。persistence failure 会 rollback 未提交的
+completion，而不会留下 partial completed result；若 assistant message 仍无法持久化，既有的
+user binding 只保留显式的 failed persistence terminal。
+
+一个经单独授权的后续 document tombstone 可以追加私有 evidence-redaction event。它会
+在 execution projection 中脱敏历史 excerpt、将 retained item 标记为 withdrawn，同时保留
+其 Evidence Set、item、snapshot 与 knowledge-version identity。它绝不会改写原始
+completed terminal result 以制造新的 semantic answer。
+completion 会在追加 terminal event 前锁定冻结 evidence 对应的 document，tombstone 会在
+标记 withdrawn 前锁定同一批 document。若 completion 获取锁时某个冻结 document 已
+withdrawn，它会在同一 transaction 中追加 redaction event，并立即使用 redacted
+projection；它绝不会重新选择 evidence 或删除保留的 identity。
 
 ## Pilot 身份权威与审计
 
@@ -436,8 +594,8 @@ Ticket 14 的尾部 migration 将所有以前未 revoke、未 expired 的 legacy
 | 17 | 上传和批量构建分发 | Reviewed Release Bundle、bundle item、build generation、可恢复 Candidate Build | Reviewed bundle 是唯一新增的 authority-bearing intake；Candidate work 没有 publication side effect，legacy publication path 仍仅为 compatibility |
 | 18 | 未经资格校验的 legacy retrieval 与 Candidate-derived chunk | 有版本的 Pilot Sparse BM25 与授权的当前 Published Candidate Pool | 普通 retrieval 只返回当前、已授权的 compatibility-published chunk；Candidate preview 保持仅管理员可用且仅用于 diagnostic |
 | 19 | first-three selection、non-empty context gate 与 candidate-derived citation | 确定性的 evidence sufficiency 与不可变 Answer Evidence Set | 活跃 Pilot 只使用 authorized pool、精确 QCS 和 assurance rule、一个冻结 selected set 及其绑定的 citation identity |
-| 20 | `ChatMessage.rag_trace` 与回答推断 | Answer execution、条件、证据集、快照 | 每个回答都持久化封闭的规范化结果 |
-| 21 | HTTP、SSE 和 history 适配器 | 规范化 execution 投影 | 所有界面都读取同一规范化 execution |
+| 20 | `ChatMessage.rag_trace`、transport-specific gate/generation、persistence、snapshot slicing 与 outcome inference | 带冻结 QCS 和 closed result 的私有只追加 Answer Execution | normal HTTP、SSE、关联 persistence、reload 和 private history 都投影同一保留 execution；legacy trace 只用于 diagnostic |
+| 21 | Chat UI view state 与后续 interaction adapter | 私有 Answer Execution projection | browser 和后续 UI path 展示保留的 execution state 与 completed result，而不增加第二个 semantic owner |
 | 24 | Candidate 检查与发布 | Candidate 和 Published Knowledge Version | 发布检查规范化代次、hash 和验收标识 |
 | 25 | tombstone 与脱敏 | 撤回事件和保留的发布标识 | 所有撤回读写使用规范化发布标识 |
 | 27 | 反馈与 review work item | Maintenance item 和 Validated Finding | 原始反馈引用过期后仍保留规范化决策 |

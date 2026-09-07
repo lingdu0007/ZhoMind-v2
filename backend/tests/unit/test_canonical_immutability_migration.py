@@ -41,6 +41,21 @@ def test_canonical_immutability_tail_migration_rejects_database_rewrites(
             occurred_at DATETIME NOT NULL,
             recorded_by VARCHAR(192)
         );
+        CREATE TABLE chat_sessions (
+            id VARCHAR(64) NOT NULL PRIMARY KEY,
+            user_id VARCHAR(64) NOT NULL,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL
+        );
+        CREATE TABLE chat_messages (
+            id VARCHAR(64) NOT NULL PRIMARY KEY,
+            session_id VARCHAR(64) NOT NULL,
+            user_id VARCHAR(64) NOT NULL,
+            type VARCHAR(16) NOT NULL,
+            content TEXT NOT NULL,
+            rag_trace JSON,
+            created_at DATETIME NOT NULL
+        );
         CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL);
         INSERT INTO alembic_version VALUES ('20260905_0015');
         """
@@ -272,7 +287,7 @@ def test_canonical_immutability_tail_migration_rejects_database_rewrites(
         "ix_candidate_build_chunks_candidate_id",
         "ix_candidate_build_chunks_candidate",
     }.issubset(candidate_chunk_indexes)
-    assert revision == ("20260906_0018",)
+    assert revision == ("20260906_0019",)
 
 
 def test_frozen_candidate_input_hash_migration_backfills_existing_immutable_input(
@@ -305,6 +320,21 @@ def test_frozen_candidate_input_hash_migration_backfills_existing_immutable_inpu
             payload JSON NOT NULL,
             occurred_at DATETIME NOT NULL,
             recorded_by VARCHAR(192)
+        );
+        CREATE TABLE chat_sessions (
+            id VARCHAR(64) NOT NULL PRIMARY KEY,
+            user_id VARCHAR(64) NOT NULL,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL
+        );
+        CREATE TABLE chat_messages (
+            id VARCHAR(64) NOT NULL PRIMARY KEY,
+            session_id VARCHAR(64) NOT NULL,
+            user_id VARCHAR(64) NOT NULL,
+            type VARCHAR(16) NOT NULL,
+            content TEXT NOT NULL,
+            rag_trace JSON,
+            created_at DATETIME NOT NULL
         );
         CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL);
         INSERT INTO alembic_version VALUES ('20260905_0015');
@@ -418,4 +448,4 @@ def test_frozen_candidate_input_hash_migration_backfills_existing_immutable_inpu
 
     assert stored_hash == (canonical_json_sha256(frozen_input),)
     assert stored_input == (json.dumps(frozen_input, ensure_ascii=True, sort_keys=True),)
-    assert revision == ("20260906_0018",)
+    assert revision == ("20260906_0019",)

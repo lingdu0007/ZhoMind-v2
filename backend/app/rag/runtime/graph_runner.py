@@ -1,6 +1,7 @@
 from typing import Any
 
 from app.rag.claim_evidence import ClaimResolver
+from app.rag.evidence_sufficiency import QueryConditionSet
 from app.rag.interfaces import RelevanceJudge, Reranker, Retriever
 from app.rag.memory.inmemory_store import InMemorySessionStore, InMemoryUserStore
 from app.rag.memory.policies import ConservativeMemoryWritePolicy
@@ -250,12 +251,23 @@ class RagGraphRunner:
             "provider_trace": state.get("provider_trace") or {},
         }
 
-    async def run(self, *, request_id: str, user_id: str, session_id: str, question: str) -> dict:
+    async def run(
+        self,
+        *,
+        request_id: str,
+        user_id: str,
+        session_id: str,
+        question: str,
+        query_conditions: QueryConditionSet | None = None,
+        require_closed_evidence_decision: bool = False,
+    ) -> dict:
         state = RagState.new(
             request_id=request_id,
             user_id=user_id,
             session_id=session_id,
             query_raw=question,
+            query_condition_set=query_conditions,
+            require_closed_evidence_decision=require_closed_evidence_decision,
         )
 
         if self._compiled_graph is None:

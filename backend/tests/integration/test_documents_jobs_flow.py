@@ -18,6 +18,7 @@ from app.model.base import Base
 from app.model.chat import ChatMessage, ChatSession
 from app.model.document import Document, DocumentChunk, DocumentJob
 from app.rag.answer_evidence import evidence_snapshot_id
+from app.retrieval.policy import LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID
 from tests.support.auth import create_authenticated_test_token
 
 
@@ -214,6 +215,7 @@ class _LimitAwareLexicalSession:
 
 def _dense_settings(**overrides: object) -> Settings:
     values: dict[str, object] = {
+        "RUNTIME_RETRIEVAL_PROFILE": LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID,
         "EMBEDDING_API_KEY": "emb-key",
         "EMBEDDING_BASE_URL": "https://emb.example.com/v1",
         "EMBEDDING_MODEL": "text-embedding-3-large",
@@ -2219,7 +2221,10 @@ def test_chat_lexical_retrieval_reads_only_published_generation_on_live_document
         from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
 
         async with session_factory() as session:
-            service = MixedModeDocumentRetrieverService(session)
+            service = MixedModeDocumentRetrieverService(
+                session,
+                settings=Settings(RUNTIME_RETRIEVAL_PROFILE=LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID),
+            )
             return (await service.retrieve("retrieval sentinel", top_k=10)).items
 
     asyncio.run(_init_db())
@@ -2561,6 +2566,7 @@ def test_documents_dense_and_lexical_retrieval_respects_published_generation_vis
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
 
     settings = Settings(
+        RUNTIME_RETRIEVAL_PROFILE=LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID,
         EMBEDDING_API_KEY="emb-key",
         EMBEDDING_BASE_URL="https://emb.example.com/v1",
         EMBEDDING_MODEL="emb-model",
@@ -2616,7 +2622,7 @@ def test_documents_dense_and_lexical_retrieval_respects_published_generation_vis
 
     result = asyncio.run(_run())
 
-    assert result["strategy"] == "dense_plus_lexical_migration"
+    assert result["strategy"] == "dense_plus_lexical_heuristic_migration"
     assert result["dense_candidate_count"] == 2
     assert result["dense_hydrated_count"] == 1
     assert result["lexical_candidate_count"] == 1
@@ -2642,6 +2648,7 @@ def test_documents_dense_query_failure_falls_back_to_full_published_lexical_corp
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
 
     settings = Settings(
+        RUNTIME_RETRIEVAL_PROFILE=LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID,
         EMBEDDING_API_KEY="emb-key",
         EMBEDDING_BASE_URL="https://emb.example.com/v1",
         EMBEDDING_MODEL="emb-model",
@@ -2679,7 +2686,7 @@ def test_documents_dense_query_failure_falls_back_to_full_published_lexical_corp
 
     result = asyncio.run(_run())
 
-    assert result["strategy"] == "dense_plus_lexical_migration"
+    assert result["strategy"] == "dense_plus_lexical_heuristic_migration"
     assert result["dense_candidate_count"] == 0
     assert result["dense_hydrated_count"] == 0
     assert result["lexical_candidate_count"] == 2
@@ -2711,6 +2718,7 @@ def test_documents_migration_retrieval_fallback_records_normalized_failure_and_f
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
 
     settings = Settings(
+        RUNTIME_RETRIEVAL_PROFILE=LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID,
         EMBEDDING_API_KEY="emb-key",
         EMBEDDING_BASE_URL="https://emb.example.com/v1",
         EMBEDDING_MODEL="emb-model",
@@ -2750,7 +2758,7 @@ def test_documents_migration_retrieval_fallback_records_normalized_failure_and_f
 
     result = asyncio.run(_run())
 
-    assert result["strategy"] == "dense_plus_lexical_migration"
+    assert result["strategy"] == "dense_plus_lexical_heuristic_migration"
     assert result["dense_query_failed"] is True
     assert result["fallback_used"] is True
     assert result["lexical_scope"] == "full_published_live"
@@ -2774,6 +2782,7 @@ def test_documents_dense_query_failure_searches_full_published_live_corpus_beyon
     from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
 
     settings = Settings(
+        RUNTIME_RETRIEVAL_PROFILE=LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID,
         EMBEDDING_API_KEY="emb-key",
         EMBEDDING_BASE_URL="https://emb.example.com/v1",
         EMBEDDING_MODEL="emb-model",
@@ -2833,7 +2842,7 @@ def test_documents_dense_query_failure_searches_full_published_live_corpus_beyon
     ]
 
 
-def test_documents_sparse_only_searches_full_published_live_corpus_beyond_candidate_limit() -> None:
+def test_documents_lexical_heuristic_migration_searches_full_published_live_corpus_beyond_candidate_limit() -> None:
     from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
 
     lexical_chunks = [
@@ -2864,7 +2873,10 @@ def test_documents_sparse_only_searches_full_published_live_corpus_beyond_candid
     session = _LimitAwareLexicalSession(lexical_chunks)
 
     async def _run() -> dict:
-        service = MixedModeDocumentRetrieverService(session)
+        service = MixedModeDocumentRetrieverService(
+            session,
+            settings=Settings(RUNTIME_RETRIEVAL_PROFILE=LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID),
+        )
         result = await service.retrieve("xqvzjk", top_k=5)
         return {
             "items": result.items,
@@ -2875,7 +2887,7 @@ def test_documents_sparse_only_searches_full_published_live_corpus_beyond_candid
 
     result = asyncio.run(_run())
 
-    assert result["strategy"] == "sparse_only"
+    assert result["strategy"] == "lexical_heuristic_migration"
     assert result["lexical_scope"] == "full_published_live"
     assert session.limit_history == [None]
     assert result["lexical_candidate_count"] == 1
@@ -2894,6 +2906,7 @@ def test_documents_dense_success_keeps_lexical_fallback_scoped_to_not_dense_read
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
 
     settings = Settings(
+        RUNTIME_RETRIEVAL_PROFILE=LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID,
         EMBEDDING_API_KEY="emb-key",
         EMBEDDING_BASE_URL="https://emb.example.com/v1",
         EMBEDDING_MODEL="emb-model",

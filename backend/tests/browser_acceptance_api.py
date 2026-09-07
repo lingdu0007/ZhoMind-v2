@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+from collections.abc import Mapping
 from datetime import UTC, datetime
 
 import uvicorn
@@ -18,9 +19,35 @@ from app.model.base import Base
 from app.model.chat import ChatMessage, ChatSession
 from app.model.document import Document, DocumentChunk, DocumentJob
 from app.model.system_settings import SystemSettingsState
+from app.rag.claim_evidence import ClaimEvidenceContract, ClaimResolution, ResolvedClaim, parse_claim_evidence_contract
 from app.settings import runtime as settings_runtime
 from app.settings.runtime import SystemSettingsRuntime
 from app.settings.service import SystemSettingsDraftService
+
+_BROWSER_AGENT_ENTRY_ID = "synthetic-workflow-001"
+_BROWSER_AGENT_SOURCE_ID = "source-workflow"
+_BROWSER_CLAIM_CONTRACT = parse_claim_evidence_contract(
+    {
+        "schema_version": 1,
+        "review_id": "browser-editorial-review-20260812",
+        "review_revision": "2026-08-12.1",
+        "conflict_state": "none",
+        "unknown_state": "none",
+        "resolver": {
+            "resolver_id": "browser-calibrated-claim-resolver-v1",
+            "calibration_id": "browser-calibration-20260812",
+            "calibration_version": "2026-08-12",
+            "minimum_confidence": 0.80,
+        },
+        "claims": [
+            {
+                "claim_id": "claim-deterministic-workflow",
+                "scope": "Known execution paths with explicit termination conditions.",
+                "evidence": [{"section_id": "stable-principle", "source_id": _BROWSER_AGENT_SOURCE_ID}],
+            }
+        ],
+    }
+)
 
 
 class _InMemoryRedis:
@@ -93,6 +120,29 @@ class _DeterministicLlm:
                 for section in contract["required_sections"]
             )
         return "部署前需要完成变更审批。"
+
+
+class _BrowserClaimResolver:
+    """Test-only calibrated resolver for the frozen Claim-Linked browser fixture."""
+
+    resolver_id = "browser-calibrated-claim-resolver-v1"
+    calibration_id = "browser-calibration-20260812"
+    calibration_version = "2026-08-12"
+
+    async def resolve(self, question: str, _contracts: Mapping[str, ClaimEvidenceContract]) -> ClaimResolution:
+        if question != "什么时候使用 deterministic workflow？":
+            return ClaimResolution(required_claims=(), out_of_scope=True, reason="reject_claim_scope")
+        return ClaimResolution(
+            required_claims=(
+                ResolvedClaim(
+                    entry_id=_BROWSER_AGENT_ENTRY_ID,
+                    claim_id="claim-deterministic-workflow",
+                    confidence=0.95,
+                ),
+            ),
+            out_of_scope=False,
+            reason="resolved_claims",
+        )
 
 
 class _DeterministicSettingsRuntime(SystemSettingsRuntime):
@@ -269,29 +319,39 @@ async def _seed_test_data() -> None:
                     generated_questions=[],
                     chunk_metadata={
                         "strategy": "agent",
-                        "entry_id": "synthetic-workflow-001",
+                        "entry_id": _BROWSER_AGENT_ENTRY_ID,
                         "entry_title": "Prefer deterministic workflows",
                         "domain": "workflow-vs-agent",
                         "section_id": "stable-principle",
                         "review_status": "approved",
                         "review_date": "2026-08-12",
+                        "evidence_conflict": "none",
                         "applicable_versions": ["framework-neutral", "Anthropic 2024-12-19"],
                         "approved_summary": "已知路径应由 deterministic workflow 控制。",
                         "suggested_query": "什么时候使用 deterministic workflow？",
                         "sources": [
                             {
+                                "source_id": _BROWSER_AGENT_SOURCE_ID,
                                 "title": "Building effective agents",
                                 "authority": "Anthropic",
                                 "url": "https://www.anthropic.com/engineering/building-effective-agents",
                                 "version": "2024-12-19",
                                 "availability": "verified",
+                                "review_date": "2026-08-12",
+                                "freshness_days": 90,
                             }
                         ],
+                        "source_id": _BROWSER_AGENT_SOURCE_ID,
                         "source_title": "Building effective agents",
                         "source_authority": "Anthropic",
                         "source_url": "https://www.anthropic.com/engineering/building-effective-agents",
                         "source_version": "2024-12-19",
                         "source_availability": "verified",
+                        "source_review_date": "2026-08-12",
+                        "source_freshness_days": 90,
+                        "claim_evidence_contract": _BROWSER_CLAIM_CONTRACT.canonical_json,
+                        "claim_evidence_contract_sha256": _BROWSER_CLAIM_CONTRACT.sha256,
+                        "title": "Prefer deterministic workflows",
                     },
                 )
             )
@@ -456,6 +516,7 @@ def main() -> None:
     app.dependency_overrides[get_redis_client] = lambda: redis
     registry = get_extension_registry()
     registry.register_llm("browser-acceptance", _DeterministicLlm())
+    registry.register_claim_resolver("chat-default-claim-resolver", _BrowserClaimResolver())
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 

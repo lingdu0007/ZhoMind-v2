@@ -7,6 +7,7 @@ import pytest
 from app.extensions.provider_router import ProviderRouter
 from app.rag.answer_evidence import evidence_snapshot_id, evidence_summary_from_trace
 from app.rag.answer_execution import AnswerOutcomeKind, EvidenceGatedAnswerExecutor
+from app.rag.evidence_sufficiency import QueryConditionSet
 from app.rag.interfaces import GenerationCompletion, RetrieveResult
 from app.retrieval.policy import PILOT_RETRIEVAL_PROFILE_ID
 
@@ -363,17 +364,31 @@ def test_pilot_provider_prompt_uses_only_the_frozen_evidence_set_and_visible_con
         max_excerpt_chars=1200,
     )
 
+    question = "What is the reviewed default for environment=production?"
+    query_conditions = QueryConditionSet.from_records(
+        normalized_question=question,
+        records=[
+            {
+                "condition_id": "environment-production",
+                "field": "environment",
+                "operator": "equals",
+                "value": "production",
+            }
+        ],
+    )
     outcome = asyncio.run(
         executor.execute(
             request_id="ticket19-sufficient",
             user_id="knowledge-user",
             session_id="ticket19-session",
-            question="What is the reviewed default for environment=production?",
+            question=question,
+            query_conditions=query_conditions,
         )
     )
 
     assert outcome.kind is AnswerOutcomeKind.EVIDENCE_GATED_ANSWER
     assert outcome.evidence_set is not None
+    assert outcome.query_conditions == query_conditions
     assert provider.calls == 1
     envelope = json.loads(provider.prompts[0])
     assert envelope["query_condition_set"] == {

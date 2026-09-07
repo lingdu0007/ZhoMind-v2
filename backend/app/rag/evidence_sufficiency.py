@@ -29,6 +29,11 @@ _GOVERNING_SECTION = "recommendation_or_reviewed_branches"
 _MAX_ITEMS = 3
 _MAX_EXCERPT_CHARS = 1200
 _MAX_TOTAL_CHARS = 3000
+_MAX_QUERY_CONDITIONS = 32
+_MAX_CONDITION_ID_CHARS = 160
+_MAX_CONDITION_FIELD_CHARS = 160
+_MAX_CONDITION_OPERATOR_CHARS = 64
+_MAX_CONDITION_VALUE_CHARS = 512
 _EXPLICIT_CONDITION = re.compile(r"\b([a-z][a-z0-9_.-]{0,79})\s*=\s*([a-z0-9_.:/-]{1,160})\b", re.IGNORECASE)
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SOURCE_TIERS = frozenset(item.value for item in KnowledgeSourceTier)
@@ -130,7 +135,16 @@ class QueryCondition:
         parsed = {field: value.get(field) for field in fields}
         if any(not isinstance(item, str) or not item.strip() for item in parsed.values()):
             raise ValueError("query condition must have non-empty condition_id, field, operator, and value")
-        return cls(**{key: str(item).strip() for key, item in parsed.items()})
+        normalized = {key: str(item).strip() for key, item in parsed.items()}
+        limits = {
+            "condition_id": _MAX_CONDITION_ID_CHARS,
+            "field": _MAX_CONDITION_FIELD_CHARS,
+            "operator": _MAX_CONDITION_OPERATOR_CHARS,
+            "value": _MAX_CONDITION_VALUE_CHARS,
+        }
+        if any(len(normalized[field]) > limit for field, limit in limits.items()):
+            raise ValueError("query condition exceeds the accepted explicit-input limits")
+        return cls(**normalized)
 
     def to_record(self) -> dict[str, str]:
         return {
@@ -145,17 +159,32 @@ class QueryCondition:
 class QueryConditionSet:
     normalized_question: str
     conditions: tuple[QueryCondition, ...]
+    identity_nonce: str | None = None
 
     @classmethod
-    def from_records(cls, *, normalized_question: str, records: Sequence[object]) -> QueryConditionSet:
+    def from_records(
+        cls,
+        *,
+        normalized_question: str,
+        records: Sequence[object],
+        identity_nonce: str | None = None,
+    ) -> QueryConditionSet:
         question = normalized_question.strip()
         if not question:
             raise ValueError("normalized question must be non-empty")
+        nonce = identity_nonce.strip() if isinstance(identity_nonce, str) else identity_nonce
+        if nonce is not None and (not isinstance(nonce, str) or not nonce):
+            raise ValueError("query condition set identity nonce must be non-empty when present")
+        if len(records) > _MAX_QUERY_CONDITIONS:
+            raise ValueError("query condition set exceeds the accepted explicit-input limit")
         conditions = tuple(QueryCondition.from_record(record) for record in records)
         keys = {(condition.field, condition.operator) for condition in conditions}
         if len(keys) != len(conditions):
             raise ValueError("query condition set must not repeat a field/operator pair")
-        return cls(normalized_question=question, conditions=conditions)
+        condition_ids = {condition.condition_id for condition in conditions}
+        if len(condition_ids) != len(conditions):
+            raise ValueError("query condition set must not repeat a condition identity")
+        return cls(normalized_question=question, conditions=conditions, identity_nonce=nonce)
 
     @classmethod
     def from_question(cls, normalized_question: str) -> QueryConditionSet:
@@ -175,12 +204,13 @@ class QueryConditionSet:
 
     @property
     def identity(self) -> str:
-        return canonical_json_sha256(
-            {
-                "normalized_question": self.normalized_question,
-                "conditions": [condition.to_record() for condition in self.conditions],
-            }
-        )
+        record: dict[str, object] = {
+            "normalized_question": self.normalized_question,
+            "conditions": [condition.to_record() for condition in self.conditions],
+        }
+        if self.identity_nonce is not None:
+            record["identity_nonce"] = self.identity_nonce
+        return canonical_json_sha256(record)
 
     def matches(self, condition: Mapping[str, object]) -> bool | None:
         field = condition.get("field")
@@ -220,11 +250,14 @@ class QueryConditionSet:
         return False
 
     def to_record(self) -> dict[str, object]:
-        return {
+        record: dict[str, object] = {
             "identity": self.identity,
             "normalized_question": self.normalized_question,
             "conditions": [condition.to_record() for condition in self.conditions],
         }
+        if self.identity_nonce is not None:
+            record["identity_nonce"] = self.identity_nonce
+        return record
 
     def to_provider_record(self) -> dict[str, object]:
         return {

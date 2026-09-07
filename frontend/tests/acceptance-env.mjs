@@ -109,36 +109,63 @@ export const startApiEnvironment = async (t, { env = {} } = {}) => {
   throw new Error(`isolated application API environment did not become healthy:\n${output.join('')}`);
 };
 
+const createWorkbenchServer = async ({ built, webPort }) => {
+  const server = built
+    ? await preview({ preview: { host: '127.0.0.1', port: webPort, strictPort: true } })
+    : await createServer({ server: { host: '127.0.0.1', port: webPort, strictPort: true } });
+  if (!built) await server.listen();
+  return server;
+};
+
 /**
  * Start a workbench: disposable API + Vite dev or preview server + a Playwright
  * page. The Vite proxy forwards /api to the disposable API over real network
  * traffic.
  */
-export const startWorkbench = async (t, { built = false, env = {}, viewport = { width: 1440, height: 900 } } = {}) => {
-  const api = await startApiEnvironment(t, { env });
+export const startWorkbench = async (
+  t,
+  {
+    built = false,
+    env = {},
+    viewport = { width: 1440, height: 900 },
+    startApi = startApiEnvironment,
+    createServerForWorkbench = createWorkbenchServer,
+    launchBrowser = (options) => chromium.launch(options)
+  } = {}
+) => {
+  const api = await startApi(t, { env });
   const previousProxyTarget = process.env.ZHOMIND_API_PROXY_TARGET;
   process.env.ZHOMIND_API_PROXY_TARGET = `http://127.0.0.1:${api.port}`;
+  let server;
+  let browser;
+  let context;
+  let cleanedUp = false;
+  const cleanup = async () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    const closeResource = async (resource) => {
+      if (resource) await resource.close();
+    };
+    await Promise.allSettled([closeResource(context), closeResource(browser), closeResource(server)]);
+    if (previousProxyTarget === undefined) delete process.env.ZHOMIND_API_PROXY_TARGET;
+    else process.env.ZHOMIND_API_PROXY_TARGET = previousProxyTarget;
+  };
+  t.after(cleanup);
+
   // Vite resolves `port: 0` from the project config (5173), so reserve a
   // distinct random port per journey; parallel test files must never collide.
   const webPort = await reservePort();
-  const server = built
-    ? await preview({ preview: { host: '127.0.0.1', port: webPort, strictPort: true } })
-    : await createServer({ server: { host: '127.0.0.1', port: webPort, strictPort: true } });
-  if (!built) await server.listen();
-
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({ viewport });
-  const page = await context.newPage();
-  page.setDefaultTimeout(20000);
-
-  t.after(async () => {
-    await browser.close();
-    await server.close();
-    if (previousProxyTarget === undefined) delete process.env.ZHOMIND_API_PROXY_TARGET;
-    else process.env.ZHOMIND_API_PROXY_TARGET = previousProxyTarget;
-  });
-
-  return { page, baseUrl: server.resolvedUrls.local[0], api };
+  try {
+    server = await createServerForWorkbench({ built, webPort });
+    browser = await launchBrowser({ headless: true });
+    context = await browser.newContext({ viewport });
+    const page = await context.newPage();
+    page.setDefaultTimeout(20000);
+    return { page, baseUrl: server.resolvedUrls.local[0], api };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
 };
 
 export const createTeamInvitation = async (api) => {

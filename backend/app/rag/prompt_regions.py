@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from app.rag.answer_evidence import AnswerEvidence
@@ -32,6 +33,8 @@ USER_QUESTION_REGION = "user_question"
 EVIDENCE_SOURCES_REGION = "evidence_sources"
 RESPONSE_CONTRACT_REGION = "response_contract"
 QUERY_CONDITION_SET_REGION = "query_condition_set"
+ANSWER_EVIDENCE_SET_IDENTITY_REGION = "answer_evidence_set_identity"
+KNOWLEDGE_VERSION_IDENTITIES_REGION = "knowledge_version_identities"
 _IMPLEMENTATION_REQUEST = re.compile(r"code|implementation|checklist|代码|实现|清单|伪代码", re.IGNORECASE)
 _MODEL_KNOWLEDGE_ASSERTION = re.compile(
     r"\b(?:from (?:my|general|training) knowledge|as an ai|outside (?:the )?(?:selected|provided) evidence)\b"
@@ -128,22 +131,23 @@ def _evidence_region(
 ) -> dict[str, str]:
     if item.is_agent_entry():
         citation = item.to_public_citation(citation_id)
-        if evidence_citation is not None:
-            citation.update(
-                {
-                    "snapshot_id": evidence_citation.snapshot_id,
-                    "item_identity": evidence_citation.item_identity,
-                    "citation_identity": evidence_citation.identity,
-                }
-            )
-        else:
-            citation.pop("snapshot_id", None)
-        return citation
-    return {
-        "title": item.title,
-        "publication_version": item.publication_version,
-        "excerpt": item.excerpt,
-    }
+    else:
+        citation = {
+            "title": item.title,
+            "publication_version": item.publication_version,
+            "excerpt": item.excerpt,
+        }
+    if evidence_citation is not None:
+        citation.update(
+            {
+                "snapshot_id": evidence_citation.snapshot_id,
+                "item_identity": evidence_citation.item_identity,
+                "citation_identity": evidence_citation.identity,
+            }
+        )
+    else:
+        citation.pop("snapshot_id", None)
+    return citation
 
 
 def _has_bounded_internal_case(evidence_set: AnswerEvidenceSet) -> bool:
@@ -170,6 +174,42 @@ def _valid_evidence_bounded_response(text: str, evidence_set: AnswerEvidenceSet)
     )
 
 
+def frozen_generation_input_record(question: str, evidence_set: AnswerEvidenceSet) -> dict[str, object]:
+    """Build the exact provider-visible record for one frozen evidence set."""
+    knowledge_version_identities: list[str] = []
+    for binding in evidence_set.item_identity_bindings:
+        publication_identity = binding.get("publication_identity") if isinstance(binding, Mapping) else None
+        if not isinstance(publication_identity, str) or not publication_identity:
+            raise ValueError("frozen evidence item has no knowledge-version identity")
+        if publication_identity not in knowledge_version_identities:
+            knowledge_version_identities.append(publication_identity)
+
+    envelope: dict[str, object] = {
+        USER_QUESTION_REGION: question,
+        EVIDENCE_SOURCES_REGION: [
+            _evidence_region(
+                item,
+                citation_id=evidence_set.citations[index - 1].marker,
+                evidence_citation=evidence_set.citations[index - 1],
+            )
+            for index, item in enumerate(evidence_set.items, start=1)
+        ],
+        QUERY_CONDITION_SET_REGION: evidence_set.query_conditions.to_provider_record(),
+        ANSWER_EVIDENCE_SET_IDENTITY_REGION: evidence_set.identity,
+        KNOWLEDGE_VERSION_IDENTITIES_REGION: knowledge_version_identities,
+    }
+    contract = _response_contract(
+        question,
+        evidence_set.items,
+        citations=evidence_set.citations,
+        governing_citation=evidence_set.governing_citation,
+        query_condition_ids=tuple(condition.condition_id for condition in evidence_set.query_conditions.conditions),
+    )
+    if contract is not None:
+        envelope[RESPONSE_CONTRACT_REGION] = contract
+    return envelope
+
+
 def build_generation_prompt(question: str, evidence: AnswerEvidenceSet | tuple[AnswerEvidence, ...]) -> GenerationPrompt:
     """Build the provider prompt with structurally separate regions.
 
@@ -185,34 +225,25 @@ def build_generation_prompt(question: str, evidence: AnswerEvidenceSet | tuple[A
         evidence_set = evidence
         items = evidence.items
         citations = evidence.citations
+        envelope = frozen_generation_input_record(question, evidence_set)
     else:
         evidence_set = None
         items = evidence
         citations = None
-    envelope = {
-        USER_QUESTION_REGION: question,
-        EVIDENCE_SOURCES_REGION: [
-            _evidence_region(
-                item,
-                citation_id=citations[index - 1].marker if citations is not None else f"S{index}",
-                evidence_citation=citations[index - 1] if citations is not None else None,
-            )
-            for index, item in enumerate(items, start=1)
-        ],
-    }
-    if evidence_set is not None:
-        envelope[QUERY_CONDITION_SET_REGION] = evidence_set.query_conditions.to_provider_record()
-    contract = _response_contract(
-        question,
-        items,
-        citations=citations,
-        governing_citation=evidence_set.governing_citation if evidence_set is not None else None,
-        query_condition_ids=tuple(condition.condition_id for condition in evidence_set.query_conditions.conditions)
-        if evidence_set is not None
-        else (),
-    )
-    if contract is not None:
-        envelope[RESPONSE_CONTRACT_REGION] = contract
+        envelope: dict[str, object] = {
+            USER_QUESTION_REGION: question,
+            EVIDENCE_SOURCES_REGION: [
+                _evidence_region(
+                    item,
+                    citation_id=citations[index - 1].marker if citations is not None else f"S{index}",
+                    evidence_citation=citations[index - 1] if citations is not None else None,
+                )
+                for index, item in enumerate(items, start=1)
+            ],
+        }
+        contract = _response_contract(question, items, citations=citations)
+        if contract is not None:
+            envelope[RESPONSE_CONTRACT_REGION] = contract
     return GenerationPrompt(
         system_prompt=SYSTEM_POLICY,
         user_prompt=json.dumps(envelope, ensure_ascii=False, separators=(",", ":")),

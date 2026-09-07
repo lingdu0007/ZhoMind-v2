@@ -3315,7 +3315,7 @@ async def test_long_running_indexing_renews_the_candidate_worker_lease(
             assert job.status == "candidate_ready"
             assert job.heartbeat_at is not None
             assert job.started_at is not None
-            assert job.heartbeat_at >= job.started_at
+            assert job.heartbeat_at.replace(tzinfo=UTC) >= job.started_at.replace(tzinfo=UTC)
     finally:
         await engine.dispose()
 

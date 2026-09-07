@@ -29,7 +29,11 @@ class _InMemoryRedis:
 
 
 class _RetryableFailProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
     async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
+        self.calls += 1
         raise TimeoutError("upstream timeout")
 
 
@@ -56,7 +60,7 @@ class _PublishedEvidenceRetriever:
         ]
 
 
-def test_chat_does_not_fallback_when_the_active_provider_fails(monkeypatch) -> None:
+def test_migration_profile_does_not_enter_generation_or_fallback(monkeypatch) -> None:
     db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     fake_redis = _InMemoryRedis()
@@ -86,7 +90,8 @@ def test_chat_does_not_fallback_when_the_active_provider_fails(monkeypatch) -> N
     prev_openai = registry.get_llm("openai")
     prev_retriever = registry.get_retriever("chat-default-retriever")
 
-    registry.register_llm("ark", _RetryableFailProvider())
+    primary = _RetryableFailProvider()
+    registry.register_llm("ark", primary)
     secondary = _OkProvider()
     registry.register_llm("openai", secondary)
     registry.register_retriever("chat-default-retriever", _PublishedEvidenceRetriever())
@@ -107,21 +112,20 @@ def test_chat_does_not_fallback_when_the_active_provider_fails(monkeypatch) -> N
             assert resp.status_code == 200
             data = resp.json()["data"]
             diagnostics = data["retrieval_diagnostics"]
-            assert data["answer"] == "【生成不可用】生成服务暂不可用，请稍后重试。"
+            assert data["outcome"] == "insufficient_evidence_reply"
+            assert data["answer"] == "未检索到足够相关的知识片段，请补充更具体的问题或关键词。"
             assert data["message"]["evidence_summary"] == {
-                "coverage": "sufficient",
-                "source_count": 1,
-                "sources": [
-                        {
-                            "source_id": "published-chunk-1",
-                            "metadata": {"title": "已发布资料", "publication_version": "v1"},
-                            "excerpt": "已发布资料中的可引用事实。",
-                    }
-                ],
+                "coverage": "insufficient",
+                "source_count": 0,
+                "sources": [],
             }
+            assert primary.calls == 0
             assert secondary.calls == 0
-            assert diagnostics["fallback"] == {"state": "not_used", "hops": 0, "final_provider": "ark"}
-            assert diagnostics["provider_errors"] == [{"stage": "generate", "code": "TimeoutError", "type": None}]
+            assert diagnostics["evidence_gate"] == {
+                "outcome": "rejected",
+                "reason": "no_eligible_published_evidence",
+            }
+            assert diagnostics["provider_errors"] == []
             assert "rag_trace" not in data
     finally:
         if prev_ark is None:

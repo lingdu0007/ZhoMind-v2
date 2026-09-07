@@ -616,3 +616,26 @@ def evidence_summary_from_trace(rag_trace: object) -> dict[str, Any]:
         summary["provider_prompt_snapshot_ids"] = observed_envelope["snapshot_ids"]
         summary["provider_generation_envelope"] = observed_envelope
     return summary
+
+
+def evidence_summary_from_execution(execution_result: object) -> dict[str, Any]:
+    """Project a completed closed execution without deriving its outcome."""
+
+    result = execution_result if isinstance(execution_result, Mapping) else {}
+    outcome = result.get("outcome")
+    if outcome == "insufficient_evidence_reply":
+        return {"coverage": "insufficient", "source_count": 0, "sources": []}
+    if outcome == "non_knowledge_base_reply":
+        return {"coverage": "unavailable", "source_count": 0, "sources": []}
+    if outcome not in {"evidence_gated_answer", "generation_unavailable"}:
+        raise ValueError("completed answer execution has no accepted closed outcome")
+
+    answer_evidence_set = result.get("evidence_set")
+    if not isinstance(answer_evidence_set, Mapping):
+        raise ValueError("evidence-bound answer execution has no frozen Answer Evidence Set")
+    sources = _sources_from_frozen_answer_evidence_set(answer_evidence_set)
+    if not sources:
+        raise ValueError("frozen Answer Evidence Set cannot be projected")
+    if outcome == "generation_unavailable":
+        return {"coverage": "unavailable", "source_count": 0, "sources": []}
+    return {"coverage": "sufficient", "source_count": len(sources), "sources": sources}

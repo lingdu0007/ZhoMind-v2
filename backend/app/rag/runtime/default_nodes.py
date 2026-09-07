@@ -7,6 +7,24 @@ from app.retrieval.policy import PILOT_RETRIEVAL_PROFILE_ID, get_retrieval_polic
 from app.settings.runtime import get_runtime_settings
 
 
+class ClosedAnswerExecutionFailure(RuntimeError):
+    """A closed product execution cannot relabel a provider failure as evidence absence."""
+
+
+def _require_closed_execution_retrieval_result(
+    state: RagStateDict,
+    *,
+    item_count: int,
+    error: object,
+) -> None:
+    # A mixed retriever may record an induced dense diagnostic while returning
+    # a valid lexical fallback. That is a recovered retrieval result. An
+    # adapter-level exception, by contrast, produces no candidates at all and
+    # must remain a failed execution instead of a synthetic insufficiency.
+    if state["require_closed_evidence_decision"] and error is not None and item_count == 0:
+        raise ClosedAnswerExecutionFailure("closed answer execution retrieval provider failed")
+
+
 class NormalizeNode:
     async def run(self, state: RagStateDict) -> RagStateDict:
         state["query_norm"] = state["query_raw"].strip()
@@ -68,6 +86,11 @@ class RetrieveNode:
         top_k = int(plan.get("top_k") or self.top_k)
 
         retrieved, exec_detail = await self.retriever.retrieve(state["query_norm"], top_k=top_k)
+        _require_closed_execution_retrieval_result(
+            state,
+            item_count=len(retrieved.items),
+            error=exec_detail["error"],
+        )
         ordered_items = []
         for index, item in enumerate(retrieved.items):
             ordered_item = dict(item)
@@ -313,6 +336,33 @@ class ContextPackNode:
                         "decision": "sufficient" if decision.is_sufficient else decision.reason,
                         "evidence_set_identity": decision.evidence_set.identity if decision.evidence_set else None,
                         "authorized_candidate_pool": authorized_pool,
+                    },
+                }
+            )
+            return state
+
+        if state["require_closed_evidence_decision"]:
+            decision = decide_answer_evidence(
+                normalized_question=state["query_norm"],
+                query_conditions=state["query_condition_set"],
+                candidates=(),
+                # The retained migration profile has no evidence-selection
+                # budget because it cannot form product answer evidence. Use
+                # the request executor's validated limits only to construct
+                # the closed no-evidence decision.
+                max_items=self.top_k,
+                max_excerpt_chars=self.max_excerpt_chars,
+            )
+            state["evidence_sufficiency_decision"] = decision
+            state["evidence_pack"] = []
+            state["trace_steps"].append(
+                {
+                    "step": "context_pack",
+                    "detail": {
+                        "evidence_count": 0,
+                        "decision": str(decision.reason),
+                        "evidence_set_identity": None,
+                        "authorized_candidate_pool": False,
                     },
                 }
             )

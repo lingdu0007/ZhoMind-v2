@@ -49,7 +49,7 @@ The release keeps five boundaries separate. Their names are intentional because 
 
 | Boundary | Purpose | It does not prove |
 | --- | --- | --- |
-| Migration Retrieval | Availability behavior while dense coverage or dense query availability is incomplete; it can fall back to the existing Lexical Heuristic. | Quality-oriented Sparse BM25 or Hybrid Retrieval quality. |
+| Migration Retrieval | An explicitly named diagnostic/migration path, `retrieval-answer-policy/lexical-heuristic-migration-v1`, for retained availability behavior. It may use the existing Lexical Heuristic. | The active Pilot Sparse BM25 profile, retrieval quality, or an answer being supportable. |
 | Evaluation Retriever | Experiment-only comparison over one frozen Project-Derived Corpus and Evaluation Query Set. It evaluates `sparse_bm25`, `dense`, and `hybrid_rrf`. | Production routing or an answer being supportable. |
 | Direct Retrieval Diagnostic | Administrator retrieval-health surface that can expose a broader ordered candidate set. | Citation selection, Answer Evidence Set membership, or a production answer path. |
 | Evidence-Gated Answer Execution | One transport-independent execution boundary that selects the closed Answer Execution Outcome. | That a diagnostic candidate may be cited or that a provider may answer without evidence. |

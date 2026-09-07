@@ -117,6 +117,7 @@ def test_router_does_not_observe_an_envelope_without_a_provider_call() -> None:
     result = asyncio.run(ProviderRouter(providers={}).complete(primary="ark", fallbacks=[], prompt="{}"))
 
     assert result["generation_envelope"] is None
+    assert result["provider_failure"] is True
 
 
 def test_router_observes_an_envelope_when_provider_call_fails() -> None:

@@ -45,7 +45,7 @@ ZhoMind-v2 将这些状态转换显式化。管理员只有在 inspection 后才
 
 | Boundary | Purpose | It does not prove |
 | --- | --- | --- |
-| Migration Retrieval | dense coverage 或 dense query availability 不完整时的 availability behavior；可回退至现有 Lexical Heuristic。 | quality-oriented Sparse BM25 或 Hybrid Retrieval quality。 |
+| Migration Retrieval | 显式命名的 diagnostic/migration path：`retrieval-answer-policy/lexical-heuristic-migration-v1`，用于保留的 availability behavior；它可使用现有 Lexical Heuristic。 | active Pilot Sparse BM25 profile、retrieval quality 或回答可被支撑。 |
 | Evaluation Retriever | 在一个冻结的 Project-Derived Corpus 和 Evaluation Query Set 上进行的 experiment-only comparison；评估 `sparse_bm25`、`dense` 与 `hybrid_rrf`。 | production routing 或回答可被支撑。 |
 | Direct Retrieval Diagnostic | 可暴露更广泛 ordered candidate set 的 administrator retrieval-health surface。 | citation selection、Answer Evidence Set membership 或 production answer path。 |
 | Evidence-Gated Answer Execution | 选择单个封闭 Answer Execution Outcome 的 transport-independent execution boundary。 | diagnostic candidate 可以被引用，或 provider 可在无 evidence 时回答。 |

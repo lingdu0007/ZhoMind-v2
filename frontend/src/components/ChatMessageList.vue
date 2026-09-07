@@ -19,10 +19,29 @@
         <span v-else-if="msg.status" class="status-text" :class="statusClass(msg.status)" role="status">{{ msg.status }}</span>
       </header>
       <div class="content">{{ msg.content }}</div>
-      <div v-if="msg.rejected" class="reject-tip">拒答原因：知识片段不足，建议补充关键词或限定范围。</div>
+      <div v-if="msg.rejected && !msg.failed" class="reject-tip">拒答原因：知识片段不足，建议补充关键词或限定范围。</div>
       <button v-if="msg.failed" type="button" class="retry-button" :disabled="retryDisabled" @click="$emit('retry', idx)">重试</button>
 
-      <section v-if="msg.evidence_summary" class="evidence-summary" aria-label="证据摘要">
+      <section
+        v-if="msg.role === 'user' && msg.answer_execution?.query_condition_set"
+        class="query-condition-set"
+        aria-label="查询条件"
+      >
+        <div class="query-condition-set__heading">
+          <span>查询条件</span>
+          <strong>{{ conditionProvenanceLabel(msg.answer_execution.condition_provenance) }}</strong>
+        </div>
+        <ul v-if="queryConditionsFor(msg).length" class="query-condition-set__items">
+          <li v-for="condition in queryConditionsFor(msg)" :key="condition.condition_id">
+            <span>{{ condition.field }}</span>
+            <span>{{ condition.operator }}</span>
+            <span>{{ condition.value }}</span>
+          </li>
+        </ul>
+        <p v-else class="query-condition-set__empty">无显式条件</p>
+      </section>
+
+      <section v-if="msg.evidence_summary && !msg.failed" class="evidence-summary" aria-label="证据摘要">
         <div class="evidence-summary__heading">
           <span>证据摘要</span>
           <strong>{{ getEvidenceCoverageLabel(msg.evidence_summary.coverage) }}</strong>
@@ -48,7 +67,7 @@
         <p v-else class="evidence-summary__empty">没有可供核对的来源摘录。</p>
       </section>
       <KnowledgeFeedback v-if="msg.role === 'assistant' && !msg.streaming && !msg.failed" :message="msg" />
-      <RetrievalDiagnostics v-if="showDiagnostics && msg.retrieval_diagnostics" :diagnostics="msg.retrieval_diagnostics" />
+      <RetrievalDiagnostics v-if="showDiagnostics && msg.retrieval_diagnostics && !msg.failed" :diagnostics="msg.retrieval_diagnostics" />
     </article>
   </section>
 </template>
@@ -68,6 +87,13 @@ const statusClass = (status) => {
   if (status.includes('停止')) return 'status-stop';
   return '';
 };
+
+const queryConditionsFor = (message) => {
+  const conditions = message?.answer_execution?.query_condition_set?.conditions;
+  return Array.isArray(conditions) ? conditions : [];
+};
+
+const conditionProvenanceLabel = (provenance) => (provenance?.mode === 'inherited' ? '继承' : '本轮');
 
 const props = defineProps({
   messages: {
@@ -250,6 +276,62 @@ watch(
 .retry-button:disabled {
   cursor: not-allowed;
   opacity: 0.58;
+}
+
+.query-condition-set {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-rule);
+}
+
+.query-condition-set__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--color-ink-soft);
+  font-size: 12px;
+}
+
+.query-condition-set__heading strong {
+  color: var(--color-moss);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.query-condition-set__items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.query-condition-set__items li {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 7px;
+  border: 1px solid var(--color-rule);
+  background: var(--color-paper-raised);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.query-condition-set__items li span:nth-child(2) {
+  color: var(--color-ink-soft);
+}
+
+.query-condition-set__empty {
+  margin: 8px 0 0;
+  color: var(--color-ink-soft);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .evidence-summary {

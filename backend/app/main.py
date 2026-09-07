@@ -12,6 +12,7 @@ from app.common.config import get_settings
 from app.common.exceptions import register_exception_handlers
 from app.common.logger import configure_logging
 from app.common.request_id import RequestIdMiddleware
+from app.common.stream_delivery import StreamDeliveryMiddleware
 from app.extensions.registry import get_extension_registry
 from app.infra.db import SessionLocal, get_db_session
 from app.operations.events import OperationalEventService
@@ -118,5 +119,6 @@ app.state.settings_session_factory = SessionLocal
 app.state.operational_event_session_factory = SessionLocal
 app.add_middleware(RequestIdMiddleware)
 app.add_middleware(OperationalEventMiddleware)
+app.add_middleware(StreamDeliveryMiddleware)
 register_exception_handlers(app)
 app.include_router(api_v1_router, prefix=settings.api_v1_prefix)

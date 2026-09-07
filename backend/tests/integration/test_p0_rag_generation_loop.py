@@ -56,7 +56,7 @@ def _stream_event_data(payload: str, event: str) -> str | None:
     return None
 
 
-def test_knowledge_user_chat_cites_only_published_document_in_normal_and_streaming_contracts(monkeypatch) -> None:
+def test_migration_profile_never_promotes_published_documents_to_product_evidence(monkeypatch) -> None:
     db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     fake_redis = _InMemoryRedis()
@@ -143,23 +143,15 @@ def test_knowledge_user_chat_cites_only_published_document_in_normal_and_streami
 
             assert response.status_code == 200
             data = response.json()["data"]
-            assert data["outcome"] == "evidence_gated_answer"
-            assert data["message"]["outcome"] == "evidence_gated_answer"
-            assert data["answer"] == "已基于发布资料生成回答。"
+            assert data["outcome"] == "insufficient_evidence_reply"
+            assert data["message"]["outcome"] == "insufficient_evidence_reply"
+            assert "未检索到足够相关的知识片段" in data["answer"]
             assert data["message"]["evidence_summary"] == {
-                "coverage": "sufficient",
-                "source_count": 1,
-                "sources": [
-                    {
-                        "source_id": "published-chunk",
-                        "metadata": {"title": "发布运行手册.md", "publication_version": "v1"},
-                        "excerpt": "发布循环验收锚点：仅已发布版本可以回答。",
-                    }
-                ],
+                "coverage": "insufficient",
+                "source_count": 0,
+                "sources": [],
             }
-            assert "发布循环验收锚点" in provider.prompts[0]
-            assert "仅已发布版本可以回答" in provider.prompts[0]
-            assert "候选草稿不得作为回答证据" not in provider.prompts[0]
+            assert provider.prompts == []
 
             stream_response = client.post(
                 "/api/v1/chat/stream",
@@ -168,8 +160,8 @@ def test_knowledge_user_chat_cites_only_published_document_in_normal_and_streami
             )
 
             assert stream_response.status_code == 200
-            assert 'event: outcome\ndata: {"outcome": "evidence_gated_answer"}' in stream_response.text
-            assert "已基于发布资料生成回答。" in stream_response.text
+            assert 'event: outcome\ndata: {"outcome": "insufficient_evidence_reply"}' in stream_response.text
+            assert "未检索到足够相关的知识片段" in stream_response.text
             streamed_evidence = _stream_event_data(stream_response.text, "evidence_summary")
             assert streamed_evidence is not None
             assert json.loads(streamed_evidence)["evidence_summary"] == data["message"]["evidence_summary"]
@@ -181,7 +173,7 @@ def test_knowledge_user_chat_cites_only_published_document_in_normal_and_streami
                 item for item in history_response.json()["data"]["messages"] if item["type"] == "assistant"
             ]
             assert len(assistant_messages) == 2
-            assert all(item["outcome"] == "evidence_gated_answer" for item in assistant_messages)
+            assert all(item["outcome"] == "insufficient_evidence_reply" for item in assistant_messages)
             assert all(item["evidence_summary"] == data["message"]["evidence_summary"] for item in assistant_messages)
     finally:
         app.dependency_overrides.clear()
@@ -315,7 +307,7 @@ def test_narrow_social_reply_is_explicitly_labeled_as_non_knowledge_base(monkeyp
         asyncio.run(db_engine.dispose())
 
 
-def test_generation_outage_fails_closed_with_published_sources_in_normal_and_streaming_contracts(monkeypatch) -> None:
+def test_migration_profile_does_not_enter_generation_for_published_documents(monkeypatch) -> None:
     db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     fake_redis = _InMemoryRedis()
@@ -384,21 +376,15 @@ def test_generation_outage_fails_closed_with_published_sources_in_normal_and_str
 
             assert response.status_code == 200
             data = response.json()["data"]
-            assert data["outcome"] == "generation_unavailable"
-            assert data["answer"].startswith("【生成不可用】")
+            assert data["outcome"] == "insufficient_evidence_reply"
+            assert data["answer"].startswith("未检索到足够相关的知识片段")
             assert data["message"]["evidence_summary"] == {
-                "coverage": "sufficient",
-                "source_count": 1,
-                "sources": [
-                    {
-                        "source_id": "outage-chunk",
-                        "metadata": {"title": "故障演练手册.md", "publication_version": "v1"},
-                        "excerpt": "故障演练锚点：provider 故障时保留已发布来源。",
-                    }
-                ],
+                "coverage": "insufficient",
+                "source_count": 0,
+                "sources": [],
             }
             assert "retrieval_diagnostics" not in data
-            assert len(primary.prompts) == 1
+            assert primary.prompts == []
             assert secondary.prompts == []
 
             stream_response = client.post(
@@ -408,11 +394,11 @@ def test_generation_outage_fails_closed_with_published_sources_in_normal_and_str
             )
 
             assert stream_response.status_code == 200
-            assert 'event: outcome\ndata: {"outcome": "generation_unavailable"}' in stream_response.text
-            assert "【生成不可用】" in stream_response.text
+            assert 'event: outcome\ndata: {"outcome": "insufficient_evidence_reply"}' in stream_response.text
+            assert "未检索到足够相关的知识片段" in stream_response.text
             assert _stream_event_data(stream_response.text, "evidence_summary") is not None
             assert "event: done" in stream_response.text
-            assert len(primary.prompts) == 2
+            assert primary.prompts == []
             assert secondary.prompts == []
     finally:
         app.dependency_overrides.clear()

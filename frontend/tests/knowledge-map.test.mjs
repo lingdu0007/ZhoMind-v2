@@ -14,11 +14,12 @@ const startAsKnowledgeUser = async (t, { viewport = { width: 1440, height: 900 }
 };
 
 
-test('Knowledge User browses the published Knowledge Map and starts a cited query', { timeout: 30000 }, async (t) => {
+test('Knowledge User browses the published Knowledge Map and starts a query from a published entry', { timeout: 30000 }, async (t) => {
   const { page, baseUrl } = await startAsKnowledgeUser(t);
   await page.goto(`${baseUrl}chat`);
   await page.getByRole('link', { name: '知识地图' }).click();
   await page.getByRole('heading', { name: '知识地图' }).waitFor();
+  await page.locator('section.knowledge-map[aria-busy="false"]').waitFor();
 
   assert.equal(await page.getByRole('heading', { name: 'Workflow 与 Agent' }).isVisible(), true);
   const entry = page.getByRole('article', { name: 'Prefer deterministic workflows' });
@@ -43,6 +44,7 @@ test('Knowledge Map is auth-protected and remains readable on mobile', { timeout
   const authenticated = await startAsKnowledgeUser(t, { viewport: { width: 390, height: 844 } });
   await authenticated.page.goto(`${authenticated.baseUrl}knowledge`);
   await authenticated.page.getByRole('heading', { name: '知识地图' }).waitFor();
+  await authenticated.page.locator('section.knowledge-map[aria-busy="false"]').waitFor();
   assert.equal(
     await authenticated.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
     true

@@ -23,7 +23,7 @@ test('parse standard SSE event/data pairs without leaking event lines into conte
     'event: content\ndata: {"delta":"好"}\n\n',
     'event: evidence_summary\ndata: {"evidence_summary":{"coverage":"sufficient","source_count":1,"sources":[]}}\n\n',
     'event: trace\ndata: {"trace":{"k":"v"}}\n\n',
-    'event: done\ndata: "[DONE]"\n\n'
+    'event: done\ndata: [DONE]\n\n'
   ]);
 
   const types = frames.map((item) => item.type);
@@ -52,6 +52,41 @@ test('parse an answer identity without treating it as generated content', () => 
   const events = collectEvents(['event: answer_identity\ndata: {"answer_id":"answer-123"}\n\n']);
 
   assert.deepEqual(events, [{ type: 'answer_identity', answer_id: 'answer-123' }]);
+});
+
+test('parse a frozen answer execution and explicit completed outcome without inference', () => {
+  const events = collectEvents([
+    'event: answer_execution\ndata: {"answer_execution":{"id":"answer_execution:1","state":"completed","query_condition_set":{"identity":"qcs:1","conditions":[]}}}\n\n',
+    'event: outcome\ndata: {"outcome":"insufficient_evidence_reply"}\n\n'
+  ]);
+
+  assert.deepEqual(events, [
+    {
+      type: 'answer_execution',
+      answer_execution: {
+        id: 'answer_execution:1',
+        state: 'completed',
+        query_condition_set: { identity: 'qcs:1', conditions: [] }
+      }
+    },
+    { type: 'outcome', outcome: 'insufficient_evidence_reply' }
+  ]);
+});
+
+test('parse a structured insufficiency reply as an explicit terminal field', () => {
+  const [event] = collectEvents([
+    'event: insufficient_evidence_reply\n',
+    'data: {"insufficient_evidence_reply":{"outcome":"insufficient_evidence_reply","reason":"decision_not_covered","query_condition_set_identity":"qcs:1"}}\n\n'
+  ]);
+
+  assert.deepEqual(event, {
+    type: 'insufficient_evidence_reply',
+    insufficient_evidence_reply: {
+      outcome: 'insufficient_evidence_reply',
+      reason: 'decision_not_covered',
+      query_condition_set_identity: 'qcs:1'
+    }
+  });
 });
 
 test('parse a role-scoped Retrieval Diagnostics frame as structured administrator data', () => {
@@ -93,5 +128,78 @@ test('parse stage progress frames with stage and message fields', () => {
       { type: 'stage', stage: 'retrieval', message: '正在检索知识库并核验证据…' },
       { type: 'stage', stage: 'generating', message: '证据核验通过，正在生成回答…' }
     ]
+  );
+});
+
+test('reject unterminated, empty, and malformed SSE done terminals', () => {
+  assert.deepEqual(collectEvents(['event: done\ndata: [DONE]']), [
+    {
+      type: 'protocol_error',
+      error: 'stream ended before an SSE frame separator'
+    }
+  ]);
+  assert.deepEqual(collectEvents(['event: done\n\n']), [
+    {
+      type: 'protocol_error',
+      error: 'stream emitted a malformed terminal done event'
+    }
+  ]);
+  assert.deepEqual(normalizeSSEFrame({ event: 'done', data: '{"state":"failed"}' }), {
+    type: 'protocol_error',
+    error: 'stream emitted a malformed terminal done event'
+  });
+  assert.deepEqual(normalizeSSEFrame({ event: 'done', data: '"[DONE]"' }), {
+    type: 'protocol_error',
+    error: 'stream emitted a malformed terminal done event'
+  });
+  assert.deepEqual(normalizeSSEFrame({ event: 'stage', data: '[DONE]' }), {
+    type: 'protocol_error',
+    error: 'stream emitted a terminal marker on a non-done event'
+  });
+  assert.deepEqual(normalizeSSEFrame({ event: 'error', data: '"[DONE]"' }), {
+    type: 'protocol_error',
+    error: 'stream emitted a terminal marker on a non-done event'
+  });
+});
+
+test('preserve empty and unterminated semantic frames as protocol errors', () => {
+  assert.deepEqual(collectEvents(['event: outcome\n\n']), [
+    {
+      type: 'protocol_error',
+      error: 'stream emitted a semantic event without data'
+    }
+  ]);
+  assert.deepEqual(
+    collectEvents(['event: outcome\ndata: {"outcome":"insufficient_evidence_reply"}']),
+    [
+      {
+        type: 'protocol_error',
+        error: 'stream ended before an SSE frame separator'
+      }
+    ]
+  );
+});
+
+test('reject duplicate JSON keys before terminal projection can infer a completion', () => {
+  assert.deepEqual(
+    normalizeSSEFrame({
+      event: 'outcome',
+      data: '{"outcome":"evidence_gated_answer","outcome":"non_knowledge_base_reply"}'
+    }),
+    {
+      type: 'protocol_error',
+      error: 'stream emitted a JSON payload with duplicate keys'
+    }
+  );
+  assert.deepEqual(
+    normalizeSSEFrame({
+      event: 'answer_execution',
+      data:
+        '{"answer_execution":{"id":"answer_execution:1","state":"completed","query_condition_set":{"identity":"qcs:1","identity":"qcs:2","conditions":[]}}}'
+    }),
+    {
+      type: 'protocol_error',
+      error: 'stream emitted a JSON payload with duplicate keys'
+    }
   );
 });

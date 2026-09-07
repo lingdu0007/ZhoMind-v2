@@ -24,13 +24,16 @@ class _Result:
 
 class _TombstoneSession:
     def __init__(self, *, jobs: list[object], messages: list[object]) -> None:
-        self._results = (_Result(jobs), _Result(messages))
+        self._results = (_Result([]), _Result(jobs), _Result(messages))
         self._position = 0
 
     async def execute(self, _statement: object) -> _Result:
         result = self._results[self._position]
         self._position += 1
         return result
+
+    async def scalars(self, _statement: object) -> _ScalarRows:
+        return _ScalarRows([])
 
 
 def _frozen_trace(document_id: str) -> dict:
