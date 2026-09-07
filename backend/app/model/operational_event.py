@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, Integer, String
+from sqlalchemy import JSON, DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.model.base import Base
@@ -22,6 +22,7 @@ class OperationalEvent(Base):
     provider_identity: Mapped[str | None] = mapped_column(String(128), nullable=True)
     normalized_error: Mapped[str | None] = mapped_column(String(128), nullable=True)
     candidate_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    generation_route: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

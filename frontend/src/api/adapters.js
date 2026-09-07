@@ -181,6 +181,18 @@ export const apiAdapter = {
   },
 
   // System Settings (admin, application-gated)
+  async getGenerationRoute() {
+    const { data } = await http.get('/settings/generation-route');
+    return unwrapData(data);
+  },
+  async saveGenerationRoute(payload) {
+    const { data } = await http.put('/settings/generation-route', payload);
+    return unwrapData(data);
+  },
+  async activateGenerationRoute(payload) {
+    const { data } = await http.post('/settings/generation-route/activate', payload);
+    return unwrapData(data);
+  },
   async getSystemSettingsDraft() {
     const { data } = await http.get('/settings/draft');
     return unwrapData(data);

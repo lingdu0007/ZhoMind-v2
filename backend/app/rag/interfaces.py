@@ -20,9 +20,13 @@ class GenerationCompletion:
 class GenerationAttemptError(RuntimeError):
     """A failed provider attempt that still has a wire-envelope observation."""
 
-    def __init__(self, message: str, *, generation_envelope: Mapping[str, Any] | None = None) -> None:
-        super().__init__(message)
+    def __init__(
+        self, message: str, *, generation_envelope: Mapping[str, Any] | None = None,
+        reason: str = "service_error",
+    ) -> None:
+        super().__init__("generation attempt failed")
         self.generation_envelope = generation_envelope
+        self.reason = reason
 
 
 @dataclass(frozen=True)

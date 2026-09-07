@@ -2,6 +2,9 @@
 
 Status: Accepted
 
+Partially superseded by ADR 0005 for normalized approved-route failure and
+exhaustion only; input/envelope integrity and transport rules remain in force.
+
 Date: 2026-09-06
 
 Supersedes: transport-specific answer gates, generation and persistence

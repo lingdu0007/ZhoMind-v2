@@ -56,6 +56,9 @@ const startApiEnvironment = async (t) => {
       SYSTEM_SETTINGS_DRAFT_ENABLED: 'true',
       SYSTEM_SETTINGS_APPLICATION_ENABLED: 'true',
       SYSTEM_SETTINGS_ENCRYPTION_KEY: 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=',
+      GENERATION_VALIDATION_MODE: 'local_development',
+      GENERATION_DEPLOYMENT_IDENTITY: 'deployment:editorial-preview-20260905',
+      GENERATION_PRODUCT_REVISION: 'product_revision:3ec565873608c7dcb3f824355dacf77bb1b277c9',
       DENSE_EMBEDDING_DIM: '0',
       EMBEDDING_API_KEY: '',
       EMBEDDING_BASE_URL: '',
@@ -430,7 +433,7 @@ for (const runtime of [
     for (const workspace of [
       { path: 'documents', title: '文档库', notice: '文档库当前仅支持桌面工作区。' },
       { path: 'jobs', title: '构建任务', notice: '构建任务当前仅支持桌面工作区。' },
-      { path: 'config', title: '系统设置', notice: '系统设置当前仅支持桌面工作区。' }
+      { path: 'config', title: '系统设置', notice: '旧版兼容配置仅支持桌面工作区。' }
     ]) {
       await page.goto(`${baseUrl}${workspace.path}`);
       await page.getByRole('heading', { name: workspace.title }).waitFor();
@@ -442,7 +445,7 @@ for (const runtime of [
     for (const workspace of [
       { path: 'documents', notice: '文档库当前仅支持桌面工作区。' },
       { path: 'jobs', notice: '构建任务当前仅支持桌面工作区。' },
-      { path: 'config', notice: '系统设置当前仅支持桌面工作区。' }
+      { path: 'config', notice: '旧版兼容配置仅支持桌面工作区。' }
     ]) {
       await page.goto(`${baseUrl}${workspace.path}`);
       await page.getByText(workspace.notice).waitFor();

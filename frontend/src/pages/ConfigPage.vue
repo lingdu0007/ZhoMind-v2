@@ -4,16 +4,18 @@
       <div>
         <p class="system-settings__eyebrow">系统运维</p>
         <h1 id="system-settings-title">系统设置</h1>
-        <p class="system-settings__description">编辑服务端草稿，并在保存后由运行系统确认应用结果。</p>
+        <p class="system-settings__description">生成路由与兼容配置</p>
       </div>
     </header>
+    <ApprovedGenerationRoute />
 
     <div v-if="!isDesktop" class="system-settings__desktop-notice" role="status">
       <Monitor :size="18" aria-hidden="true" />
-      <p>系统设置当前仅支持桌面工作区。</p>
+      <p>旧版兼容配置仅支持桌面工作区。</p>
     </div>
 
     <template v-else>
+      <h2 class="system-settings__legacy-heading">旧版兼容配置（无路由批准权限）</h2>
       <p v-if="loadError" class="system-settings__error" role="alert">
         <span>{{ loadError }}</span>
         <button type="button" @click="loadDraft">重新加载</button>
@@ -29,7 +31,7 @@
         <section class="system-settings__section" aria-labelledby="model-provider-title">
           <div class="system-settings__section-heading">
             <h2 id="model-provider-title">模型与提供方</h2>
-            <p>每次只配置一个生成服务商；保存的密钥仅可替换，不能读取或复制。</p>
+            <p>兼容配置状态，不代表批准路由的活动状态。</p>
           </div>
           <div class="system-settings__fields">
             <label :class="{ 'system-settings__field--changed': isChanged('provider_type') }" class="system-settings__field">
@@ -91,6 +93,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { Monitor } from 'lucide-vue-next';
 
 import { apiAdapter } from '../api/adapters';
+import ApprovedGenerationRoute from '../components/ApprovedGenerationRoute.vue';
 
 const DESKTOP_MIN_WIDTH = 641;
 const emptyDraft = () => ({
@@ -320,6 +323,8 @@ onBeforeUnmount(() => {
 .system-settings__form {
   padding-bottom: 28px;
 }
+
+.system-settings__legacy-heading { margin-top: 32px; }
 
 .system-settings__section {
   display: grid;

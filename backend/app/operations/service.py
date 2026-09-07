@@ -17,6 +17,9 @@ class OperationsService:
         document_counts = await self._document_counts()
         job_counts = await self._job_counts()
         settings = await SystemSettingsDraftService(self.session).read()
+        route_events = await self.session.scalars(select(OperationalEvent).where(
+            OperationalEvent.generation_route.is_not(None),
+        ).order_by(OperationalEvent.created_at.desc()).limit(20))
         failures, retry_actions = await self._failure_projection()
         self._append_generation_settings_failure(
             failures=failures,
@@ -32,6 +35,10 @@ class OperationsService:
                 "running_builds": job_counts["running"],
             },
             "generation": {
+                "route_executions": [
+                    {**event.generation_route, "request_id": event.request_id}
+                    for event in route_events if event.generation_route
+                ],
                 "application_state": settings["application_state"],
                 "active": settings["active"],
             },

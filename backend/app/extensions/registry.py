@@ -2,7 +2,6 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
-from app.extensions.generation_factory import build_generation_provider
 from app.extensions.langchain_embedding_providers import OpenAIEmbeddingProvider
 from app.rag.claim_evidence import ClaimResolver
 from app.rag.dense_contract import build_embedding_contract_fingerprint
@@ -94,20 +93,6 @@ def get_extension_registry() -> ExtensionRegistry:
     settings = get_runtime_settings()
     # Agent evidence stays fail-closed until trusted process bootstrap registers
     # an independently calibrated ClaimResolver.
-    if settings.runtime_generation_settings_managed:
-        generation_provider = build_generation_provider(settings)
-        if generation_provider is not None:
-            registry.register_llm(settings.rag_primary_llm_provider, generation_provider)
-            registry.register_llm("chat-default-llm", generation_provider)
-    else:
-        for provider_type in ("ark", "openai", "anthropic"):
-            candidate = settings.model_copy(update={"rag_primary_llm_provider": provider_type})
-            provider = build_generation_provider(candidate)
-            if provider is not None:
-                registry.register_llm(provider_type, provider)
-        if "ark" in registry.llm_providers:
-            registry.register_llm("chat-default-llm", registry.llm_providers["ark"])
-
     if (
         settings.embedding_api_key_configured
         and settings.embedding_base_url_normalized

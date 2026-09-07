@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     system_settings_draft_enabled: bool = Field(False, alias="SYSTEM_SETTINGS_DRAFT_ENABLED")
     system_settings_application_enabled: bool = Field(False, alias="SYSTEM_SETTINGS_APPLICATION_ENABLED")
     system_settings_encryption_key: str = Field("", alias="SYSTEM_SETTINGS_ENCRYPTION_KEY")
+    generation_validation_mode: Literal["controlled_live", "local_development"] = Field(
+        "controlled_live", alias="GENERATION_VALIDATION_MODE",
+    )
+    generation_deployment_identity: str = Field("", alias="GENERATION_DEPLOYMENT_IDENTITY")
+    generation_product_revision: str = Field("", alias="GENERATION_PRODUCT_REVISION")
 
     # Applied System Settings are process-local runtime values, never browser input.
     runtime_retrieval_profile: Literal[

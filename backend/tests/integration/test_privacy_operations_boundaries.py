@@ -212,6 +212,7 @@ def test_chat_records_a_content_free_operational_event(client: TestClient) -> No
     assert event.candidate_count == 0
     assert event.provider_identity is None
     assert event.normalized_error is None
+    assert event.generation_route is None
     assert private_question not in str({column.name: getattr(event, column.name) for column in event.__table__.columns})
     assert {column.name for column in event.__table__.columns} == {
         "id",
@@ -222,6 +223,7 @@ def test_chat_records_a_content_free_operational_event(client: TestClient) -> No
         "provider_identity",
         "normalized_error",
         "candidate_count",
+        "generation_route",
         "created_at",
     }
 

@@ -1,11 +1,11 @@
 from time import perf_counter
 
 from sqlalchemy.exc import SQLAlchemyError
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.common.config import get_settings
+from app.common.generation_audit import generation_audit_sink
 from app.infra.db import SessionLocal
 from app.operations.events import OperationalEventService
 
@@ -45,68 +45,51 @@ async def _record_operational_event(
                 provider_identity=context.get("provider_identity"),
                 normalized_error=context.get("normalized_error"),
                 candidate_count=context.get("candidate_count"),
+                generation_route=context.get("generation_route"),
             )
     except (OSError, SQLAlchemyError):
         # Operational recording is never allowed to replace the user response.
         pass
 
 
-class _DeferredOperationalEventResponse:
-    """ASGI wrapper that records the operational event after the body streams.
+class OperationalEventMiddleware:
+    """Record after the inner stream-delivery observer finishes durable cleanup."""
 
-    Streaming endpoints (e.g. /chat/stream) set ``request.state.defer_operational_event``
-    when the operational context (gate outcome, provider identity) is only
-    produced while the response body streams. BaseHTTPMiddleware regains control
-    at ``http.response.start``, before the body completes, so recording must wait
-    until the wrapped response finishes sending.
-    """
-
-    def __init__(self, inner: ASGIApp, *, request: Request, started: float) -> None:
-        self._inner = inner
-        self._request = request
-        self._started = started
-        self.status_code = getattr(inner, "status_code", 200)
-        self.raw_headers = getattr(inner, "raw_headers", [])
-
-    def _request_id(self) -> str:
-        for name, value in self.raw_headers:
-            if name == b"x-request-id":
-                return value.decode("latin-1")
-        return ""
-
-    async def _record(self) -> None:
-        context = getattr(self._request.state, "operational_event", {})
-        if not isinstance(context, dict):
-            context = {}
-        await _record_operational_event(
-            request=self._request,
-            request_id=self._request_id(),
-            route_outcome=f"{self._request.method} {_route_path(self._request)}:{_outcome_for_status(self.status_code)}",
-            duration_ms=round((perf_counter() - self._started) * 1000),
-            context=context,
-        )
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        try:
-            await self._inner(scope, receive, send)
-        finally:
-            await self._record()
-
-
-class OperationalEventMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope)
         started = perf_counter()
-        response = await call_next(request)
-        if getattr(request.state, "defer_operational_event", False):
-            return _DeferredOperationalEventResponse(response, request=request, started=started)
-        context = getattr(request.state, "operational_event", {})
-        if not isinstance(context, dict):
-            context = {}
-        await _record_operational_event(
-            request=request,
-            request_id=response.headers.get("x-request-id", ""),
-            route_outcome=f"{request.method} {_route_path(request)}:{_outcome_for_status(response.status_code)}",
-            duration_ms=round((perf_counter() - started) * 1000),
-            context=context,
-        )
-        return response
+        status = 500
+        context: dict = {}
+        request.state.operational_event = context
+
+        async def observed_send(message: Message) -> None:
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            await send(message)
+
+        def observe(record: dict) -> None:
+            context["generation_route"] = record
+            context["normalized_error"] = record.get("route_reason") if record.get("route_reason") != "succeeded" else None
+            attempts = record.get("provider_attempts") or []
+            context["provider_identity"] = attempts[-1].get("provider") if attempts else None
+
+        token = generation_audit_sink.set(observe)
+        try:
+            await self.app(scope, receive, observed_send)
+        finally:
+            generation_audit_sink.reset(token)
+            context = getattr(request.state, "operational_event", {})
+            await _record_operational_event(
+                request=request,
+                request_id=getattr(request.state, "request_id", ""),
+                route_outcome=f"{request.method} {_route_path(request)}:{_outcome_for_status(status)}",
+                duration_ms=round((perf_counter() - started) * 1000),
+                context=context if isinstance(context, dict) else {},
+            )

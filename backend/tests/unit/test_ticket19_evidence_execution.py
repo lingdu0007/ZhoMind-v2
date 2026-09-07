@@ -14,6 +14,7 @@ from app.rag.answer_execution import AnswerOutcomeKind, EvidenceGatedAnswerExecu
 from app.rag.evidence_sufficiency import QueryConditionSet
 from app.rag.interfaces import GenerationCompletion, RetrieveResult
 from app.retrieval.policy import PILOT_RETRIEVAL_PROFILE_ID
+from tests.support.generation import approved_test_route
 
 
 def _candidate(*, section_id: str) -> dict:
@@ -205,7 +206,7 @@ def test_pilot_nonempty_context_without_a_governing_section_is_closed_before_jud
         retriever=_PilotRetriever(),
         reranker=_IdentityReranker(),
         judge=judge,
-        provider_router=ProviderRouter(providers={"approved": provider}),
+        provider_router=ProviderRouter(providers={"approved": provider}, approved_route=approved_test_route("approved")),
         primary_provider="approved",
         retriever_name="pilot-retriever",
         reranker_name="identity-reranker",
@@ -245,7 +246,7 @@ def test_pilot_rejects_an_authorized_looking_candidate_from_a_nonproduction_pool
         retriever=_WrongScopePilotRetriever(),
         reranker=_IdentityReranker(),
         judge=judge,
-        provider_router=ProviderRouter(providers={"approved": provider}),
+        provider_router=ProviderRouter(providers={"approved": provider}, approved_route=approved_test_route("approved")),
         primary_provider="approved",
         retriever_name="wrong-scope-retriever",
         reranker_name="identity-reranker",
@@ -278,7 +279,7 @@ def test_pilot_rejects_a_profileless_retrieval_result_before_generation() -> Non
         retriever=_ProfilelessPilotRetriever(),
         reranker=_IdentityReranker(),
         judge=judge,
-        provider_router=ProviderRouter(providers={"approved": provider}),
+        provider_router=ProviderRouter(providers={"approved": provider}, approved_route=approved_test_route("approved")),
         primary_provider="approved",
         retriever_name="profileless-pilot-retriever",
         reranker_name="identity-reranker",
@@ -326,7 +327,7 @@ def test_pilot_rejects_an_unresolved_pool_conflict_before_provider_generation() 
         retriever=_ConflictedPilotRetriever(),
         reranker=_IdentityReranker(),
         judge=judge,
-        provider_router=ProviderRouter(providers={"approved": provider}),
+        provider_router=ProviderRouter(providers={"approved": provider}, approved_route=approved_test_route("approved")),
         primary_provider="approved",
         retriever_name="conflicted-pilot-retriever",
         reranker_name="identity-reranker",
@@ -358,7 +359,7 @@ def test_pilot_provider_prompt_uses_only_the_frozen_evidence_set_and_visible_con
         retriever=_SufficientPilotRetriever(),
         reranker=_IdentityReranker(),
         judge=_FailIfCalledJudge(),
-        provider_router=ProviderRouter(providers={"approved": provider}),
+        provider_router=ProviderRouter(providers={"approved": provider}, approved_route=approved_test_route("approved")),
         primary_provider="approved",
         retriever_name="pilot-retriever",
         reranker_name="identity-reranker",
@@ -463,7 +464,7 @@ def test_frozen_evidence_display_metadata_cannot_be_mutated_by_candidates_or_pro
         retriever=_DisplayMetadataRetriever(),
         reranker=_IdentityReranker(),
         judge=_FailIfCalledJudge(),
-        provider_router=ProviderRouter(providers={"approved": provider}),
+        provider_router=ProviderRouter(providers={"approved": provider}, approved_route=approved_test_route("approved")),
         primary_provider="approved",
         retriever_name="display-metadata-retriever",
         reranker_name="identity-reranker",
@@ -512,7 +513,7 @@ def test_frozen_evidence_summary_rejects_snapshot_substitution_even_when_the_sna
         retriever=_SufficientPilotRetriever(),
         reranker=_IdentityReranker(),
         judge=_FailIfCalledJudge(),
-        provider_router=ProviderRouter(providers={"approved": provider}),
+        provider_router=ProviderRouter(providers={"approved": provider}, approved_route=approved_test_route("approved")),
         primary_provider="approved",
         retriever_name="pilot-retriever",
         reranker_name="identity-reranker",
@@ -592,7 +593,7 @@ def test_pilot_rejects_deterministic_adversarial_generation_contract_violations(
         retriever=_AdversarialPilotRetriever(),
         reranker=_IdentityReranker(),
         judge=_FailIfCalledJudge(),
-        provider_router=ProviderRouter(providers={"approved": provider}),
+        provider_router=ProviderRouter(providers={"approved": provider}, approved_route=approved_test_route("approved")),
         primary_provider="approved",
         retriever_name="adversarial-pilot-retriever",
         reranker_name="identity-reranker",

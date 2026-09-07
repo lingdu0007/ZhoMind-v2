@@ -7,9 +7,39 @@ from app.common.exceptions import AppError
 from app.common.request_id import get_request_id
 from app.common.responses import ok_response
 from app.infra.db import SessionLocal, get_db_session
+from app.settings.generation_routes import GenerationRouteService
 from app.settings.service import SystemSettingsDraftService
 
 router = APIRouter(prefix="/settings", tags=["settings"])
+
+
+@router.get("/generation-route")
+async def get_generation_route(
+    administrator=Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    data = await GenerationRouteService(session).read()
+    return ok_response(data=data, request_id=get_request_id())
+
+
+@router.put("/generation-route")
+async def save_generation_route(
+    payload: object = Body(...),
+    administrator=Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    data = await GenerationRouteService(session).save(actor=f"member:{administrator.id}", payload=payload)
+    return ok_response(data=data, request_id=get_request_id())
+
+
+@router.post("/generation-route/activate")
+async def activate_generation_route(
+    payload: object = Body(...),
+    administrator=Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    data = await GenerationRouteService(session).activate(actor=f"member:{administrator.id}", payload=payload)
+    return ok_response(data=data, request_id=get_request_id())
 
 
 def _require_settings_draft_rollout() -> None:

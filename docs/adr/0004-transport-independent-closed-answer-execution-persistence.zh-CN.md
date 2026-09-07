@@ -2,6 +2,9 @@
 
 状态：已接受
 
+仅规范化批准路由失败与耗尽的规则由 ADR 0005 部分替代；input/envelope 完整性和传输
+规则继续有效。
+
 日期：2026-09-06
 
 替代：将 `ChatMessage.rag_trace` 或可变 chat message 视为 answer authority 的

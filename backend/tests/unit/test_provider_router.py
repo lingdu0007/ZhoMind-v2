@@ -4,6 +4,7 @@ import json
 from app.extensions.provider_router import ProviderRouter
 from app.rag.generation_observation import provider_visible_snapshot_ids, wire_generation_envelope_observation
 from app.rag.interfaces import GenerationAttemptError, GenerationCompletion
+from tests.support.generation import approved_test_route
 
 
 class _OkProvider:
@@ -35,6 +36,7 @@ class _HardFailProvider:
     async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
         raise GenerationAttemptError(
             "bad request",
+            reason="authorization_failed",
             generation_envelope=wire_generation_envelope_observation(
                 wire_payload=json.dumps({"messages": [{"role": "user", "content": prompt}]}, separators=(",", ":"))
                 .encode("utf-8"),
@@ -45,6 +47,7 @@ class _HardFailProvider:
 
 def test_router_failover_on_retryable_error() -> None:
     router = ProviderRouter(
+        approved_route=approved_test_route("ark", "openai"),
         providers={
             "ark": _RetryableFailProvider(),
             "openai": _OkProvider("fallback-answer"),
@@ -61,6 +64,7 @@ def test_router_failover_on_retryable_error() -> None:
 
 def test_router_stops_on_non_retryable_error() -> None:
     router = ProviderRouter(
+        approved_route=approved_test_route("ark", "openai"),
         providers={
             "ark": _HardFailProvider(),
             "openai": _OkProvider("should-not-run"),
@@ -75,7 +79,7 @@ def test_router_stops_on_non_retryable_error() -> None:
 
 
 def test_router_observes_snapshot_ids_from_actual_provider_envelope() -> None:
-    router = ProviderRouter(providers={"ark": _OkProvider("answer")})
+    router = ProviderRouter(providers={"ark": _OkProvider("answer")}, approved_route=approved_test_route("ark"))
     prompt = json.dumps(
         {
             "user_question": "question",
@@ -122,7 +126,7 @@ def test_router_does_not_observe_an_envelope_without_a_provider_call() -> None:
 
 def test_router_observes_an_envelope_when_provider_call_fails() -> None:
     result = asyncio.run(
-        ProviderRouter(providers={"ark": _HardFailProvider()}).complete(
+        ProviderRouter(providers={"ark": _HardFailProvider()}, approved_route=approved_test_route("ark")).complete(
             primary="ark",
             fallbacks=[],
             prompt='{"evidence_sources":[]}',
@@ -139,7 +143,7 @@ def test_router_observes_an_envelope_when_provider_call_fails() -> None:
 
 
 def test_router_uses_provider_observation_instead_of_rebuilding_generic_arguments() -> None:
-    router = ProviderRouter(providers={"ark": _OkProvider("answer")})
+    router = ProviderRouter(providers={"ark": _OkProvider("answer")}, approved_route=approved_test_route("ark"))
 
     without_system_prompt = asyncio.run(
         router.complete(primary="ark", fallbacks=[], prompt='{"evidence_sources":[]}')
@@ -165,7 +169,7 @@ def test_router_keeps_concurrent_provider_observations_request_scoped() -> None:
 
     first_prompt = '{"evidence_sources":[]}'
     second_prompt = '{"evidence_sources":[{"title":"t","publication_version":"v1","excerpt":"e"}]}'
-    router = ProviderRouter(providers={"ark": _ConcurrentProvider()})
+    router = ProviderRouter(providers={"ark": _ConcurrentProvider()}, approved_route=approved_test_route("ark"))
     async def run_concurrently() -> tuple[dict, dict]:
         return await asyncio.gather(
             router.complete(primary="ark", fallbacks=[], prompt=first_prompt),
@@ -184,6 +188,7 @@ def test_router_does_not_retain_observation_from_failed_attempt_when_fallback_ha
         async def complete(self, prompt: str, *, system_prompt: str | None = None) -> GenerationCompletion:
             raise GenerationAttemptError(
                 "upstream timeout",
+                reason="timeout",
                 generation_envelope=wire_generation_envelope_observation(
                     wire_payload=b"failed-attempt",
                     snapshot_ids=(),
@@ -195,7 +200,10 @@ def test_router_does_not_retain_observation_from_failed_attempt_when_fallback_ha
             return "fallback"
 
     result = asyncio.run(
-        ProviderRouter(providers={"primary": _RetryableObservedFailure(), "fallback": _FallbackWithoutObservation()}).complete(
+        ProviderRouter(
+            providers={"primary": _RetryableObservedFailure(), "fallback": _FallbackWithoutObservation()},
+            approved_route=approved_test_route("primary", "fallback"),
+        ).complete(
             primary="primary", fallbacks=["fallback"], prompt="question"
         )
     )

@@ -24,7 +24,7 @@ test('System Administrator saves and applies a dirty draft without optimisticall
   assert.equal(await page.getByRole('link', { name: '系统设置' }).isVisible(), true);
   assert.equal(await page.getByRole('heading', { name: '模型与提供方' }).isVisible(), true);
   assert.equal(await page.getByLabel('生成模型').inputValue(), 'Qwen/Qwen3-32B');
-  assert.equal(await page.getByLabel('服务 URL').inputValue(), 'https://provider.example.test/v1');
+  assert.equal(await page.getByLabel('服务 URL', { exact: true }).inputValue(), 'https://provider.example.test/v1');
   assert.equal(await page.getByText('Provider API 密钥已配置，内容已隐藏。').isVisible(), true);
   assert.equal(await page.getByText('已保存版本 1').isVisible(), true);
   assert.equal(await page.getByText('尚无生效版本').isVisible(), true);
@@ -39,7 +39,7 @@ test('System Administrator saves and applies a dirty draft without optimisticall
   assert.ok(geometry.rightEdge <= geometry.viewportWidth);
   const [stateBarBounds, timeoutFieldBounds] = await Promise.all([
     page.getByLabel('草稿状态').evaluate((element) => element.getBoundingClientRect().toJSON()),
-    page.getByLabel('服务 URL').evaluate((element) => element.getBoundingClientRect().toJSON())
+    page.getByLabel('服务 URL', { exact: true }).evaluate((element) => element.getBoundingClientRect().toJSON())
   ]);
   const verticalGeometry = {
     stateTop: stateBarBounds.top,
@@ -125,7 +125,7 @@ test('System Settings keeps its desktop-only boundary explicit on a mobile viewp
 
   await page.goto(`${baseUrl}config`);
   await page.getByRole('heading', { name: '系统设置' }).waitFor();
-  assert.equal(await page.getByText('系统设置当前仅支持桌面工作区。').isVisible(), true);
+  assert.equal(await page.getByText('旧版兼容配置仅支持桌面工作区。').isVisible(), true);
   assert.equal(await page.getByRole('form').count(), 0);
   assert.equal(await page.getByLabel('草稿状态').count(), 0);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
@@ -136,7 +136,7 @@ test('System Settings exposes only one non-secret generation provider configurat
   await loginAdmin(page, baseUrl);
   await openSettings(page, baseUrl);
 
-  await page.getByLabel('服务 URL').waitFor();
+  await page.getByLabel('服务 URL', { exact: true }).waitFor();
   assert.equal(await page.getByLabel('模型提供方').inputValue(), 'ark');
   assert.equal(await page.getByLabel('生成模型').inputValue(), 'Qwen/Qwen3-32B');
   assert.equal(await page.getByLabel('嵌入模型').count(), 0);

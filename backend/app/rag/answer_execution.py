@@ -21,6 +21,7 @@ from app.rag.interfaces import RelevanceJudge, Reranker, Retriever
 from app.rag.prompt_regions import (
     build_generation_prompt,
     frozen_generation_input_record,
+    generation_response_failure,
     validate_agent_response,
 )
 from app.rag.runtime.graph_runner import RagGraphRunner
@@ -75,7 +76,8 @@ _PERSISTED_DIAGNOSTIC_DETAIL_FIELDS = frozenset(
     }
 )
 _PERSISTED_DIAGNOSTIC_PROVIDER_ATTEMPT_FIELDS = frozenset(
-    {"attempt", "error_code", "fallback", "latency_ms", "provider", "success"}
+    {"attempt", "error_code", "fallback", "latency_ms", "provider", "success",
+     "approval_identity", "payload_sha256", "snapshot_sha256"}
 )
 
 
@@ -246,7 +248,8 @@ class AnswerExecutionOutcome:
         runtime_gate = _persisted_diagnostic_detail(runtime.get("gate"))
         persisted_runtime: dict[str, object] = {
             key: item
-            for key in ("request_id", "session_id", "graph_alias", "final_provider", "fallback_hops")
+            for key in ("request_id", "session_id", "graph_alias", "final_provider", "fallback_hops",
+                        "route_identity", "route_reason")
             if isinstance((item := runtime.get(key)), (str, int)) and not isinstance(item, bool)
         }
         persisted_runtime["steps"] = runtime_steps
@@ -344,6 +347,8 @@ class EvidenceGatedAnswerExecutor:
             "tool_errors": list(runtime_result.get("tool_errors") or []),
             "provider_trace": runtime_result.get("provider_trace") or {},
             "final_provider": runtime_result.get("final_provider"),
+            "route_identity": runtime_result.get("route_identity"),
+            "route_reason": runtime_result.get("route_reason"),
             "provider_attempts": list(runtime_result.get("provider_attempts") or []),
             "fallback_hops": int(runtime_result.get("fallback_hops") or 0),
             "timing_ms": runtime_result.get("timing_ms") or {},
@@ -538,13 +543,16 @@ class EvidenceGatedAnswerExecutor:
                 fallbacks=[],
                 prompt=generation_prompt.user_prompt,
                 system_prompt=generation_prompt.system_prompt,
+                validate_answer=lambda answer: (
+                    generation_response_failure(answer, question=normalized_question, evidence=generation_input)
+                ),
             )
             generation_provider_ms = round((perf_counter() - generation_started) * 1000)
             if provider_result.get("generation_envelope_invalid") is True:
                 raise AnswerExecutionContractError(
                     "provider generation envelope is malformed"
                 )
-            if provider_result.get("provider_failure") is True:
+            if provider_result.get("route_reason") == "application_failure":
                 raise AnswerExecutionContractError(
                     "provider generation failed without a completed provider result"
                 )
@@ -587,6 +595,8 @@ class EvidenceGatedAnswerExecutor:
             ),
         }
         runtime_result["final_provider"] = provider_result.get("final_provider")
+        runtime_result["route_identity"] = provider_result.get("route_identity")
+        runtime_result["route_reason"] = provider_result.get("route_reason")
         runtime_result["provider_attempts"] = list(provider_result.get("provider_attempts") or [])
         runtime_result["fallback_hops"] = int(provider_result.get("fallback_hops") or 0)
         for step in runtime_result.get("steps") or []:

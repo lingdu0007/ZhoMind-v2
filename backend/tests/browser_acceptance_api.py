@@ -10,7 +10,10 @@ from datetime import UTC, datetime
 import uvicorn
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.config import get_settings
 from app.contracts.canonical import CanonicalEventType
+from app.delivery_acceptance.schemas import CreateDeliveryAcceptanceRecordRequest, UpdateDeliveryAcceptanceStatusRequest
+from app.delivery_acceptance.service import DeliveryAcceptanceService
 from app.documents import parsers
 from app.editorial_authority.schemas import CreateEditorialEntryRequest
 from app.editorial_authority.service import EditorialAuthorityService
@@ -24,9 +27,13 @@ from app.model.document import Document, DocumentChunk, DocumentJob
 from app.model.system_settings import SystemSettingsState
 from app.model.user import User
 from app.rag.claim_evidence import ClaimEvidenceContract, ClaimResolution, ResolvedClaim, parse_claim_evidence_contract
+from app.repository.user_repository import UserRepository
+from app.service.member_admission_service import MemberAdmissionService
 from app.settings import runtime as settings_runtime
+from app.settings.generation_routes import GenerationRouteService
 from app.settings.runtime import SystemSettingsRuntime
 from app.settings.service import SystemSettingsDraftService
+from tests.support.generation import generation_acceptance_payload
 
 _BROWSER_AGENT_ENTRY_ID = "synthetic-workflow-001"
 _BROWSER_AGENT_SOURCE_ID = "source-workflow"
@@ -113,6 +120,8 @@ class _DeterministicLlm:
 
     async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
         del system_prompt
+        if prompt == "Connection validation. Reply with OK.":
+            return "OK"
         self._calls += 1
         if self._fail_first and self._calls == 1:
             raise RuntimeError("browser acceptance first-call failure")
@@ -692,6 +701,51 @@ async def _seed_test_data() -> None:
         await session.commit()
 
 
+_route_provider_doubles = {}
+
+
+async def _deterministic_route_providers(self, payload):
+    del self
+    return {
+        item["provider"]: _route_provider_doubles.setdefault(
+            (payload["route_identity"], item["provider"]), _DeterministicLlm(),
+        )
+        for item in payload["providers"]
+    }
+
+
+async def _seed_generation_route() -> None:
+    settings = get_settings()
+    async with SessionLocal() as session:
+        await MemberAdmissionService(session, redis=None).create_bootstrap_administrator(
+            settings.bootstrap_admin_username, settings.bootstrap_admin_password,
+        )
+        administrator = await UserRepository(session).get_by_username(settings.bootstrap_admin_username)
+        assert administrator is not None
+        actor = f"member:{administrator.id}"
+        routes = GenerationRouteService(session)
+        route = await routes.save(actor=actor, payload={
+            "data_scope": "team_shared_pilot", "max_attempts": 1, "total_timeout_seconds": 30,
+            "providers": [{
+                "provider": "browser-acceptance", "provider_type": "openai", "model": "browser-deterministic",
+                "service_url": "https://provider.example.test/v1", "endpoint_class": "public_https",
+                "data_scope": "team_shared_pilot", "timeout_seconds": 30, "provider_api_key": "browser-placeholder",
+            }],
+        })
+        acceptance = DeliveryAcceptanceService(session)
+        record = await acceptance.create(
+            CreateDeliveryAcceptanceRecordRequest.model_validate(generation_acceptance_payload(route)), administrator,
+        )
+        await acceptance.update_status(record["record_id"], UpdateDeliveryAcceptanceStatusRequest.model_validate({
+            "status": "active", "reason_code": "checks_verified",
+            "verified_checks": [{"check_id": check["check_id"], "evidence_links": check["evidence_links"]} for check in record["checks"]],
+        }), administrator)
+        await routes.activate(actor=actor, payload={
+            "route_identity": route["route_identity"], "expected_active_identity": None,
+            "acceptance_record_identity": record["record_id"],
+        })
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the isolated browser acceptance API environment.")
     parser.add_argument("--host", required=True)
@@ -711,10 +765,11 @@ def main() -> None:
     settings_runtime._runtime = _DeterministicSettingsRuntime()
     asyncio.run(_create_schema())
     asyncio.run(_seed_test_data())
+    GenerationRouteService.providers = _deterministic_route_providers
+    asyncio.run(_seed_generation_route())
     redis = _InMemoryRedis()
     app.dependency_overrides[get_redis_client] = lambda: redis
     registry = get_extension_registry()
-    registry.register_llm("browser-acceptance", _DeterministicLlm())
     registry.register_claim_resolver("chat-default-claim-resolver", _BrowserClaimResolver())
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 

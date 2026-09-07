@@ -150,6 +150,7 @@ def _record_operational_context(request: Request, result: dict) -> None:
         {},
     )
     request.state.operational_event = {
+        "generation_route": runtime,
         "gate_outcome": "passed" if gate.get("passed") is True else "rejected" if gate.get("passed") is False else "unavailable",
         "provider_identity": (
             runtime.get("final_provider") if isinstance(runtime, dict) else None
@@ -264,10 +265,6 @@ async def chat_stream(
 
     chat_task = asyncio.create_task(run_chat_with_progress())
     cleanup_task: asyncio.Task[dict | None] | None = None
-    # Gate/provider context is produced while the body streams; ask the
-    # operational middleware to read request.state after the body completes.
-    request.state.defer_operational_event = True
-
     def consume_task_result(task: asyncio.Task) -> None:
         if task.done() and not task.cancelled():
             task.exception()

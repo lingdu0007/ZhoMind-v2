@@ -485,10 +485,29 @@ generation envelope must carry the same snapshot sequence. A malformed or
 mismatched provider input or observed envelope is an application failure, not
 `generation_unavailable`, insufficiency, or a supported answer. A provider
 envelope that is present but cannot be validated is malformed rather than
-absent. An unrecovered provider exception, or a route configuration that
-produces no completed provider call, is likewise an application failure;
-`generation_unavailable` remains reserved only for a completed provider call
-that yields no usable answer under the frozen boundary.
+absent. Under ADR 0005, normalized approved-route failure or exhaustion,
+including missing approval, produces `generation_unavailable` even without a
+completed provider call. Unclassified application errors remain application
+failures. Neither case is insufficiency.
+
+## Approved Generation Route
+
+ADR 0005 binds immutable provider/model approvals, HTTPS endpoint class, data
+scope, ordered primary/fallback selection, per-provider timeout, attempt bound,
+and total budget to one versioned route identity. Administrator activation
+requires exact current Delivery Acceptance evidence and connection validation
+before an atomic pointer replacement; in-flight executions retain their
+captured route. Available credentials and legacy settings grant no authority.
+
+Only normalized connection, timeout, rate-limit, temporary/sanitized service,
+and deterministic answer/citation failures may advance within remaining budget.
+Insufficiency, cancellation, authorization, privacy/data-scope, safety/policy,
+and undeclared-provider decisions never advance. Each attempt receives the
+same frozen payload and snapshot hashes. Operational Events retain only
+non-content identities, hashes, timings, and normalized reasons. Secrets are
+encrypted at rest and never returned. Controlled live provider, failure,
+privacy, and prompt/citation evidence is required before Pilot; deterministic
+Local Development evidence is not a substitute.
 
 The historical first-three selector, non-empty-context gate, and
 candidate-derived citation projection are superseded for active Pilot
@@ -640,7 +659,7 @@ projection during retention, but it cannot become a new Answer Execution
 result.
 
 Authentication failure occurs before admission and creates no answer outcome.
-An unrecovered retrieval or provider failure, and every execution, stream, or
+An unrecovered retrieval or unclassified provider failure, and every execution, stream, or
 persistence failure, is an application failure, never insufficiency. A
 retrieval implementation may retain a diagnostic for a recovered fallback only
 when it returns an actual candidate result; it may not synthesize an empty

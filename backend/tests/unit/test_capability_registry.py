@@ -24,7 +24,7 @@ def test_choose_provider_by_capability() -> None:
     assert registry.choose_provider("llm", ["provider-a", "provider-b"], {"supports_stream": True}) == "provider-b"
 
 
-def test_registry_registers_multi_llm_providers(monkeypatch) -> None:
+def test_registry_never_discovers_generation_providers_from_available_credentials(monkeypatch) -> None:
     get_settings.cache_clear()
     get_extension_registry.cache_clear()
     monkeypatch.setenv("ARK_API_KEY", "ark-key")
@@ -37,9 +37,10 @@ def test_registry_registers_multi_llm_providers(monkeypatch) -> None:
 
     registry = get_extension_registry()
 
-    assert registry.get_llm("ark") is not None
-    assert registry.get_llm("openai") is not None
-    assert registry.get_llm("anthropic") is not None
+    assert registry.get_llm("ark") is None
+    assert registry.get_llm("openai") is None
+    assert registry.get_llm("anthropic") is None
+    assert registry.llm_providers == {}
 
     get_settings.cache_clear()
     get_extension_registry.cache_clear()

@@ -44,6 +44,7 @@ from app.service.chat_service import ChatService
 from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
 from app.settings.runtime import get_system_settings_runtime
 from tests.support.auth import create_authenticated_test_token
+from tests.support.generation import approved_test_route
 
 _KNOWLEDGE_QUESTION = "Which reviewed operating decision applies for environment=production?"
 _PRODUCTION_CONDITION = {
@@ -685,7 +686,9 @@ def test_real_executor_reuses_the_provider_payload_across_normal_sse_and_history
     monkeypatch.setattr(
         ChatService,
         "_provider_router",
-        lambda _self: ProviderRouter(providers={"ticket20-deterministic-provider": provider}),
+        lambda _self: ProviderRouter(
+            providers={"ticket20-deterministic-provider": provider}, approved_route=approved_test_route("ticket20-deterministic-provider"),
+        ),
     )
 
     try:
@@ -815,7 +818,9 @@ def test_real_published_retrieval_projects_one_supported_execution_across_surfac
     monkeypatch.setattr(
         ChatService,
         "_provider_router",
-        lambda _self: ProviderRouter(providers={"ticket20-deterministic-provider": provider}),
+        lambda _self: ProviderRouter(
+            providers={"ticket20-deterministic-provider": provider}, approved_route=approved_test_route("ticket20-deterministic-provider"),
+        ),
     )
 
     try:
@@ -940,7 +945,9 @@ def test_provider_snapshot_contract_failure_is_persisted_as_failed(
     monkeypatch.setattr(
         ChatService,
         "_provider_router",
-        lambda _self: ProviderRouter(providers={"ticket20-deterministic-provider": provider}),
+        lambda _self: ProviderRouter(
+            providers={"ticket20-deterministic-provider": provider}, approved_route=approved_test_route("ticket20-deterministic-provider"),
+        ),
     )
     provider_visible_generation_input = answer_execution_module.provider_visible_generation_input
 
@@ -1007,7 +1014,9 @@ def test_provider_visible_input_contract_failure_is_persisted_as_failed(
     monkeypatch.setattr(
         ChatService,
         "_provider_router",
-        lambda _self: ProviderRouter(providers={"ticket20-deterministic-provider": provider}),
+        lambda _self: ProviderRouter(
+            providers={"ticket20-deterministic-provider": provider}, approved_route=approved_test_route("ticket20-deterministic-provider"),
+        ),
     )
     build_generation_prompt = answer_execution_module.build_generation_prompt
 
@@ -1077,7 +1086,9 @@ def test_duplicate_provider_visible_json_keys_are_persisted_as_application_failu
     monkeypatch.setattr(
         ChatService,
         "_provider_router",
-        lambda _self: ProviderRouter(providers={"ticket20-deterministic-provider": provider}),
+        lambda _self: ProviderRouter(
+            providers={"ticket20-deterministic-provider": provider}, approved_route=approved_test_route("ticket20-deterministic-provider"),
+        ),
     )
     build_generation_prompt = answer_execution_module.build_generation_prompt
 
@@ -1153,7 +1164,9 @@ def test_provider_visible_input_rejects_all_frozen_envelope_mutations(
     monkeypatch.setattr(
         ChatService,
         "_provider_router",
-        lambda _self: ProviderRouter(providers={"ticket20-deterministic-provider": provider}),
+        lambda _self: ProviderRouter(
+            providers={"ticket20-deterministic-provider": provider}, approved_route=approved_test_route("ticket20-deterministic-provider"),
+        ),
     )
     build_generation_prompt = answer_execution_module.build_generation_prompt
 
@@ -1225,7 +1238,9 @@ def test_malformed_provider_generation_envelope_is_persisted_as_application_fail
     monkeypatch.setattr(
         ChatService,
         "_provider_router",
-        lambda _self: ProviderRouter(providers={"ticket20-deterministic-provider": provider}),
+        lambda _self: ProviderRouter(
+            providers={"ticket20-deterministic-provider": provider}, approved_route=approved_test_route("ticket20-deterministic-provider"),
+        ),
     )
 
     try:
@@ -1277,7 +1292,9 @@ def test_unrecovered_provider_exception_is_persisted_as_application_failure(
     monkeypatch.setattr(
         ChatService,
         "_provider_router",
-        lambda _self: ProviderRouter(providers={"ticket20-deterministic-provider": provider}),
+        lambda _self: ProviderRouter(
+            providers={"ticket20-deterministic-provider": provider}, approved_route=approved_test_route("ticket20-deterministic-provider"),
+        ),
     )
 
     try:
@@ -1311,7 +1328,7 @@ def test_unrecovered_provider_exception_is_persisted_as_application_failure(
         get_settings.cache_clear()
 
 
-def test_missing_provider_without_a_completed_call_is_persisted_as_application_failure(
+def test_missing_approved_route_is_persisted_as_generation_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("RUNTIME_RETRIEVAL_PROFILE", PILOT_RETRIEVAL_PROFILE_ID)
@@ -1340,8 +1357,8 @@ def test_missing_provider_without_a_completed_call_is_persisted_as_application_f
                     "query_conditions": [dict(_PRODUCTION_CONDITION)],
                 },
             )
-            assert response.status_code == 500
-            assert "outcome" not in response.text
+            assert response.status_code == 200
+            assert response.json()["data"]["outcome"] == "generation_unavailable"
 
             history = client.get(f"/api/v1/sessions/{session_id}", headers=headers)
             assert history.status_code == 200
@@ -1350,9 +1367,10 @@ def test_missing_provider_without_a_completed_call_is_persisted_as_application_f
                 for message in history.json()["data"]["messages"]
                 if message["type"] == "assistant"
             )
-            assert assistant["answer_execution"]["state"] == "failed"
-            assert "outcome" not in assistant
-            assert "evidence_summary" not in assistant
+            assert assistant["answer_execution"]["state"] == "completed"
+            assert assistant["outcome"] == "generation_unavailable"
+            assert assistant["evidence_summary"]["sources"] == []
+            assert assistant["answer_execution"]["snapshot_ids"] == response.json()["data"]["answer_execution"]["snapshot_ids"]
     finally:
         get_system_settings_runtime().reset()
         get_settings.cache_clear()

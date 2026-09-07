@@ -394,10 +394,23 @@ QCS string、被修改的 citation marker 或被修改的 response contract 都�
 observed generation envelope 也必须携带相同的 snapshot 序列。provider input 或 observed
 envelope 格式错误或不匹配都是 application failure，而不是
 `generation_unavailable`、insufficiency 或 supported answer。已存在但无法验证的 provider
-envelope 属于格式错误，不能当作 observation 缺失。未恢复的 provider exception，或 route
-configuration 没有产生任何已完成 provider call，同样是 application failure；
-`generation_unavailable` 只保留给已经完成 provider call、但在冻结 boundary 下没有产生可用
-answer 的情况。
+envelope 属于格式错误，不能当作 observation 缺失。根据 ADR 0005，规范化批准路由失败
+或耗尽（包括缺少批准）即使没有完成的 provider call 也会产生 `generation_unavailable`。
+未分类的 application error 仍是 application failure。两者都不是 insufficiency。
+
+## 批准的生成路由
+
+ADR 0005 将不可变供应商与模型批准、HTTPS 端点类别、数据范围、主供应商及 fallback
+顺序、专属超时、尝试数上限和总预算绑定到一个版本化路由身份。管理员激活需要确切且
+当前有效的 Delivery Acceptance 证据及连接验证，再原子替换指针；进行中的 execution
+保留捕获的路由。可用凭据和旧设置不授予权限。
+
+只有规范化的连接、超时、限流、临时或脱敏服务错误，以及确定性答案或 citation 失败
+可以在剩余预算内推进。证据不足、取消、权限、隐私或数据范围、安全或政策以及未声明
+供应商的决策都不会推进。每次尝试接收相同冻结 payload 和 snapshot hash。
+Operational Event 只保留非内容身份、hash、耗时和规范化原因。密钥静态加密且永不返回。
+Pilot 之前必须有受控 live 的供应商、失败、隐私和 prompt/citation 证据；确定性
+Local Development 证据不能替代这些义务。
 
 对于活跃 Pilot 的 production decision，历史的 first-three selector、non-empty-context
 gate 和 candidate-derived citation projection 已被替代。它们只能保留在显式的
@@ -519,7 +532,7 @@ envelope 或 private history。legacy message 必须没有不可变的 request �
 读取，但不能成为新的 Answer Execution result。
 
 authentication failure 发生在 admission 之前，不会创建 answer outcome。未恢复的
-retrieval 或 provider failure，以及每个 execution、stream 或 persistence failure 都是
+retrieval 或未分类的 provider failure，以及每个 execution、stream 或 persistence failure 都是
 application failure，绝不是 insufficiency。只有 retrieval implementation 已返回实际
 candidate result 时，才可以为已恢复的 fallback 保留 diagnostic；它不能伪造空 result，
 再把该 provider failure 标记为证据不足。execution 仍在 running 时中断 stream，会取消

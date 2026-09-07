@@ -4,7 +4,6 @@ from pydantic import ValidationError
 
 from app.common.config import Settings, get_settings
 from app.common.responses import ok_response
-from app.extensions.langchain_chat_providers import OpenAICompatibleChatProvider
 from app.extensions.registry import ExtensionRegistry, get_extension_registry, get_task_backend
 from app.infra.milvus import get_milvus_client, get_milvus_provider
 from app.infra.minio import get_minio_client, get_minio_provider
@@ -199,7 +198,7 @@ def test_settings_provider_fields_from_env_aliases() -> None:
     assert "rag_disable_gate" not in Settings.model_fields
 
 
-def test_registry_registers_ark_llm_from_env(monkeypatch) -> None:
+def test_registry_does_not_grant_generation_authority_from_ark_environment(monkeypatch) -> None:
     get_settings.cache_clear()
     get_extension_registry.cache_clear()
     monkeypatch.setenv("ARK_API_KEY", "ark-key")
@@ -209,7 +208,8 @@ def test_registry_registers_ark_llm_from_env(monkeypatch) -> None:
     registry = get_extension_registry()
 
     provider = registry.get_llm("chat-default-llm")
-    assert isinstance(provider, OpenAICompatibleChatProvider)
+    assert provider is None
+    assert registry.llm_providers == {}
     get_settings.cache_clear()
     get_extension_registry.cache_clear()
 

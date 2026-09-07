@@ -287,7 +287,7 @@ def test_canonical_immutability_tail_migration_rejects_database_rewrites(
         "ix_candidate_build_chunks_candidate_id",
         "ix_candidate_build_chunks_candidate",
     }.issubset(candidate_chunk_indexes)
-    assert revision == ("20260907_0020",)
+    assert revision == ("20260908_0021",)
 
 
 def test_frozen_candidate_input_hash_migration_backfills_existing_immutable_input(
@@ -448,4 +448,4 @@ def test_frozen_candidate_input_hash_migration_backfills_existing_immutable_inpu
 
     assert stored_hash == (canonical_json_sha256(frozen_input),)
     assert stored_input == (json.dumps(frozen_input, ensure_ascii=True, sort_keys=True),)
-    assert revision == ("20260907_0020",)
+    assert revision == ("20260908_0021",)

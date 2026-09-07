@@ -20,6 +20,7 @@ from app.repository.chat_repository import ChatRepository
 from app.retrieval.policy import get_retrieval_policy
 from app.service.answer_execution_store import AnswerExecutionHandle, AnswerExecutionStore
 from app.service.document_retrieval_service import MixedModeDocumentRetrieverService
+from app.settings.generation_routes import GenerationRouteService
 from app.settings.runtime import get_runtime_settings
 
 CHAT_RETRIEVER_PROVIDER = "chat-default-retriever"
@@ -147,7 +148,7 @@ class ChatService:
         return get_extension_registry().get_claim_resolver(CHAT_CLAIM_RESOLVER_PROVIDER)
 
     def _provider_router(self) -> ProviderRouter:
-        return ProviderRouter(providers=get_extension_registry().llm_providers)
+        return ProviderRouter(providers={})
 
     def _evidence_summary(self, rag_trace: dict | None) -> dict:
         return evidence_summary_from_trace(rag_trace)
@@ -749,6 +750,8 @@ class ChatService:
         # replacement only affects requests admitted after its atomic cutover.
         generation_settings = get_runtime_settings()
         provider_router = self._provider_router()
+        if provider_router.approved_route is None:
+            provider_router = await GenerationRouteService(self.session).capture()
         await self.repo.acquire_private_conversation_write_fence()
         await self.repo.purge_expired_sessions()
         sid = await self.ensure_session_id(session_id)

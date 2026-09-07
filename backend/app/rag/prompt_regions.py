@@ -25,8 +25,11 @@ SYSTEM_POLICY = (
     "只能使用 \"query_condition_set\" 中明确列出的条件与值；不要凭训练知识或一般知识补充事实、条件或冲突状态。"
     "如果 \"evidence_sources\" 为空或不足以回答问题，请明确说明无法回答，不要编造内容。\n"
     "当 user envelope 包含 response_contract 时，严格按其中的 language、required_sections、required_label 和 "
-    "citation_markers 输出。每个 required section 必须用单独一行的 \"## {section}\" 作为标题，section 正文必须"
-    "至少包含一个格式为 \"[{citation_id}]\" 的实际 citation marker，禁止输出未列出的 marker。"
+    "citation_markers 输出。每个 required section 必须用单独一行的 \"## {section}\" 作为标题，"
+    "标题名称必须与 required_sections 完全一致。每节至少有一行正文，每个非空正文行都必须包含"
+    "格式为 \"[{citation_id}]\" 的实际 citation marker，禁止输出未列出的 marker。"
+    "若所选证据未说明某节所需的备选方案、检查步骤或版本范围，应明确写出“所选证据未说明”及具体缺口，"
+    "该行仍须引用所检查的所选证据，以限定缺口说明的范围；不要补造备选方案、步骤、条件或版本。"
 )
 
 USER_QUESTION_REGION = "user_question"
@@ -250,13 +253,19 @@ def build_generation_prompt(question: str, evidence: AnswerEvidenceSet | tuple[A
     )
 
 
-def validate_agent_response(text: str, *, question: str, evidence: AnswerEvidenceSet | tuple[AnswerEvidence, ...]) -> bool:
+def generation_response_failure(
+    text: str, *, question: str, evidence: AnswerEvidenceSet | tuple[AnswerEvidence, ...],
+) -> str | None:
     if isinstance(evidence, AnswerEvidenceSet):
         evidence_set = evidence
         items = evidence.items
     else:
         evidence_set = None
         items = evidence
+    if _SECRET_ASSIGNMENT.search(text) or _SECRET_DISCLOSURE.search(text):
+        return "privacy_refusal"
+    if evidence_set is not None and not _valid_evidence_bounded_response(text, evidence_set):
+        return "policy_refusal"
     contract = _response_contract(
         question,
         items,
@@ -267,14 +276,14 @@ def validate_agent_response(text: str, *, question: str, evidence: AnswerEvidenc
         else (),
     )
     if contract is None:
-        return True
+        return None
     required_label = contract.get("required_label")
     if isinstance(required_label, str) and required_label not in text:
-        return False
+        return "answer_structure_invalid"
     allowed_markers = set(contract["citation_markers"])
     found_markers = set(re.findall(r"\[(S\d+)\]", text))
     if not found_markers or not found_markers <= allowed_markers:
-        return False
+        return "citation_invalid"
     section_matches = list(re.finditer(r"^##\s+(.+?)\s*$", text, flags=re.MULTILINE))
     sections: dict[str, str] = {}
     for index, match in enumerate(section_matches):
@@ -291,11 +300,15 @@ def validate_agent_response(text: str, *, question: str, evidence: AnswerEvidenc
         )
         for section in contract["required_sections"]
     ):
-        return False
+        return "answer_structure_invalid"
     governing_marker = contract.get("governing_citation_id")
     governing_section = contract.get("governing_section_id")
     if isinstance(governing_marker, str) and isinstance(governing_section, str):
         section_name = contract["required_sections"][0]
         if f"[{governing_marker}]" not in sections.get(section_name, ""):
-            return False
-    return evidence_set is None or _valid_evidence_bounded_response(text, evidence_set)
+            return "citation_invalid"
+    return None
+
+
+def validate_agent_response(text: str, *, question: str, evidence: AnswerEvidenceSet | tuple[AnswerEvidence, ...]) -> bool:
+    return generation_response_failure(text, question=question, evidence=evidence) is None

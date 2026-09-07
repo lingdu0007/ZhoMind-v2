@@ -118,7 +118,7 @@ app = FastAPI(title=settings.app_name, version=settings.app_version, lifespan=li
 app.state.settings_session_factory = SessionLocal
 app.state.operational_event_session_factory = SessionLocal
 app.add_middleware(RequestIdMiddleware)
-app.add_middleware(OperationalEventMiddleware)
 app.add_middleware(StreamDeliveryMiddleware)
+app.add_middleware(OperationalEventMiddleware)
 register_exception_handlers(app)
 app.include_router(api_v1_router, prefix=settings.api_v1_prefix)
