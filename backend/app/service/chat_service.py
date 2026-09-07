@@ -464,16 +464,62 @@ class ChatService:
         if await self.repo.purge_expired_sessions():
             await self.session.commit()
         sessions = await self.repo.list_sessions(user_id=user_id, limit=20)
+        messages_by_session = {
+            session.id: await self.repo.list_messages(session_id=session.id, user_id=user_id)
+            for session in sessions
+        }
+        execution_ids, invalid_message_ids = await self.answer_execution_store.execution_ids_for_messages(
+            messages=[message for messages in messages_by_session.values() for message in messages]
+        )
         items: list[dict] = []
         for session in sessions:
-            messages = await self.repo.list_messages(session_id=session.id, user_id=user_id)
-            items.append(
-                {
-                    "session_id": session.id,
-                    "updated_at": session.updated_at.isoformat(),
-                    "message_count": len(messages),
-                }
+            messages = messages_by_session[session.id]
+            latest_execution_state = None
+            bindings_valid = not any(message.id in invalid_message_ids for message in messages)
+            if not bindings_valid:
+                latest_execution_state = "unavailable"
+            title = (
+                next(
+                    (
+                        " ".join(message.content.split())[:80]
+                        for message in messages
+                        if message.type == "user" and message.content.strip()
+                    ),
+                    "未命名会话",
+                )
+                if bindings_valid
+                else "未命名会话"
             )
+            for message in reversed(messages):
+                if not bindings_valid:
+                    break
+                execution_id = execution_ids.get(message.id)
+                if execution_id is None:
+                    continue
+                try:
+                    loaded = await self.answer_execution_store.load_for_message(
+                        user_id=user_id,
+                        session_id=session.id,
+                        message_id=message.id,
+                        message_type=message.type,
+                        indexed_execution_id=execution_id,
+                    )
+                except ValueError:
+                    latest_execution_state = "unavailable"
+                    break
+                if loaded is not None:
+                    state = loaded.projection.get("state")
+                    latest_execution_state = state if isinstance(state, str) else None
+                    break
+            item = {
+                "session_id": session.id,
+                "title": title,
+                "updated_at": session.updated_at.isoformat(),
+                "message_count": len(messages),
+            }
+            if latest_execution_state is not None:
+                item["latest_execution_state"] = latest_execution_state
+            items.append(item)
         return items
 
     async def get_session_messages(self, session_id: str, user_id: str, role: str) -> list[dict]:

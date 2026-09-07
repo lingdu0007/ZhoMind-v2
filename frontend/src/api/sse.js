@@ -185,7 +185,7 @@ export const normalizeSSEFrame = (frame) => {
   }
 
   if (eventName === 'error') {
-    return { type: 'error', error: payload?.error || payload?.message || payload?.detail || payload };
+    return { type: 'error', error: payload?.error || payload };
   }
 
   // 兼容后端直接推送 JSON 行，而不是标准 event/data 对。

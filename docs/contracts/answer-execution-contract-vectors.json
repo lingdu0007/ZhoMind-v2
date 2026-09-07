@@ -1,0 +1,187 @@
+{
+  "schema": "answer_execution_contract_vectors/v1",
+  "question_condition_vectors": [
+    {
+      "question": "请解释 environment=production.",
+      "conditions": [
+        {
+          "condition_id": "environment-production",
+          "field": "environment",
+          "operator": "equals",
+          "value": "production"
+        }
+      ]
+    },
+    {
+      "question": "Use release=2026.09.",
+      "conditions": [
+        {
+          "condition_id": "release-2026.09",
+          "field": "release",
+          "operator": "equals",
+          "value": "2026.09"
+        }
+      ]
+    },
+    {
+      "question": "请按 target=release/v1/执行",
+      "conditions": [
+        {
+          "condition_id": "target-release/v1/",
+          "field": "target",
+          "operator": "equals",
+          "value": "release/v1/"
+        }
+      ]
+    },
+    {
+      "question": "Use region=İSTANBUL.",
+      "conditions": [
+        {
+          "condition_id": "region-i̇stanbul",
+          "field": "region",
+          "operator": "equals",
+          "value": "i̇stanbul"
+        }
+      ]
+    },
+    {
+      "question": "Use mode=ſAFE.",
+      "conditions": [
+        {
+          "condition_id": "mode-safe",
+          "field": "mode",
+          "operator": "equals",
+          "value": "safe"
+        }
+      ]
+    },
+    {
+      "question": "Can I use path=/?",
+      "conditions": []
+    }
+  ],
+  "query_condition_limits": {
+    "max_conditions": 32,
+    "max_condition_id_chars": 160,
+    "max_condition_field_chars": 160,
+    "max_condition_operator_chars": 64,
+    "max_condition_value_chars": 512
+  },
+  "unicode_code_point_condition_vector": {
+    "question": "Does this explicit condition remain valid?",
+    "condition": {
+      "condition_id": "c1",
+      "field": "target",
+      "operator": "equals",
+      "value_character": "𠀀",
+      "value_code_points": 300
+    }
+  },
+  "invalid_question_condition_vectors": [
+    {
+      "question": "f0=v f1=v f2=v f3=v f4=v f5=v f6=v f7=v f8=v f9=v f10=v f11=v f12=v f13=v f14=v f15=v f16=v f17=v f18=v f19=v f20=v f21=v f22=v f23=v f24=v f25=v f26=v f27=v f28=v f29=v f30=v f31=v f32=v",
+      "error": "QUERY_CONDITION_INVALID",
+      "condition_count": 33
+    },
+    {
+      "question": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff=vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+      "error": "QUERY_CONDITION_INVALID",
+      "condition_id_chars": 241,
+      "field_chars": 80,
+      "operator": "equals",
+      "value_chars": 160
+    }
+  ],
+  "insufficient_evidence_presentations": [
+    {
+      "reason": "no_eligible_published_evidence",
+      "title": "No eligible published evidence",
+      "detail": "No access-appropriate published knowledge can support this request."
+    },
+    {
+      "reason": "decision_not_covered",
+      "title": "The requested decision is not covered",
+      "detail": "Refine the decision, scope, or operating conditions to search published coverage."
+    },
+    {
+      "reason": "decisive_condition_missing",
+      "title": "A decisive condition is missing",
+      "detail": "Add the version, environment, scale, target, or other required condition explicitly."
+    },
+    {
+      "reason": "material_evidence_conflict",
+      "title": "Published evidence has a material conflict",
+      "detail": "Do not choose between conflicting material without reviewed knowledge."
+    },
+    {
+      "reason": "assurance_support_missing",
+      "title": "Required assurance support is missing",
+      "detail": "The available material cannot meet the required assurance boundary."
+    },
+    {
+      "reason": "evidence_budget_exceeded",
+      "title": "Required evidence exceeds the bounded evidence set",
+      "detail": "Narrow the request so a complete answer can remain within its frozen evidence boundary."
+    },
+    {
+      "reason": "knowledge_needs_review",
+      "title": "Published knowledge needs review",
+      "detail": "The relevant published knowledge is not currently eligible to support a new answer."
+    }
+  ],
+  "execution_presentations": [
+    {
+      "state": "completed",
+      "outcome": "evidence_gated_answer",
+      "kind": "supported",
+      "label": "Supported by published knowledge",
+      "retryable": false
+    },
+    {
+      "state": "completed",
+      "outcome": "insufficient_evidence_reply",
+      "kind": "insufficient",
+      "label": "Insufficient Evidence Reply",
+      "retryable": false
+    },
+    {
+      "state": "completed",
+      "outcome": "non_knowledge_base_reply",
+      "kind": "non-knowledge-base",
+      "label": "Non-Knowledge-Base Reply",
+      "retryable": false
+    },
+    {
+      "state": "completed",
+      "outcome": "generation_unavailable",
+      "kind": "generation-unavailable",
+      "label": "Generation Unavailable",
+      "retryable": true
+    },
+    {
+      "state": "stopped",
+      "kind": "stopped",
+      "label": "Stopped",
+      "retryable": true
+    },
+    {
+      "state": "failed",
+      "kind": "failed",
+      "label": "Failed",
+      "retryable": true
+    },
+    {
+      "state": "throttled",
+      "kind": "throttled",
+      "label": "Throttled",
+      "retryable": true
+    },
+    {
+      "state": "rejected",
+      "kind": "rejected",
+      "label": "Rejected",
+      "retryable": true
+    }
+  ]
+}

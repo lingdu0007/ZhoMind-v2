@@ -6,6 +6,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from types import MappingProxyType
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
@@ -46,6 +47,7 @@ _GATE_METADATA_KEYS = (
     "source_freshness_days",
     "source_access_scope",
     "source_tier",
+    "assurance_level",
     "claim_evidence_contract",
     "claim_evidence_contract_sha256",
 )
@@ -60,8 +62,28 @@ _AGENT_CITATION_KEYS = (
     "source_version",
     "review_date",
 )
+_DISPLAY_METADATA_KEYS = (
+    "applicability_conditions",
+    "non_applicability_conditions",
+)
 _UNSAFE_URL_QUERY_PARTS = ("credential", "password", "redirect", "secret", "signature", "token")
 _CONTROLLED_LOCATOR = re.compile(r"^controlled://[a-z0-9][a-z0-9._/-]{2,159}$")
+
+
+def _freeze_display_metadata(value: object) -> object:
+    if isinstance(value, Mapping):
+        return MappingProxyType({str(key): _freeze_display_metadata(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze_display_metadata(item) for item in value)
+    return value
+
+
+def _thaw_display_metadata(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _thaw_display_metadata(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_thaw_display_metadata(item) for item in value]
+    return value
 
 
 def _safe_public_url(value: str) -> bool:
@@ -89,9 +111,19 @@ def _safe_public_url(value: str) -> bool:
 
 
 def _safe_source_locator(value: str, *, access_scope: object) -> bool:
+    return has_safe_source_locator(value, access_scope=access_scope)
+
+
+def has_safe_source_locator(value: object, *, access_scope: object) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    locator = value.strip()
     if access_scope == "controlled_internal":
-        return _CONTROLLED_LOCATOR.fullmatch(value.strip()) is not None
-    return _safe_public_url(value)
+        return (
+            _CONTROLLED_LOCATOR.fullmatch(locator) is not None
+            and not any(part in locator.lower() for part in _UNSAFE_URL_QUERY_PARTS)
+        )
+    return _safe_public_url(locator)
 
 
 def _agent_metadata_is_eligible(metadata: Mapping[str, object]) -> bool:
@@ -166,7 +198,7 @@ class AnswerEvidence:
     excerpt: str
     retrieval_source: str | None
     score: float | None
-    metadata_items: tuple[tuple[str, str], ...]
+    metadata_items: tuple[tuple[str, Any], ...]
 
     @classmethod
     def from_candidate(cls, candidate: object, *, max_excerpt_chars: int) -> AnswerEvidence | None:
@@ -220,15 +252,20 @@ class AnswerEvidence:
         retrieval_source = candidate.get("retrieval_source")
         retrieval_source = str(retrieval_source).strip() if isinstance(retrieval_source, str) and retrieval_source.strip() else None
 
-        citation_metadata = {
+        citation_metadata: dict[str, Any] = {
             key: str(metadata[key]).strip()
             for key in _CITATION_METADATA_KEYS
             if isinstance(metadata.get(key), str) and str(metadata[key]).strip()
         }
-        gate_metadata = {
+        gate_metadata: dict[str, Any] = {
             key: str(metadata[key]).strip()
             for key in _GATE_METADATA_KEYS
             if isinstance(metadata.get(key), (str, int, float)) and str(metadata[key]).strip()
+        }
+        display_metadata: dict[str, Any] = {
+            key: list(metadata[key])
+            for key in _DISPLAY_METADATA_KEYS
+            if isinstance(metadata.get(key), list)
         }
         if isinstance(metadata.get("entry_id"), str):
             for legacy_location_key in ("filename", "source_file", "source", "document_name", "path"):
@@ -236,6 +273,7 @@ class AnswerEvidence:
         citation_metadata["title"] = title
         citation_metadata["publication_version"] = publication_version
         citation_metadata.update(gate_metadata)
+        citation_metadata.update(display_metadata)
         return cls(
             source_id=source_id,
             document_id=document_id,
@@ -246,7 +284,10 @@ class AnswerEvidence:
             excerpt=excerpt,
             retrieval_source=retrieval_source,
             score=score,
-            metadata_items=tuple(citation_metadata.items()),
+            metadata_items=tuple(
+                (key, _freeze_display_metadata(value) if key in _DISPLAY_METADATA_KEYS else value)
+                for key, value in citation_metadata.items()
+            ),
         )
 
     def to_record(self) -> dict[str, Any]:
@@ -256,7 +297,10 @@ class AnswerEvidence:
             "generation": self.generation,
             "chunk_index": self.chunk_index,
             "content_preview": self.excerpt,
-            "metadata": dict(self.metadata_items),
+            "metadata": {
+                key: _thaw_display_metadata(value) if key in _DISPLAY_METADATA_KEYS else value
+                for key, value in self.metadata_items
+            },
             "snapshot_id": self.snapshot_id,
         }
         if self.retrieval_source is not None:
@@ -268,7 +312,10 @@ class AnswerEvidence:
     def to_source(self) -> dict[str, Any]:
         return {
             "source_id": self.source_id,
-            "metadata": dict(self.metadata_items),
+            "metadata": {
+                key: _thaw_display_metadata(value) if key in _DISPLAY_METADATA_KEYS else value
+                for key, value in self.metadata_items
+            },
             "excerpt": self.excerpt,
             "snapshot_id": self.snapshot_id,
         }
@@ -500,6 +547,15 @@ def _sources_from_frozen_answer_evidence_set(value: Mapping[str, object]) -> lis
             "publication_version": publication_version,
             "snapshot_id": expected_snapshot_id,
         }
+        if isinstance(metadata.get("assurance_level"), str):
+            source["assurance_level"] = metadata["assurance_level"].strip()
+        if isinstance(metadata.get("review_status"), str):
+            source["review_status"] = metadata["review_status"].strip()
+        for key in _DISPLAY_METADATA_KEYS:
+            if isinstance(metadata.get(key), list):
+                source[key] = _thaw_display_metadata(metadata[key])
+        if metadata.get("source_access_scope") == "controlled_internal":
+            source["source_access_scope"] = "controlled_internal"
         if withdrawn:
             source["withdrawal_notice"] = "This source has been withdrawn."
         else:

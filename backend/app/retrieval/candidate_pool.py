@@ -105,6 +105,7 @@ class AuthorizedRetrievalCandidatePool:
                 source_relationships=source_relationships,
                 assurance_level=authority.get("assurance_level"),
                 applicability_conditions=authority.get("applicability_conditions"),
+                non_applicability_conditions=authority.get("non_applicability_conditions"),
                 freshness_triggers=authority.get("freshness_triggers"),
             )
             if reason is not None:
@@ -445,6 +446,7 @@ class AuthorizedRetrievalCandidatePool:
         source_relationships: list[dict[str, str]],
         assurance_level: object,
         applicability_conditions: object,
+        non_applicability_conditions: object,
         freshness_triggers: object,
     ) -> str | None:
         metadata_relationships = AuthorizedRetrievalCandidatePool._normalize_relationships(metadata.get("source_relationships"))
@@ -460,6 +462,16 @@ class AuthorizedRetrievalCandidatePool:
             return "applicability_missing"
         if canonical_json_sha256(metadata["applicability_conditions"]) != canonical_json_sha256(applicability_conditions):
             return "applicability_metadata_mismatch"
+        if non_applicability_conditions is not None:
+            if not isinstance(non_applicability_conditions, list):
+                return "non_applicability_missing"
+            metadata_non_applicability = metadata.get("non_applicability_conditions")
+            if metadata_non_applicability is not None and (
+                not isinstance(metadata_non_applicability, list)
+                or canonical_json_sha256(metadata_non_applicability)
+                != canonical_json_sha256(non_applicability_conditions)
+            ):
+                return "non_applicability_metadata_mismatch"
         if not isinstance(metadata.get("freshness_triggers"), list) or not metadata["freshness_triggers"]:
             return "freshness_metadata_missing"
         if not isinstance(freshness_triggers, list) or not freshness_triggers:
@@ -498,9 +510,11 @@ class AuthorizedRetrievalCandidatePool:
                 "decision_query": authority["decision_query"],
             }
         )
+        if isinstance(authority.get("non_applicability_conditions"), list):
+            authoritative_metadata["non_applicability_conditions"] = authority["non_applicability_conditions"]
         if authority.get("release_assurance_snapshot") is not None:
             authoritative_metadata["release_assurance_snapshot"] = authority["release_assurance_snapshot"]
-        return {
+        projected = {
             "chunk_id": chunk.id,
             "document_id": document.id,
             "generation": chunk.generation,
@@ -532,6 +546,9 @@ class AuthorizedRetrievalCandidatePool:
             "retrieval_profile_identity": profile_identity,
             "answer_evidence_eligible": True,
         }
+        if isinstance(authority.get("non_applicability_conditions"), list):
+            projected["non_applicability_conditions"] = list(authority["non_applicability_conditions"])
+        return projected
 
     async def _candidate_preview_binding(
         self,
@@ -691,6 +708,7 @@ class AuthorizedRetrievalCandidatePool:
 
         assurance_level = entry.get("assurance_level")
         applicability_conditions = entry.get("applicability_conditions")
+        non_applicability_conditions = entry.get("non_applicability_conditions")
         freshness_triggers = entry.get("freshness_triggers")
         if (
             assurance_level not in _ALLOWED_ASSURANCE_LEVELS
@@ -707,6 +725,7 @@ class AuthorizedRetrievalCandidatePool:
             "section_source_relationships": relationships_by_section,
             "assurance_level": assurance_level,
             "applicability_conditions": applicability_conditions,
+            "non_applicability_conditions": non_applicability_conditions,
             "freshness_triggers": freshness_triggers,
         }
 
@@ -737,6 +756,7 @@ class AuthorizedRetrievalCandidatePool:
                 source_relationships=source_relationships,
                 assurance_level=binding["assurance_level"],
                 applicability_conditions=binding["applicability_conditions"],
+                non_applicability_conditions=binding.get("non_applicability_conditions"),
                 freshness_triggers=binding["freshness_triggers"],
             )
             is not None
@@ -767,6 +787,7 @@ class AuthorizedRetrievalCandidatePool:
                 "source_relationships": source_relationships,
                 "assurance_level": binding["assurance_level"],
                 "applicability_conditions": binding["applicability_conditions"],
+                "non_applicability_conditions": binding["non_applicability_conditions"],
                 "freshness_triggers": binding["freshness_triggers"],
             }
         )

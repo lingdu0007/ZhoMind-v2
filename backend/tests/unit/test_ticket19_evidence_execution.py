@@ -5,7 +5,11 @@ import json
 import pytest
 
 from app.extensions.provider_router import ProviderRouter
-from app.rag.answer_evidence import evidence_snapshot_id, evidence_summary_from_trace
+from app.rag.answer_evidence import (
+    evidence_snapshot_id,
+    evidence_summary_from_execution,
+    evidence_summary_from_trace,
+)
 from app.rag.answer_execution import AnswerOutcomeKind, EvidenceGatedAnswerExecutor
 from app.rag.evidence_sufficiency import QueryConditionSet
 from app.rag.interfaces import GenerationCompletion, RetrieveResult
@@ -417,9 +421,89 @@ def test_pilot_provider_prompt_uses_only_the_frozen_evidence_set_and_visible_con
     assert summary["sources"][0]["citation_id"] == outcome.evidence_set.citations[0].marker
     assert summary["sources"][0]["citation_identity"] == outcome.evidence_set.citations[0].identity
     assert summary["sources"][0]["snapshot_id"] == frozen_item["snapshot_id"]
+    assert summary["sources"][0]["source_access_scope"] == "controlled_internal"
     assert summary["provider_prompt_snapshot_ids"] == [frozen_item["snapshot_id"]]
     assert outcome.runtime["provider_prompt_snapshot_ids"] == (frozen_item["snapshot_id"],)
     assert summary["provider_generation_envelope"]["identity"] == outcome.runtime["provider_generation_envelope"]["identity"]
+
+
+def test_frozen_evidence_display_metadata_cannot_be_mutated_by_candidates_or_projections() -> None:
+    candidate = _candidate(section_id="recommendation_or_reviewed_branches")
+    candidate["metadata"]["applicability_conditions"] = [
+        {
+            "condition_id": "environment-production",
+            "field": "environment",
+            "operator": "equals",
+            "value": "production",
+        }
+    ]
+    candidate["metadata"]["non_applicability_conditions"] = [
+        {
+            "condition_id": "environment-staging",
+            "field": "environment",
+            "operator": "equals",
+            "value": "staging",
+        }
+    ]
+
+    class _DisplayMetadataRetriever:
+        async def retrieve(self, _query: str, top_k: int) -> RetrieveResult:
+            del top_k
+            return RetrieveResult(
+                items=[candidate],
+                strategy="sparse_bm25",
+                lexical_candidate_count=1,
+                merged_count=1,
+                profile_identity=PILOT_RETRIEVAL_PROFILE_ID,
+                candidate_pool_scope="published_knowledge",
+            )
+
+    provider = _ObservedRecordingProvider(answer=_valid_answer())
+    executor = EvidenceGatedAnswerExecutor(
+        retriever=_DisplayMetadataRetriever(),
+        reranker=_IdentityReranker(),
+        judge=_FailIfCalledJudge(),
+        provider_router=ProviderRouter(providers={"approved": provider}),
+        primary_provider="approved",
+        retriever_name="display-metadata-retriever",
+        reranker_name="identity-reranker",
+        judge_name="must-not-run",
+        retrieval_top_k=20,
+        max_evidence_items=3,
+        max_excerpt_chars=1200,
+    )
+    question = "What is the reviewed default for environment=production?"
+    outcome = asyncio.run(
+        executor.execute(
+            request_id="ticket21-display-metadata",
+            user_id="knowledge-user",
+            session_id="ticket21-session",
+            question=question,
+        )
+    )
+
+    assert outcome.kind is AnswerOutcomeKind.EVIDENCE_GATED_ANSWER
+    assert outcome.evidence_set is not None
+    candidate["metadata"]["applicability_conditions"][0]["value"] = "mutated-candidate"
+    frozen_record = outcome.evidence_set.to_record()
+    assert frozen_record["items"][0]["evidence"]["metadata"]["applicability_conditions"][0]["value"] == "production"
+
+    frozen_record["items"][0]["evidence"]["metadata"]["applicability_conditions"][0]["value"] = "mutated-record"
+    assert (
+        outcome.evidence_set.to_record()["items"][0]["evidence"]["metadata"]["applicability_conditions"][0]["value"]
+        == "production"
+    )
+
+    execution_result = {
+        "outcome": outcome.kind.value,
+        "evidence_set": outcome.evidence_set.to_record(),
+    }
+    summary = evidence_summary_from_execution(execution_result)
+    summary["sources"][0]["applicability_conditions"][0]["value"] = "mutated-summary"
+    assert (
+        evidence_summary_from_execution(execution_result)["sources"][0]["applicability_conditions"][0]["value"]
+        == "production"
+    )
 
 
 def test_frozen_evidence_summary_rejects_snapshot_substitution_even_when_the_snapshot_hash_is_recomputed() -> None:

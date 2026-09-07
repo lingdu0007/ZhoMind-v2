@@ -1584,6 +1584,95 @@ def test_supported_answer_feedback_uses_the_frozen_execution_evidence(
         assert feedback.json()["data"]["knowledge_edition"] == "publication:v1"
 
 
+def test_insufficient_gap_feedback_uses_only_the_closed_execution_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        chat_service_module,
+        "EvidenceGatedAnswerExecutor",
+        _scripted_executor(AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY),
+    )
+
+    with _client_context() as (client, session_factory, redis):
+        headers = _headers(session_factory, redis)
+        admin_headers = _headers(session_factory, redis, username="ticket20-feedback-admin", role="admin")
+        answer = client.post(
+            "/api/v1/chat",
+            headers=headers,
+            json={
+                "message": _KNOWLEDGE_QUESTION,
+                "session_id": "ticket20-insufficient-gap-feedback",
+                "query_conditions": [dict(_PRODUCTION_CONDITION)],
+            },
+        )
+        assert answer.status_code == 200
+        answer_data = answer.json()["data"]
+        execution = answer_data["answer_execution"]
+        answer_id = answer_data["message"]["id"]
+        gap_context = {
+            "outcome": AnswerOutcomeKind.INSUFFICIENT_EVIDENCE_REPLY.value,
+            "reason": execution["insufficient_evidence_reply"]["reason"],
+            "query_condition_set_identity": execution["query_condition_set"]["identity"],
+        }
+
+        invalid_scope = client.post(
+            "/api/v1/knowledge-feedback",
+            headers=headers,
+            json={"answer_id": answer_id, "label": "helpful"},
+        )
+        assert invalid_scope.status_code == 422
+
+        submitted = client.post(
+            "/api/v1/knowledge-feedback",
+            headers=headers,
+            json={
+                "answer_id": answer_id,
+                "label": "insufficient_evidence",
+                "note": "Missing reproducible deployment validation evidence.",
+            },
+        )
+        assert submitted.status_code == 200
+        signal = submitted.json()["data"]
+        assert signal["answer_id"] == answer_id
+        assert signal["entry_id"] is None
+        assert signal["knowledge_edition"] is None
+        assert signal["label"] == "insufficient_evidence"
+        assert signal["gap_context"] == gap_context
+        assert signal["duplicate"] is False
+        serialized_signal = json.dumps(signal, sort_keys=True)
+        assert _KNOWLEDGE_QUESTION not in serialized_signal
+        assert "There is not enough reviewed evidence for this request." not in serialized_signal
+
+        duplicate = client.post(
+            "/api/v1/knowledge-feedback",
+            headers=headers,
+            json={
+                "answer_id": answer_id,
+                "label": "insufficient_evidence",
+                "note": "Missing reproducible deployment validation evidence.",
+            },
+        )
+        assert duplicate.status_code == 200
+        assert duplicate.json()["data"]["id"] == signal["id"]
+        assert duplicate.json()["data"]["duplicate"] is True
+
+        queue = client.get("/api/v1/knowledge-review-queue", headers=admin_headers)
+        assert queue.status_code == 200
+        item = next(
+            item
+            for item in queue.json()["data"]["items"]
+            if item["metadata"].get("answer_id") == answer_id
+        )
+        assert item["subject_id"] == f"gap:{gap_context['reason']}"
+        assert item["metadata"]["answer_id"] == answer_id
+        assert item["metadata"]["gap_context"] == gap_context
+        assert item["metadata"]["label"] == "insufficient_evidence"
+        assert item["metadata"]["note"] == "Missing reproducible deployment validation evidence."
+        serialized_queue = json.dumps(item, sort_keys=True)
+        assert _KNOWLEDGE_QUESTION not in serialized_queue
+        assert "There is not enough reviewed evidence for this request." not in serialized_queue
+
+
 @pytest.mark.parametrize(
     "question",
     (
@@ -2185,8 +2274,18 @@ def test_stream_interruption_waits_for_the_stopped_execution_record(
                 SimpleNamespace(username="ticket20-user", role="user"),
                 session,
             )
-            next_event = asyncio.create_task(anext(response.body_iterator))
+            identity_task = asyncio.create_task(anext(response.body_iterator))
             await asyncio.wait_for(started.wait(), timeout=1)
+            if not identity_task.done():
+                allow_stop.set()
+                identity_task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await identity_task
+                pytest.fail("stream did not emit its reserved answer identity before execution began")
+            identity_event = identity_task.result()
+            assert identity_event.startswith("event: answer_identity")
+            answer_id = _sse_event_data(identity_event, "answer_identity")["answer_id"]
+            next_event = asyncio.create_task(anext(response.body_iterator))
             next_event.cancel()
             await asyncio.wait_for(stop_started.wait(), timeout=1)
             next_event.cancel()
@@ -2203,6 +2302,8 @@ def test_stream_interruption_waits_for_the_stopped_execution_record(
                 role="user",
             )
         assistant = next(message for message in messages if message["type"] == "assistant")
+        assert assistant["id"] == answer_id
+        assert assistant["answer_execution"]["assistant_message_id"] == answer_id
         assert assistant["answer_execution"]["state"] == "stopped"
         assert "outcome" not in assistant
         assert "evidence_summary" not in assistant
@@ -2235,8 +2336,13 @@ def test_completed_stream_interruption_fails_closed_for_history(
                 SimpleNamespace(username="ticket20-user", role="user"),
                 session,
             )
-            first_event = await anext(response.body_iterator)
-            assert first_event.startswith("event: answer_identity")
+            saw_answer_identity = False
+            while True:
+                event = await anext(response.body_iterator)
+                saw_answer_identity = saw_answer_identity or event.startswith("event: answer_identity")
+                if event.startswith("event: answer_execution"):
+                    break
+            assert saw_answer_identity
             await response.body_iterator.aclose()
 
         async with session_factory() as session:

@@ -18,16 +18,21 @@
           class="session-select"
           :class="{ active: (item.session_id || item.id) === activeId }"
           :aria-current="(item.session_id || item.id) === activeId ? 'true' : undefined"
+          :aria-label="sessionTitle(item)"
           :disabled="loading"
           @click="$emit('select', item.session_id || item.id)"
         >
-          <span class="session-id">{{ item.session_id || item.id }}</span>
-          <span class="session-meta">{{ formatUpdatedAt(item.updated_at) }} · {{ item.message_count ?? 0 }} 条消息</span>
+          <span class="session-title">{{ sessionTitle(item) }}</span>
+          <span class="session-meta">
+            <span class="session-status">{{ sessionStatus(item) }}</span>
+            <span aria-hidden="true"> · </span>
+            <span>{{ formatUpdatedAt(item.updated_at) }} · {{ item.message_count ?? 0 }} 条消息</span>
+          </span>
         </button>
         <button
           type="button"
           class="session-delete"
-          :aria-label="`删除会话 ${item.session_id || item.id}`"
+          :aria-label="`删除会话 ${sessionTitle(item)}`"
           :disabled="loading"
           @click="$emit('remove', item.session_id || item.id)"
         >
@@ -44,6 +49,25 @@ const formatUpdatedAt = (value) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
   return date.toLocaleString('zh-CN', { hour12: false });
+};
+
+const sessionTitle = (item) => {
+  const title = item?.title;
+  if (typeof title === 'string' && title.trim()) return title.trim();
+  return item?.session_id || item?.id || '未命名会话';
+};
+
+const sessionStatus = (item) => {
+  const labels = {
+    running: '进行中',
+    completed: '已完成',
+    failed: '执行失败',
+    stopped: '已停止',
+    throttled: '已限流',
+    rejected: '已拒绝',
+    unavailable: '执行投影不可用'
+  };
+  return labels[item?.latest_execution_state] || '未记录关闭结果';
 };
 
 defineProps({
@@ -193,16 +217,9 @@ defineEmits(['select', 'remove', 'refresh', 'start']);
   color: var(--color-copper-strong);
 }
 
-.session-id,
-.session-meta {
-  display: flex;
-  flex-direction: column;
-}
-
-.session-id {
+.session-title {
+  display: block;
   overflow: hidden;
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
   font-weight: 600;
   font-size: 14px;
   line-height: 1.45;
@@ -211,9 +228,9 @@ defineEmits(['select', 'remove', 'refresh', 'start']);
 }
 
 .session-meta {
+  display: block;
   margin-top: 2px;
   color: var(--color-ink-soft);
-  font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.5;
 }

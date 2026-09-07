@@ -194,9 +194,24 @@ const register = async (page, baseUrl, api, { username, role }) => {
 const readStableRegions = async (page) =>
   page.evaluate(() => {
     const visible = (element) => {
+      if (element.closest('details:not([open])')) return false;
       const style = getComputedStyle(element);
       const bounds = element.getBoundingClientRect();
-      return style.display !== 'none' && style.visibility !== 'hidden' && bounds.width > 0 && bounds.height > 0;
+      if (style.display === 'none' || style.visibility === 'hidden' || bounds.width <= 0 || bounds.height <= 0) {
+        return false;
+      }
+      for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+        const overflow = getComputedStyle(ancestor);
+        if (
+          !['auto', 'scroll', 'hidden', 'clip'].includes(overflow.overflowY) &&
+          !['auto', 'scroll', 'hidden', 'clip'].includes(overflow.overflow)
+        ) {
+          continue;
+        }
+        const ancestorBounds = ancestor.getBoundingClientRect();
+        if (bounds.bottom <= ancestorBounds.top || bounds.top >= ancestorBounds.bottom) return false;
+      }
+      return true;
     };
     return [...document.querySelectorAll('main h1, main h2, main h3, main button, main input, main textarea, main select')]
       .filter(visible)
@@ -219,6 +234,7 @@ const assertRenderedWorkspace = async (page, artifactLabel = 'workspace') => {
   const initialRegions = await readStableRegions(page);
   const geometry = await page.evaluate(() => {
     const visible = (element) => {
+      if (element.closest('details:not([open])')) return false;
       const style = getComputedStyle(element);
       const bounds = element.getBoundingClientRect();
       return style.display !== 'none' && style.visibility !== 'hidden' && bounds.width > 0 && bounds.height > 0;
@@ -310,13 +326,22 @@ for (const runtime of [
     await register(page, baseUrl, api, { username: 'operator', role: 'admin' });
     await page.getByPlaceholder('请输入需要检索的问题').fill('部署前需要做什么？');
     await page.getByRole('button', { name: '发送' }).click();
+    const answer = page.getByLabel('助手消息').last();
+    const insufficiency = answer.getByLabel('证据不足回复');
+    await insufficiency.waitFor();
+    assert.equal(
+      await insufficiency.getByText('Insufficient Evidence Reply', { exact: true }).isVisible(),
+      true
+    );
+    assert.equal(await answer.getByLabel('证据摘要').count(), 0);
+    assert.equal(await answer.getByRole('button', { name: /打开引用/ }).count(), 0);
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await assertRenderedWorkspace(page, `admin-${runtime.built ? 'built' : 'development'}-chat`);
     const diagnostics = page.getByLabel('检索诊断');
     await diagnostics.waitFor();
-    await page.emulateMedia({ reducedMotion: 'reduce' });
-    await diagnostics.getByText('检索诊断', { exact: true }).click();
-    await diagnostics.getByText('候选数', { exact: true }).waitFor();
-    assert.equal(await diagnostics.getByText('候选数', { exact: true }).isVisible(), true);
-    await assertRenderedWorkspace(page, `admin-${runtime.built ? 'built' : 'development'}-chat`);
+    assert.equal(await diagnostics.getByText('仅系统管理员', { exact: true }).isVisible(), true);
+    await diagnostics.locator('summary').click();
+    assert.equal(await diagnostics.getByText(/召回候选|重排候选|门禁拒绝/).count() > 0, true);
 
     await page.getByRole('link', { name: '文档库' }).click();
     await page.getByRole('heading', { name: '文档库' }).waitFor();
@@ -444,12 +469,16 @@ for (const runtime of [
     await page.getByPlaceholder('请输入需要检索的问题').fill('部署前需要做什么？');
     await page.getByRole('button', { name: '发送' }).click();
 
-    const summary = page.getByLabel('证据摘要');
-    await summary.waitFor();
-    assert.equal(await summary.getByText('证据不足').isVisible(), true);
-    assert.equal(await summary.getByText('0 个来源').isVisible(), true);
+    const answer = page.getByLabel('助手消息').last();
+    const insufficiency = answer.getByLabel('证据不足回复');
+    await insufficiency.waitFor();
+    assert.equal(
+      await insufficiency.getByText('Insufficient Evidence Reply', { exact: true }).isVisible(),
+      true
+    );
+    assert.equal(await answer.getByLabel('证据摘要').count(), 0);
     assert.equal(await page.getByLabel('检索诊断').count(), 0);
-    assert.equal(await summary.getByRole('button', { name: /查看来源/ }).count(), 0);
+    assert.equal(await answer.getByRole('button', { name: /打开引用/ }).count(), 0);
     await assertRenderedWorkspace(page);
 
     await page.setViewportSize({ width: 1024, height: 900 });

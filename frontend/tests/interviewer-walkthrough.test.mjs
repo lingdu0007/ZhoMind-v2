@@ -139,28 +139,34 @@ test('published Agent evidence without Claim-Evidence Links closes as explicit i
 
   const publication = await publishThroughCandidateBuild(api, adminToken);
   assert.equal(publication.chunk_strategy, 'agent');
+  const afterPublication = await apiRequest(api, '/knowledge-map', { token: userToken });
+  assert.equal(afterPublication.response.status, 200);
+  assert.equal(afterPublication.data.total_entries, 0);
 
   await page.addInitScript(({ token }) => localStorage.setItem('access_token', token), { token: userToken });
   await page.goto(`${baseUrl}knowledge`);
   await page.getByRole('heading', { name: '知识地图' }).waitFor();
   await page.locator('section.knowledge-map[aria-busy="false"]').waitFor();
-  const entry = page.getByRole('article', { name: 'Bound a deterministic workflow before adding agent autonomy' });
-  await entry.waitFor();
-  assert.equal(await entry.getByText('v1', { exact: true }).isVisible(), true);
-  assert.equal(await entry.getByRole('link', { name: 'Building effective agents' }).getAttribute('href'), SOURCE_URL);
-
-  await entry.getByRole('button', { name: '基于此条提问' }).click();
+  assert.equal(
+    await page.getByRole('article', { name: 'Bound a deterministic workflow before adding agent autonomy' }).count(),
+    0
+  );
+  await page.goto(`${baseUrl}chat`);
+  await page.getByPlaceholder('请输入需要检索的问题').fill(DIRECT_QUERY);
   await page.getByRole('button', { name: '发送' }).click();
   const browserAnswer = page.getByLabel('助手消息').last();
-  await browserAnswer.getByRole('status').filter({ hasText: '证据不足' }).waitFor();
+  const browserInsufficiency = browserAnswer.getByLabel('证据不足回复');
+  await browserInsufficiency.waitFor();
+  assert.equal(
+    await browserInsufficiency.getByText('Insufficient Evidence Reply', { exact: true }).isVisible(),
+    true
+  );
   assert.equal(
     await browserAnswer.getByText('未检索到足够相关的知识片段，请补充更具体的问题或关键词。').isVisible(),
     true
   );
-  const browserSummary = browserAnswer.getByLabel('证据摘要');
-  assert.equal(await browserSummary.getByText('证据不足').isVisible(), true);
-  assert.equal(await browserSummary.getByText('0 个来源').isVisible(), true);
-  assert.equal(await browserAnswer.getByRole('button', { name: /查看来源/ }).count(), 0);
+  assert.equal(await browserAnswer.getByLabel('证据摘要').count(), 0);
+  assert.equal(await browserAnswer.getByRole('button', { name: /打开引用/ }).count(), 0);
   assert.equal(await browserAnswer.getByLabel('知识反馈').count(), 0);
 
   const normal = await apiRequest(api, '/chat', {

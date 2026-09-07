@@ -1,21 +1,18 @@
 import { defineStore } from 'pinia';
 import { apiAdapter, streamChat } from '../api/adapters';
 import {
-  formatStreamError,
-  getDoneStatus,
+  findRecoveredClosedExecution,
+  validateClosedAssistantProjection,
   validateCompletedStreamProjection,
-  validateExecutionTurnBinding
+  validateExecutionTurnBinding,
+  validateHistoryUserExecutionProjection
 } from './chat-state';
 
-const retainedExecutionStatus = (execution, outcome) => {
-  const state = execution?.state || '';
-  if (state === 'stopped') return '回答已停止，内容不完整';
-  if (state === 'failed') return '回答失败，可重试';
-  if (state === 'throttled') return '请求受限，请稍后重试';
-  if (state === 'rejected') return '请求被拒绝';
-  if (state === 'completed') return getDoneStatus({ outcome });
-  return '';
-};
+const terminalExecutionStates = new Set(['stopped', 'failed', 'throttled', 'rejected']);
+let activeStreamController = null;
+
+const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const closedSessionRecoveryDelays = [100, 150, 250, 400, 600, 850, 1150, 1500, 1900];
 
 const cloneQueryConditions = (conditions) => {
   if (!Array.isArray(conditions)) return undefined;
@@ -27,25 +24,120 @@ const cloneQueryConditions = (conditions) => {
   }));
 };
 
-const clearUntrustedCompletedProjection = (message) => {
+const clearUntrustedClosedProjection = (message) => {
   if (!message) return;
-  if (message.answer_execution?.state === 'completed') {
-    message.answer_execution = null;
-  }
+  message.answer_execution = null;
   message.outcome = '';
-  message.rejected = false;
   message.evidence_summary = null;
   message.insufficient_evidence_reply = null;
   message.retrieval_diagnostics = null;
+  message.content = '';
+  message.pending_content = '';
+  message.local_terminal_state = '';
+  message.local_retryable = false;
 };
 
-const receivedCompletedProjection = (terminalProjection) =>
-  terminalProjection.execution?.state === 'completed' ||
-  Boolean(
-    terminalProjection.outcome ||
-      terminalProjection.evidenceSummary ||
-      terminalProjection.insufficientEvidenceReply
-  );
+const isTerminalExecution = (execution) => terminalExecutionStates.has(execution?.state);
+
+const historyContractFailure = (item) => ({
+  id: item?.id || '',
+  role: 'assistant',
+  content: '',
+  answer_execution: null,
+  outcome: '',
+  evidence_summary: null,
+  insufficient_evidence_reply: null,
+  retrieval_diagnostics: null,
+  streaming: false,
+  isThinking: false,
+  contract_error: '该历史回答没有可验证的闭合执行记录，已阻止展示其内容。'
+});
+
+const historyExecutionId = (execution) =>
+  typeof execution?.id === 'string' && execution.id ? execution.id : '';
+
+const invalidateHistoryExecutionGroup = (projected, group) => {
+  for (const index of group.users) {
+    if (projected[index]?.role === 'user') {
+      projected[index].answer_execution = null;
+    }
+  }
+  for (const index of group.assistants) {
+    projected[index] = historyContractFailure(projected[index]);
+  }
+};
+
+const projectHistoryMessages = (rawMessages) => {
+  const projected = rawMessages.map((item) => {
+    const role = item?.type === 'user' ? 'user' : 'assistant';
+    const base = {
+      id: item?.id || '',
+      role,
+      content: typeof item?.content === 'string' ? item.content : '',
+      timestamp: item?.timestamp,
+      answer_execution: item?.answer_execution || null,
+      outcome: item?.outcome || '',
+      evidence_summary: item?.evidence_summary || null,
+      insufficient_evidence_reply: item?.insufficient_evidence_reply || null,
+      retrieval_diagnostics: item?.retrieval_diagnostics || null,
+      streaming: false,
+      isThinking: false,
+      contract_error: ''
+    };
+
+    if (role === 'user') return base;
+
+    try {
+      validateClosedAssistantProjection(base);
+      return base;
+    } catch {
+      return historyContractFailure(item);
+    }
+  });
+
+  const executionGroups = new Map();
+  rawMessages.forEach((item, index) => {
+    const execution = item?.answer_execution;
+    if (execution === undefined || execution === null) return;
+    const executionId = historyExecutionId(execution);
+    if (!executionId) {
+      if (projected[index]?.role === 'user') projected[index].answer_execution = null;
+      return;
+    }
+    const group = executionGroups.get(executionId) || { users: [], assistants: [] };
+    if (projected[index]?.role === 'user') group.users.push(index);
+    else group.assistants.push(index);
+    executionGroups.set(executionId, group);
+  });
+
+  for (const group of executionGroups.values()) {
+    try {
+      if (group.assistants.length === 0) {
+        if (group.users.length !== 1) {
+          throw new Error('standalone history execution has duplicate user bindings');
+        }
+        validateHistoryUserExecutionProjection(projected[group.users[0]], projected);
+        continue;
+      }
+      if (group.users.length !== 1 || group.assistants.length !== 1) {
+        throw new Error('assistant-backed history execution has incomplete or duplicate message bindings');
+      }
+      const userMessage = projected[group.users[0]];
+      const assistantMessage = projected[group.assistants[0]];
+      if (
+        !userMessage?.answer_execution ||
+        assistantMessage?.contract_error ||
+        userMessage.answer_execution.assistant_message_id !== assistantMessage?.id
+      ) {
+        throw new Error('assistant-backed history execution has contradictory message bindings');
+      }
+      validateHistoryUserExecutionProjection(userMessage, projected);
+    } catch {
+      invalidateHistoryExecutionGroup(projected, group);
+    }
+  }
+  return projected;
+};
 
 export const useChatStore = defineStore('chat', {
   state: () => ({
@@ -58,11 +150,12 @@ export const useChatStore = defineStore('chat', {
   }),
   actions: {
     clearWorkspaceState() {
-      this.streamController?.abort();
+      activeStreamController?.abort();
       this.messages = [];
       this.sessions = [];
       this.activeSessionId = '';
       this.streamController = null;
+      activeStreamController = null;
       this.loading = false;
       this.streamTick = 0;
     },
@@ -75,23 +168,40 @@ export const useChatStore = defineStore('chat', {
       const data = await apiAdapter.getSessionMessages(sessionId);
       this.activeSessionId = sessionId;
       const rawMessages = data?.messages || data?.items || data?.data || [];
-      this.messages = rawMessages.map((item) => ({
-        id: item?.id || '',
-        role: item?.type === 'user' ? 'user' : 'assistant',
-        content: item?.content || '',
-        timestamp: item?.timestamp,
-        answer_execution: item?.answer_execution || null,
-        outcome: item?.outcome || '',
-        evidence_summary: item?.evidence_summary || null,
-        insufficient_evidence_reply: item?.insufficient_evidence_reply || null,
-        retrieval_diagnostics: item?.retrieval_diagnostics || null,
-        streaming: false,
-        isThinking: false,
-        rejected: item?.outcome === 'insufficient_evidence_reply',
-        reject_reason: '',
-        failed: item?.answer_execution?.state === 'failed',
-        status: retainedExecutionStatus(item?.answer_execution, item?.outcome)
-      }));
+      this.messages = projectHistoryMessages(Array.isArray(rawMessages) ? rawMessages : []);
+    },
+    async recoverClosedSession(sessionId, submittedTurn, knownExecutionIds, expectedAssistantMessageId) {
+      if (
+        !sessionId ||
+        typeof expectedAssistantMessageId !== 'string' ||
+        !expectedAssistantMessageId
+      ) {
+        return false;
+      }
+      for (const delay of closedSessionRecoveryDelays) {
+        await wait(delay);
+        try {
+          const data = await apiAdapter.getSessionMessages(sessionId);
+          const rawMessages = data?.messages || data?.items || data?.data || [];
+          const recovered = projectHistoryMessages(Array.isArray(rawMessages) ? rawMessages : []);
+          const recoveredExecution = findRecoveredClosedExecution(
+            recovered,
+            submittedTurn,
+            knownExecutionIds,
+            expectedAssistantMessageId
+          );
+          if (!recoveredExecution) {
+            continue;
+          }
+          if (this.activeSessionId === sessionId) {
+            this.messages = recovered;
+          }
+          return true;
+        } catch {
+          // The cancellation path is allowed to race the terminal persistence write.
+        }
+      }
+      return false;
     },
     async deleteSession(sessionId) {
       const result = await apiAdapter.deleteSession(sessionId);
@@ -106,9 +216,7 @@ export const useChatStore = defineStore('chat', {
       return result;
     },
     stopStreaming() {
-      if (this.streamController) {
-        this.streamController.abort();
-      }
+      activeStreamController?.abort();
     },
     async sendMessage(question, options = {}) {
       const normalizedQuestion = typeof question === 'string' ? question.trim() : '';
@@ -118,16 +226,28 @@ export const useChatStore = defineStore('chat', {
         this.activeSessionId = `session_${Date.now()}`;
       }
 
-      const priorSessionExecutions = this.messages
+      const priorExecutionIds = this.messages
         .map((message) => message?.answer_execution)
-        .filter((execution) => execution && typeof execution === 'object' && !Array.isArray(execution));
+        .filter((execution) => execution && typeof execution === 'object' && !Array.isArray(execution))
+        .map((execution) => execution.id)
+        .filter((executionId) => typeof executionId === 'string' && executionId);
+      const priorCompletedExecutions = this.messages
+        .filter(
+          (message) =>
+            message?.role === 'assistant' &&
+            !message.contract_error &&
+            message.answer_execution?.state === 'completed'
+        )
+        .map((message) => message.answer_execution);
       const submittedTurn = {
         question: normalizedQuestion,
         query_conditions: cloneQueryConditions(options?.query_conditions),
         inherit_conditions: options?.inherit_conditions === true,
-        known_executions: priorSessionExecutions
+        known_executions: priorCompletedExecutions
       };
+      const localStreamId = `stream_${Date.now()}_${Math.random().toString(16).slice(2)}`;
       const userMessage = {
+        local_stream_id: localStreamId,
         role: 'user',
         content: normalizedQuestion,
         answer_execution: null,
@@ -137,12 +257,12 @@ export const useChatStore = defineStore('chat', {
         retry_authority_invalid: false
       };
       this.messages.push(userMessage);
-      const localStreamId = `stream_${Date.now()}_${Math.random().toString(16).slice(2)}`;
       const assistantMessage = {
         id: '',
         local_stream_id: localStreamId,
         role: 'assistant',
         content: '',
+        pending_content: '',
         answer_execution: null,
         outcome: '',
         evidence_summary: null,
@@ -150,36 +270,92 @@ export const useChatStore = defineStore('chat', {
         retrieval_diagnostics: null,
         streaming: true,
         isThinking: true,
-        rejected: false,
-        reject_reason: '',
-        failed: false,
-        status: '思考中...'
+        contract_error: '',
+        status: '思考中...',
+        local_terminal_state: '',
+        local_retryable: false
       };
       this.messages.push(assistantMessage);
 
       const submittedSessionId = this.activeSessionId;
       const getAssistantMsg = () =>
         this.activeSessionId === submittedSessionId
-          ? this.messages.find((message) => message?.local_stream_id === localStreamId) || null
+          ? this.messages.find(
+              (message) => message?.role === 'assistant' && message?.local_stream_id === localStreamId
+            ) || null
+          : null;
+      const getUserMsg = () =>
+        this.activeSessionId === submittedSessionId
+          ? this.messages.find(
+              (message) => message?.role === 'user' && message?.local_stream_id === localStreamId
+            ) || null
           : null;
       const terminalProjection = {
         answerId: '',
         execution: null,
         outcome: '',
         evidenceSummary: null,
-        insufficientEvidenceReply: null
+        insufficientEvidenceReply: null,
+        protocolError: false,
+        doneObserved: false,
+        localTerminalSettled: false
       };
       const invalidateRetryAuthority = () => {
-        userMessage.answer_execution = null;
-        userMessage.retry_authority_invalid = true;
+        const currentUserMessage = getUserMsg();
+        if (!currentUserMessage) return;
+        currentUserMessage.answer_execution = null;
+        currentUserMessage.retry_authority_invalid = true;
       };
       const requiresRecoveredRetryAuthority = () =>
-        receivedCompletedProjection(terminalProjection) ||
-        (userMessage.admission_observed === true && userMessage.answer_execution === null);
+        Boolean(terminalProjection.execution || terminalProjection.answerId || terminalProjection.outcome) ||
+        (getUserMsg()?.admission_observed === true && getUserMsg()?.answer_execution === null);
+      const hasCompletedTerminalFields = () =>
+        terminalProjection.execution?.state === 'completed' ||
+        Boolean(
+          terminalProjection.outcome ||
+            terminalProjection.evidenceSummary ||
+            terminalProjection.insufficientEvidenceReply
+        );
+      const canSettlePreAdmissionFailure = () =>
+        !terminalProjection.protocolError &&
+        !terminalProjection.doneObserved &&
+        !terminalProjection.answerId &&
+        !terminalProjection.execution &&
+        !terminalProjection.outcome &&
+        getUserMsg()?.admission_observed !== true;
+      const failClosed = (assistantMsg) => {
+        if (!assistantMsg) return;
+        clearUntrustedClosedProjection(assistantMsg);
+        assistantMsg.streaming = false;
+        assistantMsg.isThinking = false;
+        assistantMsg.contract_error = '流式结果没有形成可验证的闭合执行记录，已阻止展示其内容。';
+        assistantMsg.status = '';
+      };
+      const settlePreAdmissionFailure = (assistantMsg, state) => {
+        const currentUserMessage = getUserMsg();
+        if (!assistantMsg || !currentUserMessage) return;
+        clearUntrustedClosedProjection(assistantMsg);
+        assistantMsg.streaming = false;
+        assistantMsg.isThinking = false;
+        assistantMsg.contract_error = '';
+        assistantMsg.status = '';
+        assistantMsg.local_terminal_state = state;
+        assistantMsg.local_retryable =
+          currentUserMessage.requested_inherit_conditions !== true &&
+          (currentUserMessage.requested_query_conditions === undefined ||
+            Array.isArray(currentUserMessage.requested_query_conditions));
+        terminalProjection.localTerminalSettled = true;
+      };
+      const localFailureState = (error) => {
+        if (error?.code === 'CHAT_CONCURRENCY_LIMIT_REACHED') return 'throttled';
+        if (error?.code === 'CHAT_REQUEST_REJECTED') return 'rejected';
+        return 'failed';
+      };
 
       this.loading = true;
       const streamController = new AbortController();
-      this.streamController = streamController;
+      activeStreamController = streamController;
+      this.streamController = true;
 
       try {
         await streamChat(
@@ -203,7 +379,8 @@ export const useChatStore = defineStore('chat', {
               }
               terminalProjection.answerId = answerId;
               assistantMsg.id = answerId;
-              userMessage.admission_observed = true;
+              const currentUserMessage = getUserMsg();
+              if (currentUserMessage) currentUserMessage.admission_observed = true;
               this.streamTick += 1;
             },
             onAnswerExecution: (execution) => {
@@ -221,13 +398,10 @@ export const useChatStore = defineStore('chat', {
                 invalidateRetryAuthority();
                 throw error;
               }
-              userMessage.admission_observed = true;
+              const currentUserMessage = getUserMsg();
+              if (currentUserMessage) currentUserMessage.admission_observed = true;
               terminalProjection.execution = execution;
               assistantMsg.answer_execution = execution;
-              if (execution.state !== 'completed') {
-                userMessage.answer_execution = execution;
-                userMessage.retry_authority_invalid = false;
-              }
               this.streamTick += 1;
             },
             onOutcome: (outcome) => {
@@ -241,7 +415,6 @@ export const useChatStore = defineStore('chat', {
               }
               terminalProjection.outcome = outcome;
               assistantMsg.outcome = outcome;
-              assistantMsg.rejected = outcome === 'insufficient_evidence_reply';
               this.streamTick += 1;
             },
             onInsufficientEvidenceReply: (insufficientEvidenceReply) => {
@@ -264,7 +437,8 @@ export const useChatStore = defineStore('chat', {
             onStage: (stage) => {
               const assistantMsg = getAssistantMsg();
               if (!assistantMsg) return;
-              userMessage.admission_observed = true;
+              const currentUserMessage = getUserMsg();
+              if (currentUserMessage) currentUserMessage.admission_observed = true;
               if (assistantMsg.isThinking && stage?.message) {
                 assistantMsg.status = stage.message;
               }
@@ -273,10 +447,16 @@ export const useChatStore = defineStore('chat', {
             onContent: (chunk) => {
               const assistantMsg = getAssistantMsg();
               if (!assistantMsg) return;
+              if (terminalProjection.localTerminalSettled) {
+                terminalProjection.protocolError = true;
+                failClosed(assistantMsg);
+                this.streamTick += 1;
+                return;
+              }
               assistantMsg.isThinking = false;
               assistantMsg.streaming = true;
-              assistantMsg.status = '生成中...';
-              assistantMsg.content += chunk || '';
+              assistantMsg.status = '正在等待闭合结果…';
+              assistantMsg.pending_content += chunk || '';
               this.streamTick += 1;
             },
             onEvidenceSummary: (evidenceSummary) => {
@@ -301,30 +481,81 @@ export const useChatStore = defineStore('chat', {
             onError: (err) => {
               const assistantMsg = getAssistantMsg();
               if (!assistantMsg) return;
-              if (requiresRecoveredRetryAuthority()) {
-                invalidateRetryAuthority();
+              if (terminalProjection.localTerminalSettled) return;
+              if (isTerminalExecution(terminalProjection.execution)) {
+                assistantMsg.isThinking = false;
+                assistantMsg.status = '';
+                this.streamTick += 1;
+                return;
               }
-              clearUntrustedCompletedProjection(assistantMsg);
-              assistantMsg.streaming = false;
-              assistantMsg.isThinking = false;
-              assistantMsg.failed = true;
-              assistantMsg.status = '回答失败，可重试';
-              if (!assistantMsg.content) {
-                assistantMsg.content = `请求失败：${formatStreamError(err)}`;
+              if (canSettlePreAdmissionFailure()) {
+                settlePreAdmissionFailure(assistantMsg, localFailureState(err));
+                this.streamTick += 1;
+                return;
               }
+              terminalProjection.protocolError = true;
+              if (requiresRecoveredRetryAuthority()) invalidateRetryAuthority();
+              failClosed(assistantMsg);
               this.streamTick += 1;
             },
             onDone: () => {
               const assistantMsg = getAssistantMsg();
               if (!assistantMsg) return;
-              if (assistantMsg.failed) return;
-              validateCompletedStreamProjection(assistantMsg, submittedTurn);
-              userMessage.answer_execution = terminalProjection.execution;
-              userMessage.admission_observed = true;
-              userMessage.retry_authority_invalid = false;
-              assistantMsg.streaming = false;
-              assistantMsg.isThinking = false;
-              assistantMsg.status = getDoneStatus(assistantMsg);
+              if (terminalProjection.localTerminalSettled) {
+                terminalProjection.doneObserved = true;
+                return;
+              }
+              if (terminalProjection.protocolError) {
+                throw new Error('stream produced an error before a closed terminal execution');
+              }
+              if (!terminalProjection.execution) {
+                if (canSettlePreAdmissionFailure()) {
+                  terminalProjection.doneObserved = true;
+                  settlePreAdmissionFailure(assistantMsg, 'failed');
+                  this.streamTick += 1;
+                  return;
+                }
+                throw new Error('stream has no closed answer execution');
+              }
+              terminalProjection.doneObserved = true;
+
+              if (terminalProjection.execution.state === 'completed') {
+                const completedMessage = {
+                  ...assistantMsg,
+                  content: assistantMsg.pending_content
+                };
+                validateCompletedStreamProjection(completedMessage, submittedTurn);
+                assistantMsg.content = completedMessage.content;
+              } else {
+                const terminalMessage = {
+                  ...assistantMsg,
+                  content: assistantMsg.content || assistantMsg.pending_content
+                };
+                validateClosedAssistantProjection(terminalMessage, submittedTurn);
+                assistantMsg.content = '';
+                assistantMsg.pending_content = '';
+              }
+
+              const currentUserMessage = getUserMsg();
+              if (!currentUserMessage) {
+                throw new Error('stream user message is no longer available');
+              }
+              currentUserMessage.answer_execution = terminalProjection.execution;
+              currentUserMessage.admission_observed = true;
+              currentUserMessage.retry_authority_invalid = false;
+              const persistenceFailureWithoutAssistant =
+                terminalProjection.execution.state === 'failed' &&
+                terminalProjection.execution.failure_code === 'ANSWER_EXECUTION_PERSISTENCE_FAILED' &&
+                (terminalProjection.execution.assistant_message_id === undefined ||
+                  terminalProjection.execution.assistant_message_id === null);
+              if (persistenceFailureWithoutAssistant) {
+                const assistantIndex = this.messages.indexOf(assistantMsg);
+                if (assistantIndex >= 0) this.messages.splice(assistantIndex, 1);
+              } else {
+                assistantMsg.streaming = false;
+                assistantMsg.isThinking = false;
+                assistantMsg.status = '';
+              }
               this.streamTick += 1;
             }
           }
@@ -332,27 +563,39 @@ export const useChatStore = defineStore('chat', {
       } catch (error) {
         const assistantMsg = getAssistantMsg();
         if (!assistantMsg) return;
-        assistantMsg.streaming = false;
-        assistantMsg.isThinking = false;
-        if (error?.name === 'AbortError' && !receivedCompletedProjection(terminalProjection)) {
-          assistantMsg.status = '回答已停止，内容不完整';
-          if (!assistantMsg.content) {
-            assistantMsg.content = '回答已停止，未生成可保留的内容。';
-          }
-        } else {
-          if (requiresRecoveredRetryAuthority()) {
-            invalidateRetryAuthority();
-          }
-          clearUntrustedCompletedProjection(assistantMsg);
-          assistantMsg.failed = true;
-          assistantMsg.status = '回答失败，可重试';
-          if (!assistantMsg.content) {
-            assistantMsg.content = `请求失败：${formatStreamError(error)}`;
-          }
+        if (canSettlePreAdmissionFailure()) {
+          settlePreAdmissionFailure(
+            assistantMsg,
+            error?.name === 'AbortError' ? 'stopped' : localFailureState(error)
+          );
+          this.streamTick += 1;
+          return;
         }
+        if (requiresRecoveredRetryAuthority()) invalidateRetryAuthority();
+        if (
+          error?.name === 'AbortError' &&
+          !hasCompletedTerminalFields() &&
+          terminalProjection.answerId
+        ) {
+          clearUntrustedClosedProjection(assistantMsg);
+          assistantMsg.streaming = true;
+          assistantMsg.isThinking = false;
+          assistantMsg.contract_error = '';
+          assistantMsg.status = '';
+          this.streamTick += 1;
+          const recovered = await this.recoverClosedSession(
+            submittedSessionId,
+            submittedTurn,
+            new Set(priorExecutionIds),
+            terminalProjection.answerId
+          );
+          if (recovered) return;
+        }
+        failClosed(assistantMsg);
         this.streamTick += 1;
       } finally {
-        if (this.streamController === streamController) {
+        if (activeStreamController === streamController) {
+          activeStreamController = null;
           this.streamController = null;
           this.loading = false;
         }

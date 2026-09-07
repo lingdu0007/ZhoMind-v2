@@ -78,15 +78,21 @@ class ChatRepository:
         content: str,
         answer_execution_id: str | None = None,
         rag_trace: dict | None = None,
+        message_id: str | None = None,
     ) -> ChatMessage:
-        message = ChatMessage(
-            session_id=session_id,
-            user_id=user_id,
-            type=message_type,
-            content=content,
-            answer_execution_id=answer_execution_id,
-            rag_trace=rag_trace,
-        )
+        if message_id is not None and (not isinstance(message_id, str) or not message_id):
+            raise ValueError("conversation message identity is malformed")
+        values = {
+            "session_id": session_id,
+            "user_id": user_id,
+            "type": message_type,
+            "content": content,
+            "answer_execution_id": answer_execution_id,
+            "rag_trace": rag_trace,
+        }
+        if message_id is not None:
+            values["id"] = message_id
+        message = ChatMessage(**values)
         self.session.add(message)
         await self.session.flush()
         return message

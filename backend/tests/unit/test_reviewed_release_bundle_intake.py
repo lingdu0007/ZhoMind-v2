@@ -1362,6 +1362,7 @@ async def test_queued_item_builds_a_hidden_candidate_from_frozen_inputs_without_
     assert preview.items[0]["candidate_id"] == candidate["candidate_id"]
     assert preview.items[0]["answer_evidence_eligible"] is False
     assert preview.items[0]["diagnostic_only"] is True
+    assert preview.items[0]["metadata"]["domain"] == "rag_source_admission_and_chunking"
     assert await db_session.scalar(select(func.count()).select_from(Document)) == 0
     completed_bundle = await intake.get_bundle("candidate-build-bundle-001")
     assert completed_bundle["state"] == "completed"

@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { getEvidenceCoverageLabel, getEvidenceSourceLabel, getEvidenceSourceUrl } from '../src/app/evidence-summary.js';
+import {
+  getControlledEvidenceSourceLocator,
+  getEvidenceCoverageLabel,
+  getEvidenceSourceLabel,
+  getEvidenceSourceUrl,
+  getKnowledgeAssuranceLabel,
+  hasSafeEvidenceSourceLocator
+} from '../src/app/evidence-summary.js';
 
 test('Evidence Summary maps only categorical coverage states', () => {
   assert.equal(getEvidenceCoverageLabel('sufficient'), '证据充分');
@@ -30,4 +37,29 @@ test('Public Source Citation prefers the public source title and permits only sa
   assert.equal(getEvidenceSourceUrl({ source_url: 'https://user:secret@example.com/source' }), '');
   assert.equal(getEvidenceSourceUrl({ source_url: 'https://example.com/source?access_token=secret' }), '');
   assert.equal(getEvidenceSourceUrl({ source_url: 'https://example.com/source?redirect=https://evil.example' }), '');
+});
+
+test('Controlled Source Citation preserves only an access-scoped sanitized locator', () => {
+  const source = {
+    source_access_scope: 'controlled_internal',
+    source_url: 'controlled://knowledge/reviewed-decision-001'
+  };
+
+  assert.equal(getControlledEvidenceSourceLocator(source), 'controlled://knowledge/reviewed-decision-001');
+  assert.equal(getControlledEvidenceSourceLocator({ ...source, source_access_scope: 'public' }), '');
+  assert.equal(getControlledEvidenceSourceLocator({ ...source, source_url: 'controlled://ab' }), '');
+  assert.equal(getControlledEvidenceSourceLocator({ ...source, source_url: 'https://example.com/source' }), '');
+  const contradictoryPublicLocator = {
+    source_access_scope: 'controlled_internal',
+    source_url: 'https://example.com/source'
+  };
+  assert.equal(getEvidenceSourceUrl(contradictoryPublicLocator), '');
+  assert.equal(hasSafeEvidenceSourceLocator(contradictoryPublicLocator), false);
+});
+
+test('Knowledge assurance labels are shared across published coverage surfaces', () => {
+  assert.equal(getKnowledgeAssuranceLabel('source_grounded'), 'Source-grounded assurance');
+  assert.equal(getKnowledgeAssuranceLabel('claim_linked'), 'Claim-linked assurance');
+  assert.equal(getKnowledgeAssuranceLabel('release_assured'), 'Release-assured assurance');
+  assert.equal(getKnowledgeAssuranceLabel('candidate_only'), '');
 });

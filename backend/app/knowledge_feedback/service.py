@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.exceptions import AppError
@@ -12,13 +13,33 @@ from app.knowledge_feedback.schemas import KnowledgeFeedbackCreate, ReviewWorkIt
 from app.model.chat import ChatMessage
 from app.model.document import Document, DocumentChunk
 from app.model.knowledge_feedback import KnowledgeFeedbackSignal, ReviewWorkItem
-from app.rag.answer_evidence import evidence_summary_from_execution, evidence_summary_from_trace
+from app.rag.answer_evidence import evidence_summary_from_execution
 from app.repository.chat_repository import ChatRepository
 from app.service.answer_execution_store import AnswerExecutionStore
 
 FEEDBACK_RETENTION_DAYS = 180
 REVIEW_AGE_DAYS = 90
 _SAFE_CODE = re.compile(r"^[A-Za-z0-9._:+-]{1,96}$")
+_FEEDBACK_SCOPE_UNIQUE_CONSTRAINT = "uq_feedback_user_answer_scope"
+
+
+def _is_feedback_scope_unique_violation(error: IntegrityError) -> bool:
+    original = error.orig
+    if getattr(original, "constraint_name", None) == _FEEDBACK_SCOPE_UNIQUE_CONSTRAINT:
+        return True
+    diagnostics = getattr(original, "diag", None)
+    if getattr(diagnostics, "constraint_name", None) == _FEEDBACK_SCOPE_UNIQUE_CONSTRAINT:
+        return True
+
+    detail = str(original).lower()
+    if _FEEDBACK_SCOPE_UNIQUE_CONSTRAINT in detail:
+        return True
+    return (
+        "unique constraint failed" in detail
+        and "knowledge_feedback_signals.user_id" in detail
+        and "knowledge_feedback_signals.answer_id" in detail
+        and "knowledge_feedback_signals.scope_key" in detail
+    )
 
 
 def _source_entry_id(source: object) -> str | None:
@@ -73,14 +94,27 @@ class KnowledgeFeedbackService:
             message_type=answer.type,
             indexed_execution_id=answer.answer_execution_id,
         )
-        summary = (
-            evidence_summary_from_execution(loaded.result)
-            if loaded is not None and loaded.result is not None
-            else evidence_summary_from_trace(answer.rag_trace)
-        )
+        if payload.entry_id is None:
+            return await self._submit_gap_feedback(
+                user_id=user_id,
+                payload=payload,
+                answer=answer,
+                loaded=loaded,
+            )
+
+        projection, closed_result = self._closed_supported_execution(loaded)
+        try:
+            summary = evidence_summary_from_execution(closed_result)
+        except ValueError as exc:
+            raise AppError(
+                status_code=422,
+                code="KNOWLEDGE_FEEDBACK_CLOSED_ANSWER_REQUIRED",
+                message="feedback requires a closed evidence-gated answer",
+            ) from exc
         sources = summary.get("sources") if isinstance(summary, dict) else []
         sources = sources if isinstance(sources, list) else []
-        entry_sources = [source for source in sources if _source_entry_id(source) == payload.entry_id]
+        entry_id = payload.entry_id
+        entry_sources = [source for source in sources if _source_entry_id(source) == entry_id]
         if not entry_sources:
             raise AppError(
                 status_code=422,
@@ -88,65 +122,245 @@ class KnowledgeFeedbackService:
                 message="entry is not part of the answer evidence",
             )
 
-        edition = self._knowledge_edition(
-            loaded.result if loaded is not None else answer.rag_trace,
-            entry_sources,
+        edition = self._knowledge_edition(closed_result, entry_sources)
+        scope_key = f"entry:{entry_id}"
+        existing = await self._existing_submission(
+            user_id=user_id,
+            answer_id=payload.answer_id,
+            scope_key=scope_key,
+            label=payload.label,
+            note=payload.note,
+            conflict_message="feedback already exists for this answer and entry",
         )
-        existing_result = await self._session.execute(
-            select(KnowledgeFeedbackSignal).where(
-                KnowledgeFeedbackSignal.user_id == user_id,
-                KnowledgeFeedbackSignal.answer_id == payload.answer_id,
-                KnowledgeFeedbackSignal.entry_id == payload.entry_id,
-            )
-        )
-        existing = existing_result.scalar_one_or_none()
         if existing is not None:
-            if existing.label == payload.label and existing.note == payload.note:
-                await self._session.commit()
-                return self._project_signal(existing, duplicate=True)
-            raise AppError(
-                status_code=409,
-                code="KNOWLEDGE_FEEDBACK_ALREADY_SUBMITTED",
-                message="feedback already exists for this answer and entry",
-            )
-
-        now = datetime.now(UTC)
+            return existing
         metadata = {
+            "outcome": projection["outcome"],
             "evidence_coverage": summary.get("coverage", "unavailable"),
             "source_count": len(entry_sources),
         }
-        signal = KnowledgeFeedbackSignal(
+        return await self._create_submission(
             answer_id=payload.answer_id,
             user_id=user_id,
-            entry_id=payload.entry_id,
+            entry_id=entry_id,
+            scope_key=scope_key,
             knowledge_edition=edition,
             label=payload.label,
             note=payload.note,
-            normalized_metadata=metadata,
+            signal_metadata=metadata,
+            work_item_metadata={
+                "answer_id": payload.answer_id,
+                "entry_id": entry_id,
+                "knowledge_edition": edition,
+                "label": payload.label,
+                "note": payload.note,
+                **metadata,
+            },
+            subject_id=entry_id,
+            conflict_message="feedback already exists for this answer and entry",
+        )
+
+    @staticmethod
+    def _closed_supported_execution(loaded: object) -> tuple[dict[str, Any], dict[str, Any]]:
+        projection = getattr(loaded, "projection", None)
+        result = getattr(loaded, "result", None)
+        if (
+            not isinstance(projection, dict)
+            or not isinstance(result, dict)
+            or projection.get("state") != "completed"
+            or projection.get("outcome") != "evidence_gated_answer"
+            or result.get("state") != "completed"
+            or result.get("outcome") != "evidence_gated_answer"
+        ):
+            raise AppError(
+                status_code=422,
+                code="KNOWLEDGE_FEEDBACK_CLOSED_ANSWER_REQUIRED",
+                message="feedback requires a closed evidence-gated answer",
+            )
+        return projection, result
+
+    async def list_for_user(self, *, user_id: str, answer_id: str | None = None) -> dict[str, Any]:
+        normalized_answer_id = answer_id.strip() if isinstance(answer_id, str) else ""
+        if answer_id is not None and not normalized_answer_id:
+            raise AppError(
+                status_code=422,
+                code="KNOWLEDGE_FEEDBACK_ANSWER_INVALID",
+                message="answer identity is required",
+            )
+        await self._purge_expired()
+        statement = select(KnowledgeFeedbackSignal).where(KnowledgeFeedbackSignal.user_id == user_id)
+        if normalized_answer_id:
+            statement = statement.where(KnowledgeFeedbackSignal.answer_id == normalized_answer_id)
+        result = await self._session.execute(
+            statement.order_by(KnowledgeFeedbackSignal.created_at.desc(), KnowledgeFeedbackSignal.id.desc())
+        )
+        items = [self._project_signal(signal, duplicate=False) for signal in result.scalars().all()]
+        await self._session.commit()
+        return {"items": items}
+
+    async def _submit_gap_feedback(
+        self,
+        *,
+        user_id: str,
+        payload: KnowledgeFeedbackCreate,
+        answer: ChatMessage,
+        loaded: object,
+    ) -> dict[str, Any]:
+        projection = getattr(loaded, "projection", None)
+        result = getattr(loaded, "result", None)
+        if (
+            not isinstance(projection, dict)
+            or not isinstance(result, dict)
+            or projection.get("state") != "completed"
+            or projection.get("outcome") != "insufficient_evidence_reply"
+        ):
+            raise AppError(
+                status_code=422,
+                code="KNOWLEDGE_GAP_FEEDBACK_MISMATCH",
+                message="gap feedback requires a closed insufficient-evidence answer",
+            )
+        reply = projection.get("insufficient_evidence_reply")
+        query_conditions = projection.get("query_condition_set")
+        if (
+            not isinstance(reply, dict)
+            or reply.get("outcome") != "insufficient_evidence_reply"
+            or not isinstance(reply.get("reason"), str)
+            or not reply["reason"]
+            or not isinstance(reply.get("query_condition_set_identity"), str)
+            or not reply["query_condition_set_identity"]
+            or not isinstance(query_conditions, dict)
+            or query_conditions.get("identity") != reply["query_condition_set_identity"]
+        ):
+            raise AppError(
+                status_code=422,
+                code="KNOWLEDGE_GAP_FEEDBACK_MISMATCH",
+                message="gap feedback requires a structured insufficient-evidence record",
+            )
+
+        gap_context = {
+            "outcome": "insufficient_evidence_reply",
+            "reason": reply["reason"],
+            "query_condition_set_identity": reply["query_condition_set_identity"],
+        }
+        scope_key = f"gap:{gap_context['reason']}"
+        existing = await self._existing_submission(
+            user_id=user_id,
+            answer_id=payload.answer_id,
+            scope_key=scope_key,
+            label=payload.label,
+            note=payload.note,
+            conflict_message="feedback already exists for this answer and gap context",
+        )
+        if existing is not None:
+            return existing
+        metadata = {
+            "answer_id": answer.id,
+            "outcome": gap_context["outcome"],
+            "gap_context": gap_context,
+            "label": payload.label,
+            "note": payload.note,
+        }
+        return await self._create_submission(
+            answer_id=answer.id,
+            user_id=user_id,
+            entry_id=None,
+            scope_key=scope_key,
+            knowledge_edition=None,
+            label=payload.label,
+            note=payload.note,
+            signal_metadata=metadata,
+            work_item_metadata=metadata,
+            subject_id=scope_key,
+            conflict_message="feedback already exists for this answer and gap context",
+        )
+
+    async def _existing_submission(
+        self,
+        *,
+        user_id: str,
+        answer_id: str,
+        scope_key: str,
+        label: str,
+        note: str | None,
+        conflict_message: str,
+    ) -> dict[str, Any] | None:
+        result = await self._session.execute(
+            select(KnowledgeFeedbackSignal).where(
+                KnowledgeFeedbackSignal.user_id == user_id,
+                KnowledgeFeedbackSignal.answer_id == answer_id,
+                KnowledgeFeedbackSignal.scope_key == scope_key,
+            )
+        )
+        existing = result.scalar_one_or_none()
+        if existing is None:
+            return None
+        if existing.label == label and existing.note == note:
+            await self._session.commit()
+            return self._project_signal(existing, duplicate=True)
+        raise AppError(
+            status_code=409,
+            code="KNOWLEDGE_FEEDBACK_ALREADY_SUBMITTED",
+            message=conflict_message,
+        )
+
+    async def _create_submission(
+        self,
+        *,
+        answer_id: str,
+        user_id: str,
+        entry_id: str | None,
+        scope_key: str,
+        knowledge_edition: str | None,
+        label: str,
+        note: str | None,
+        signal_metadata: dict[str, Any],
+        work_item_metadata: dict[str, Any],
+        subject_id: str,
+        conflict_message: str,
+    ) -> dict[str, Any]:
+        now = datetime.now(UTC)
+        signal = KnowledgeFeedbackSignal(
+            answer_id=answer_id,
+            user_id=user_id,
+            entry_id=entry_id,
+            scope_key=scope_key,
+            knowledge_edition=knowledge_edition,
+            label=label,
+            note=note,
+            normalized_metadata=signal_metadata,
             created_at=now,
             expires_at=now + timedelta(days=FEEDBACK_RETENTION_DAYS),
         )
-        self._session.add(signal)
-        await self._session.flush()
-        self._session.add(
-            ReviewWorkItem(
-                kind="feedback_signal",
-                dedupe_key=f"feedback:{signal.id}",
-                subject_id=signal.entry_id,
-                signal_id=signal.id,
-                normalized_metadata={
-                    "answer_id": signal.answer_id,
-                    "entry_id": signal.entry_id,
-                    "knowledge_edition": signal.knowledge_edition,
-                    "label": signal.label,
-                    "note": signal.note,
-                    **metadata,
-                },
-                created_at=now,
-                updated_at=now,
+        try:
+            self._session.add(signal)
+            await self._session.flush()
+            self._session.add(
+                ReviewWorkItem(
+                    kind="feedback_signal",
+                    dedupe_key=f"feedback:{signal.id}",
+                    subject_id=subject_id,
+                    signal_id=signal.id,
+                    normalized_metadata=work_item_metadata,
+                    created_at=now,
+                    updated_at=now,
+                )
             )
-        )
-        await self._session.commit()
+            await self._session.commit()
+        except IntegrityError as error:
+            await self._session.rollback()
+            if not _is_feedback_scope_unique_violation(error):
+                raise
+            existing = await self._existing_submission(
+                user_id=user_id,
+                answer_id=answer_id,
+                scope_key=scope_key,
+                label=label,
+                note=note,
+                conflict_message=conflict_message,
+            )
+            if existing is not None:
+                return existing
+            raise
         return self._project_signal(signal, duplicate=False)
 
     async def delete(self, *, user_id: str, signal_id: str) -> dict[str, Any]:
@@ -310,7 +524,7 @@ class KnowledgeFeedbackService:
 
     @staticmethod
     def _project_signal(signal: KnowledgeFeedbackSignal, *, duplicate: bool) -> dict[str, Any]:
-        return {
+        projection = {
             "id": signal.id,
             "answer_id": signal.answer_id,
             "entry_id": signal.entry_id,
@@ -321,6 +535,13 @@ class KnowledgeFeedbackService:
             "retention_days": FEEDBACK_RETENTION_DAYS,
             "duplicate": duplicate,
         }
+        outcome = signal.normalized_metadata.get("outcome")
+        if outcome in {"evidence_gated_answer", "insufficient_evidence_reply"}:
+            projection["outcome"] = outcome
+        gap_context = signal.normalized_metadata.get("gap_context")
+        if isinstance(gap_context, dict):
+            projection["gap_context"] = gap_context
+        return projection
 
     @staticmethod
     def _project_work_item(item: ReviewWorkItem) -> dict[str, Any]:

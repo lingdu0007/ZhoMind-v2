@@ -67,6 +67,12 @@ def test_answer_execution_tail_migration_adds_private_append_only_persistence(
         message_indexes = {
             row[1] for row in migrated.execute("PRAGMA index_list(chat_messages)")
         }
+        tables = {
+            row[0]
+            for row in migrated.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
         triggers = {
             row[0]
             for row in migrated.execute(
@@ -169,7 +175,8 @@ def test_answer_execution_tail_migration_adds_private_append_only_persistence(
         "answer_execution_events_immutable_update",
         "answer_executions_immutable_update",
     }
-    assert revision == ("20260906_0019",)
+    assert "knowledge_feedback_signals" not in tables
+    assert revision == ("20260907_0020",)
 
 
 def test_answer_execution_migration_defines_postgresql_immutable_update_guards() -> None:

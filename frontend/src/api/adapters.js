@@ -2,6 +2,30 @@ import http, { notifyAuthInvalid, resolveApiBaseURL } from './http';
 import { createSSEParser, normalizeSSEFrame } from './sse';
 
 const unwrapData = (payload) => payload?.data ?? payload;
+const abortStreamError = () => {
+  const error = new Error('流式请求已取消。');
+  error.name = 'AbortError';
+  return error;
+};
+const awaitWithAbort = (operation, signal) => {
+  if (!signal) return operation;
+  if (signal.aborted) return Promise.reject(abortStreamError());
+
+  return new Promise((resolve, reject) => {
+    const rejectAbort = () => reject(abortStreamError());
+    signal.addEventListener('abort', rejectAbort, { once: true });
+    operation.then(
+      (result) => {
+        signal.removeEventListener('abort', rejectAbort);
+        resolve(result);
+      },
+      (error) => {
+        signal.removeEventListener('abort', rejectAbort);
+        reject(error);
+      }
+    );
+  });
+};
 
 export const apiAdapter = {
   // Auth
@@ -49,6 +73,16 @@ export const apiAdapter = {
   },
   async submitKnowledgeFeedback(payload) {
     const { data } = await http.post('/knowledge-feedback', payload);
+    return unwrapData(data);
+  },
+  async listKnowledgeFeedback(answerId = undefined) {
+    const params =
+      typeof answerId === 'string' && answerId.trim()
+        ? { answer_id: answerId }
+        : undefined;
+    const { data } = await http.get('/knowledge-feedback', {
+      params
+    });
     return unwrapData(data);
   },
   async deleteKnowledgeFeedback(signalId) {
@@ -170,15 +204,18 @@ export const streamChat = async (
   const payload = { message, session_id };
   if (query_conditions !== undefined) payload.query_conditions = query_conditions;
   if (inherit_conditions === true) payload.inherit_conditions = true;
-  const response = await fetch(`${base}/chat/stream`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {})
-    },
-    body: JSON.stringify(payload),
+  const response = await awaitWithAbort(
+    fetch(`${base}/chat/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {})
+      },
+      body: JSON.stringify(payload),
+      signal
+    }),
     signal
-  });
+  );
 
   if (!response.ok || !response.body) {
     if (response.status === 401) notifyAuthInvalid();
@@ -211,6 +248,15 @@ export const streamChat = async (
   const reader = response.body.getReader();
   const decoder = new TextDecoder('utf-8');
   let doneDispatched = false;
+  const cancelReader = () => {
+    void reader.cancel().catch(() => {
+      // A network cancellation may already have closed the reader.
+    });
+  };
+  const readWithAbort = () => {
+    return awaitWithAbort(reader.read(), signal);
+  };
+  signal?.addEventListener('abort', cancelReader, { once: true });
 
   const dispatch = (event) => {
     if (!event) return;
@@ -296,19 +342,29 @@ export const streamChat = async (
     dispatch(event);
   });
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    if (signal?.aborted) {
+      cancelReader();
+      throw abortStreamError();
+    }
+    while (true) {
+      const { done, value } = await readWithAbort();
+      if (signal?.aborted) throw abortStreamError();
+      if (done) break;
 
-    parser.feed(decoder.decode(value, { stream: true }));
-  }
+      parser.feed(decoder.decode(value, { stream: true }));
+    }
 
-  parser.feed(decoder.decode());
-  parser.finish();
-  if (!doneDispatched) {
-    const error = new Error('流式响应在完成前中断。');
-    error.code = 'CHAT_STREAM_INTERRUPTED';
-    handlers.onError?.(error);
-    throw error;
+    if (signal?.aborted) throw abortStreamError();
+    parser.feed(decoder.decode());
+    parser.finish();
+    if (!doneDispatched) {
+      const error = new Error('流式响应在完成前中断。');
+      error.code = 'CHAT_STREAM_INTERRUPTED';
+      handlers.onError?.(error);
+      throw error;
+    }
+  } finally {
+    signal?.removeEventListener('abort', cancelReader);
   }
 };

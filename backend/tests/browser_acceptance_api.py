@@ -10,7 +10,10 @@ from datetime import UTC, datetime
 import uvicorn
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.contracts.canonical import CanonicalEventType
 from app.documents import parsers
+from app.editorial_authority.schemas import CreateEditorialEntryRequest
+from app.editorial_authority.service import EditorialAuthorityService
 from app.extensions.registry import get_extension_registry
 from app.infra.db import SessionLocal, engine
 from app.infra.redis import get_redis_client
@@ -19,6 +22,7 @@ from app.model.base import Base
 from app.model.chat import ChatMessage, ChatSession
 from app.model.document import Document, DocumentChunk, DocumentJob
 from app.model.system_settings import SystemSettingsState
+from app.model.user import User
 from app.rag.claim_evidence import ClaimEvidenceContract, ClaimResolution, ResolvedClaim, parse_claim_evidence_contract
 from app.settings import runtime as settings_runtime
 from app.settings.runtime import SystemSettingsRuntime
@@ -43,7 +47,12 @@ _BROWSER_CLAIM_CONTRACT = parse_claim_evidence_contract(
             {
                 "claim_id": "claim-deterministic-workflow",
                 "scope": "Known execution paths with explicit termination conditions.",
-                "evidence": [{"section_id": "stable-principle", "source_id": _BROWSER_AGENT_SOURCE_ID}],
+                "evidence": [
+                    {
+                        "section_id": "recommendation_or_reviewed_branches",
+                        "source_id": _BROWSER_AGENT_SOURCE_ID,
+                    }
+                ],
             }
         ],
     }
@@ -240,6 +249,193 @@ async def _seed_chat_history(session: AsyncSession) -> None:
     )
 
 
+def _browser_editorial_entry() -> CreateEditorialEntryRequest:
+    body = {
+        "decision_query": "什么时候使用 deterministic workflow？",
+        "recommendation_or_reviewed_branches": "已知路径应由 deterministic workflow 控制。",
+        "applicability": "Applies to known execution paths with explicit termination conditions.",
+        "non_applicability": "Does not authorize unbounded autonomous execution loops.",
+        "alternatives": "Treat every execution path as equivalent.",
+        "trade_offs": "Deterministic workflows constrain autonomy in exchange for replayable behavior.",
+        "failure_modes": "Unknown termination conditions can invalidate the deterministic boundary.",
+        "minimum_implementation_guidance": "Record the termination condition before enabling automation.",
+        "minimum_validation_guidance": "Replay a fixed input through the configured workflow.",
+        "minimum_diagnosis_guidance": "Inspect the retained execution boundary before changing the workflow.",
+        "minimum_acceptance_guidance": "Verify one supported query and one boundary query.",
+        "conflicts": "No current conflict is retained for this decision.",
+        "unknowns": "Provider-specific orchestration behavior remains outside this entry.",
+        "boundary_conditions": "The recommendation assumes an authorized team-shared corpus.",
+    }
+    return CreateEditorialEntryRequest(
+        entry_id=_BROWSER_AGENT_ENTRY_ID,
+        title="Prefer deterministic workflows",
+        coverage_position="orchestration_retry_human_intervention_and_side_effects",
+        assurance_level="claim_linked",
+        approving_reviewer_username="browser-reviewer",
+        accountable_maintainer_username="browser-maintainer",
+        review_date="2026-08-12",
+        applicable_versions=["framework-neutral", "Anthropic 2024-12-19"],
+        applicability_conditions=[
+            {
+                "condition_id": "condition-known-execution-path",
+                "field": "execution_path",
+                "operator": "equals",
+                "value": "known",
+            }
+        ],
+        non_applicability_conditions=[
+            {
+                "condition_id": "condition-unbounded-loop",
+                "field": "autonomy",
+                "operator": "equals",
+                "value": "unbounded",
+            }
+        ],
+        freshness_triggers=[
+            {
+                "trigger_id": "freshness-workflow-source",
+                "trigger_type": "source_release",
+                "review_within_days": 7,
+            }
+        ],
+        sources=[
+            {
+                "source_id": _BROWSER_AGENT_SOURCE_ID,
+                "source_tier": "primary_evidence_source",
+                "title": "Building effective agents",
+                "authority": "Anthropic",
+                "version_or_date": "2026-08-12",
+                "availability": "verified_usable",
+                "access_scope": "public",
+                "public_url": "https://www.anthropic.com/engineering/building-effective-agents",
+                "independent_public_verifiability": True,
+            }
+        ],
+        chunk_strategy={
+            "strategy_id": "section-aware-900-120",
+            "max_characters": 900,
+            "overlap_characters": 120,
+            "preserve_section_boundaries": True,
+        },
+        acceptance_material={
+            "supported_queries": [
+                {
+                    "query_id": "supported-deterministic-workflow",
+                    "query": "什么时候使用 deterministic workflow？",
+                    "expected_outcome": "supported",
+                }
+            ],
+            "boundary_queries": [
+                {
+                    "query_id": "boundary-deterministic-workflow",
+                    "query": "未验证来源能否直接作为 workflow 证据？",
+                    "expected_outcome": "insufficient_evidence",
+                }
+            ],
+        },
+        body=body,
+        section_source_relationships=[
+            {
+                "section_id": section_id,
+                "source_ids": [_BROWSER_AGENT_SOURCE_ID],
+            }
+            for section_id in body
+        ],
+        claims=[
+            {
+                "claim_id": "claim-deterministic-workflow",
+                "claim_kind": "prescriptive",
+                "statement": "Known execution paths should use deterministic workflows.",
+                "section_id": "recommendation_or_reviewed_branches",
+                "source_ids": [_BROWSER_AGENT_SOURCE_ID],
+                "material": True,
+                "scope": "team_shared",
+            }
+        ],
+        relationship={},
+    )
+
+
+async def _seed_browser_editorial_authority(
+    session: AsyncSession,
+    *,
+    agent_chunk: DocumentChunk,
+) -> None:
+    author = User(username="browser-author", password_hash="browser-acceptance", role="user", is_active=True)
+    reviewer = User(username="browser-reviewer", password_hash="browser-acceptance", role="user", is_active=True)
+    maintainer = User(username="browser-maintainer", password_hash="browser-acceptance", role="user", is_active=True)
+    session.add_all([author, reviewer, maintainer])
+    await session.flush()
+
+    authority = EditorialAuthorityService(session)
+    draft = await authority.create_draft(_browser_editorial_entry(), author)
+    await authority.collect_evidence(draft["entry_id"], author)
+    await authority.accept_maintainer_responsibility(draft["entry_id"], maintainer)
+    await authority.record_source_availability(
+        draft["entry_id"],
+        _BROWSER_AGENT_SOURCE_ID,
+        "verified_usable",
+        maintainer,
+    )
+    await authority.request_editorial_review(draft["entry_id"], author)
+    approved = await authority.approve_current_revision(draft["entry_id"], reviewer)
+
+    entry, events = await authority._entry_and_events(draft["entry_id"])
+    reviewer_identity = approved["approval"]["reviewer_identity"]
+    await authority._append_entry_event(
+        entry,
+        events,
+        event_type=CanonicalEventType.STATE_CHANGED,
+        from_state="editorial_review",
+        to_state="candidate_build",
+        action="candidate_build_admitted_for_browser_acceptance",
+        revision_identity=approved["revision_identity"],
+        actor_identity=reviewer_identity,
+    )
+    await session.commit()
+    entry, events = await authority._entry_and_events(draft["entry_id"])
+    await authority._append_entry_event(
+        entry,
+        events,
+        event_type=CanonicalEventType.PUBLISHED,
+        from_state="candidate_build",
+        to_state="published",
+        action="published_for_browser_acceptance",
+        revision_identity=approved["revision_identity"],
+        actor_identity=reviewer_identity,
+    )
+    await session.commit()
+
+    current = await authority.get_retrieval_authority(draft["entry_id"])
+    if current.get("answer_eligible") is not True:
+        raise RuntimeError("browser acceptance fixture did not reach answer eligibility")
+    relationships = current.get("section_source_relationships")
+    if not isinstance(relationships, dict):
+        raise RuntimeError("browser acceptance fixture has no section-source relationships")
+    source_relationships = relationships.get("recommendation_or_reviewed_branches")
+    if not isinstance(source_relationships, list):
+        raise RuntimeError("browser acceptance fixture has no recommendation source relationship")
+    agent_chunk.chunk_metadata = {
+        **agent_chunk.chunk_metadata,
+        "entry_identity": current["entry_identity"],
+        "editorial_revision_identity": current["editorial_revision_identity"],
+        "source_relationships": source_relationships,
+        "assurance_level": current["assurance_level"],
+        "applicability_conditions": current["applicability_conditions"],
+        "non_applicability_conditions": current["non_applicability_conditions"],
+        "freshness_triggers": current["freshness_triggers"],
+    }
+    await session.commit()
+
+    if os.getenv("BROWSER_ACCEPTANCE_SOURCE_LOST") == "1":
+        await authority.record_source_availability(
+            draft["entry_id"],
+            _BROWSER_AGENT_SOURCE_ID,
+            "unavailable_for_new_evidence",
+            maintainer,
+        )
+
+
 async def _seed_test_data() -> None:
     ready_documents = [
         ("browser-evidence", "browser-evidence.md", "部署前需要完成变更审批。"),
@@ -308,53 +504,55 @@ async def _seed_test_data() -> None:
                     latest_requested_generation=1,
                 )
             )
-            session.add(
-                DocumentChunk(
-                    id="chunk-browser-agent-entry",
-                    document_id="browser-agent-entry",
-                    generation=1,
-                    chunk_index=0,
-                    content="已知路径应由 deterministic workflow 控制。",
-                    keywords=["deterministic", "workflow"],
-                    generated_questions=[],
-                    chunk_metadata={
-                        "strategy": "agent",
-                        "entry_id": _BROWSER_AGENT_ENTRY_ID,
-                        "entry_title": "Prefer deterministic workflows",
-                        "domain": "workflow-vs-agent",
-                        "section_id": "stable-principle",
-                        "review_status": "approved",
-                        "review_date": "2026-08-12",
-                        "evidence_conflict": "none",
-                        "applicable_versions": ["framework-neutral", "Anthropic 2024-12-19"],
-                        "approved_summary": "已知路径应由 deterministic workflow 控制。",
-                        "suggested_query": "什么时候使用 deterministic workflow？",
-                        "sources": [
-                            {
-                                "source_id": _BROWSER_AGENT_SOURCE_ID,
-                                "title": "Building effective agents",
-                                "authority": "Anthropic",
-                                "url": "https://www.anthropic.com/engineering/building-effective-agents",
-                                "version": "2024-12-19",
-                                "availability": "verified",
-                                "review_date": "2026-08-12",
-                                "freshness_days": 90,
-                            }
-                        ],
-                        "source_id": _BROWSER_AGENT_SOURCE_ID,
-                        "source_title": "Building effective agents",
-                        "source_authority": "Anthropic",
-                        "source_url": "https://www.anthropic.com/engineering/building-effective-agents",
-                        "source_version": "2024-12-19",
-                        "source_availability": "verified",
-                        "source_review_date": "2026-08-12",
-                        "source_freshness_days": 90,
-                        "claim_evidence_contract": _BROWSER_CLAIM_CONTRACT.canonical_json,
-                        "claim_evidence_contract_sha256": _BROWSER_CLAIM_CONTRACT.sha256,
-                        "title": "Prefer deterministic workflows",
-                    },
-                )
+            browser_agent_chunk = DocumentChunk(
+                id="chunk-browser-agent-entry",
+                document_id="browser-agent-entry",
+                generation=1,
+                chunk_index=0,
+                content="已知路径应由 deterministic workflow 控制。",
+                keywords=["deterministic", "workflow"],
+                generated_questions=[],
+                chunk_metadata={
+                    "strategy": "agent",
+                    "entry_id": _BROWSER_AGENT_ENTRY_ID,
+                    "entry_title": "Prefer deterministic workflows",
+                    "domain": "orchestration_retry_human_intervention_and_side_effects",
+                    "section_id": "recommendation_or_reviewed_branches",
+                    "review_status": "approved",
+                    "review_date": "2026-08-12",
+                    "assurance_level": "claim_linked",
+                    "evidence_conflict": "none",
+                    "applicable_versions": ["framework-neutral", "Anthropic 2024-12-19"],
+                    "approved_summary": "已知路径应由 deterministic workflow 控制。",
+                    "suggested_query": "什么时候使用 deterministic workflow？",
+                    "sources": [
+                        {
+                            "source_id": _BROWSER_AGENT_SOURCE_ID,
+                            "title": "Building effective agents",
+                            "authority": "Anthropic",
+                            "url": "https://www.anthropic.com/engineering/building-effective-agents",
+                            "version": "2024-12-19",
+                            "availability": "verified",
+                            "review_date": "2026-08-12",
+                            "freshness_days": 90,
+                        }
+                    ],
+                    "source_id": _BROWSER_AGENT_SOURCE_ID,
+                    "source_tier": "primary_evidence_source",
+                    "source_title": "Building effective agents",
+                    "source_authority": "Anthropic",
+                    "source_url": "https://www.anthropic.com/engineering/building-effective-agents",
+                    "source_version": "2024-12-19",
+                    "source_availability": "verified",
+                    "source_access_scope": "public",
+                    "source_review_date": "2026-08-12",
+                    "source_freshness_days": 90,
+                    "claim_evidence_contract": _BROWSER_CLAIM_CONTRACT.canonical_json,
+                    "claim_evidence_contract_sha256": _BROWSER_CLAIM_CONTRACT.sha256,
+                    "title": "Prefer deterministic workflows",
+                },
             )
+            session.add(browser_agent_chunk)
             session.add(
                 DocumentJob(
                     id="job-browser-agent-entry",
@@ -367,6 +565,7 @@ async def _seed_test_data() -> None:
                     message="synthetic Agent entry published",
                 )
             )
+            await _seed_browser_editorial_authority(session, agent_chunk=browser_agent_chunk)
             session.add(
                 Document(
                     id="browser-cancelable",

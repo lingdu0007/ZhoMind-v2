@@ -56,6 +56,7 @@ class ParsedCandidateArtifact(TypedDict):
     source_relationships_by_section: dict[str, list[dict[str, object]]]
     assurance_level: object
     applicability_conditions: list[object]
+    non_applicability_conditions: list[object]
     freshness_triggers: list[object]
     editorial_revision_identity: object
 
@@ -920,6 +921,7 @@ class CandidateBuildService:
             "source_relationships_by_section": source_relationships_by_section,
             "assurance_level": entry.get("assurance_level"),
             "applicability_conditions": list(entry.get("applicability_conditions") or []),
+            "non_applicability_conditions": list(entry.get("non_applicability_conditions") or []),
             "freshness_triggers": list(entry.get("freshness_triggers") or []),
             "editorial_revision_identity": artifact.get("editorial_revision_identity"),
         }
@@ -969,6 +971,7 @@ class CandidateBuildService:
                         "content_sha256": content_sha256,
                         "metadata": {
                             "entry_id": entry.get("entry_id"),
+                            "domain": entry.get("coverage_position"),
                             "entry_identity": frozen_input.entry_identity,
                             "editorial_revision_identity": parsed_artifact["editorial_revision_identity"],
                             "section_id": section_id,
@@ -980,6 +983,7 @@ class CandidateBuildService:
                             "source_relationships": source_relationships,
                             "assurance_level": parsed_artifact["assurance_level"],
                             "applicability_conditions": parsed_artifact["applicability_conditions"],
+                            "non_applicability_conditions": parsed_artifact["non_applicability_conditions"],
                             "freshness_triggers": parsed_artifact["freshness_triggers"],
                             "lifecycle_state": "candidate_build",
                             "candidate_build": True,

@@ -31,12 +31,13 @@
         <dl class="knowledge-entry__cues">
           <div><dt>知识版本</dt><dd>{{ entry.publication_version }}</dd></div>
           <div><dt>复核日期</dt><dd>{{ entry.review_date }}</dd></div>
-          <div><dt>公开来源</dt><dd>{{ entry.public_source_count }} 个公开来源</dd></div>
+          <div v-if="assuranceLabel(entry.assurance_level)"><dt>Assurance</dt><dd>{{ assuranceLabel(entry.assurance_level) }}</dd></div>
+          <div><dt>来源</dt><dd>{{ sourceCount(entry) }} 个来源</dd></div>
         </dl>
         <div class="knowledge-entry__versions">
           <span v-for="version in entry.applicable_versions" :key="version">{{ version }}</span>
         </div>
-        <ul class="knowledge-entry__sources" aria-label="公开来源">
+        <ul class="knowledge-entry__sources" aria-label="来源">
           <li v-for="source in entry.sources" :key="source.url">
             <a
               v-if="safeSourceUrl(source.url)"
@@ -44,6 +45,10 @@
               target="_blank"
               rel="noopener noreferrer"
             >{{ source.title }}</a>
+            <span v-else-if="controlledSourceLocator(source)" class="knowledge-entry__controlled-source">
+              <strong>{{ source.title }}</strong>
+              <span>{{ controlledSourceLocator(source) }}</span>
+            </span>
             <span>{{ source.authority }} · {{ source.version }}</span>
           </li>
         </ul>
@@ -61,7 +66,11 @@ import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { MessageCircle } from 'lucide-vue-next';
 import { apiAdapter } from '../api/adapters';
-import { getEvidenceSourceUrl } from '../app/evidence-summary';
+import {
+  getControlledEvidenceSourceLocator,
+  getEvidenceSourceUrl,
+  getKnowledgeAssuranceLabel
+} from '../app/evidence-summary';
 
 const router = useRouter();
 const loading = ref(true);
@@ -70,6 +79,14 @@ const totalEntries = ref(0);
 const themes = ref([]);
 
 const safeSourceUrl = (url) => getEvidenceSourceUrl({ source_url: url });
+const controlledSourceLocator = (source) =>
+  getControlledEvidenceSourceLocator({
+    source_access_scope: source?.access_scope,
+    source_url: source?.url
+  });
+const assuranceLabel = (value) => getKnowledgeAssuranceLabel(value);
+const sourceCount = (entry) =>
+  Number.isInteger(entry?.source_count) ? entry.source_count : entry?.public_source_count || 0;
 
 const load = async () => {
   loading.value = true;
@@ -246,6 +263,21 @@ onMounted(load);
 
 .knowledge-entry__sources span {
   color: var(--color-ink-soft);
+}
+
+.knowledge-entry__controlled-source {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.knowledge-entry__controlled-source strong {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+
+.knowledge-entry__controlled-source span {
+  overflow-wrap: anywhere;
 }
 
 .knowledge-entry__ask {

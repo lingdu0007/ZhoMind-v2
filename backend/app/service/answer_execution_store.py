@@ -61,6 +61,7 @@ class AnswerExecutionHandle:
     request_id: str
     user_id: str
     session_id: str
+    assistant_message_id: str | None
     question: str
     query_conditions: QueryConditionSet
     condition_provenance: dict[str, str]
@@ -185,6 +186,7 @@ class AnswerExecutionStore:
             request_id=request_id,
             user_id=user_id,
             session_id=session_id,
+            assistant_message_id=str(uuid.uuid4()),
             question=question,
             query_conditions=resolution.query_conditions,
             condition_provenance=dict(resolution.provenance),
@@ -208,6 +210,7 @@ class AnswerExecutionStore:
                     "session_id": session_id,
                     "user_id": user_id,
                     "user_message_id": user_message.id,
+                    "assistant_message_id": handle.assistant_message_id,
                     "question": question,
                     "query_condition_set": resolution.query_conditions.to_record(),
                     "condition_provenance": dict(resolution.provenance),
@@ -248,6 +251,8 @@ class AnswerExecutionStore:
         outcome: AnswerExecutionOutcome,
     ) -> tuple[dict[str, Any], LoadedAnswerExecution]:
         await self.repository.acquire_private_conversation_write_fence()
+        if not isinstance(handle.assistant_message_id, str) or not handle.assistant_message_id:
+            raise ValueError("admitted answer execution has no reserved assistant message identity")
         assistant_message = await self.repository.add_message(
             session_id=handle.session_id,
             user_id=handle.user_id,
@@ -255,11 +260,12 @@ class AnswerExecutionStore:
             content=outcome.text,
             answer_execution_id=handle.execution_id,
             rag_trace=outcome.to_persisted_rag_trace(),
+            message_id=handle.assistant_message_id,
         )
         result = self._completed_result(
             handle=handle,
             outcome=outcome,
-            assistant_message_id=assistant_message.id,
+            assistant_message_id=handle.assistant_message_id,
         )
         tombstoned_document_ids = await self._tombstoned_evidence_document_ids(result=result)
         execution = await self._locked_execution(execution_id=handle.execution_id)
@@ -345,18 +351,21 @@ class AnswerExecutionStore:
         failure_code: str,
     ) -> tuple[dict[str, Any], LoadedAnswerExecution]:
         await self.repository.acquire_private_conversation_write_fence()
+        if not isinstance(handle.assistant_message_id, str) or not handle.assistant_message_id:
+            raise ValueError("admitted answer execution has no reserved assistant message identity")
         assistant_message = await self.repository.add_message(
             session_id=handle.session_id,
             user_id=handle.user_id,
             message_type="assistant",
             content="",
             answer_execution_id=handle.execution_id,
+            message_id=handle.assistant_message_id,
         )
         result = self._terminal_result(
             handle=handle,
             state=state,
             detail={"code": failure_code},
-            assistant_message_id=assistant_message.id,
+            assistant_message_id=handle.assistant_message_id,
         )
         execution = await self._locked_execution(execution_id=handle.execution_id)
         if execution.user_id != handle.user_id or execution.session_id != handle.session_id:
@@ -447,6 +456,84 @@ class AnswerExecutionStore:
             },
             result=None,
         )
+
+    async def execution_ids_for_messages(
+        self,
+        *,
+        messages: Sequence[ChatMessage],
+    ) -> tuple[dict[str, str], frozenset[str]]:
+        """Return immutable execution bindings and malformed message identities."""
+
+        message_ids = {message.id for message in messages}
+        if not message_ids:
+            return {}, frozenset()
+        bindings: dict[str, list[str]] = {message_id: [] for message_id in message_ids}
+        executions = list(
+            (
+                await self.session.scalars(
+                    select(AnswerExecutionModel)
+                    .where(AnswerExecutionModel.request["user_message_id"].as_string().in_(message_ids))
+                    .order_by(AnswerExecutionModel.created_at.asc(), AnswerExecutionModel.id.asc())
+                )
+            ).all()
+        )
+        executions_by_id = {execution.id: execution for execution in executions}
+        for execution in executions:
+            request = execution.request if isinstance(execution.request, Mapping) else {}
+            message_id = request.get("user_message_id")
+            if isinstance(message_id, str) and message_id in bindings:
+                bindings[message_id].append(execution.id)
+
+        terminal_events = list(
+            (
+                await self.session.scalars(
+                    select(AnswerExecutionEventModel)
+                    .where(
+                        AnswerExecutionEventModel.to_state.in_(
+                            tuple(state.value for state in _TERMINAL_STATES)
+                        ),
+                        AnswerExecutionEventModel.payload["data"]["assistant_message_id"]
+                        .as_string()
+                        .in_(message_ids),
+                    )
+                    .order_by(
+                        AnswerExecutionEventModel.occurred_at.asc(),
+                        AnswerExecutionEventModel.id.asc(),
+                    )
+                )
+            ).all()
+        )
+        for event in terminal_events:
+            payload = event.payload if isinstance(event.payload, Mapping) else {}
+            data = payload.get("data")
+            message_id = data.get("assistant_message_id") if isinstance(data, Mapping) else None
+            if isinstance(message_id, str) and message_id in bindings:
+                bindings[message_id].append(event.execution_id)
+
+        resolved: dict[str, str] = {}
+        invalid_message_ids: set[str] = set()
+        for message in messages:
+            candidates = list(dict.fromkeys(bindings.get(message.id, [])))
+            if len(candidates) > 1:
+                invalid_message_ids.add(message.id)
+                continue
+            if candidates:
+                execution = executions_by_id.get(candidates[0])
+                if execution is None:
+                    execution = await self.session.get(AnswerExecutionModel, candidates[0])
+                if execution is None:
+                    invalid_message_ids.add(message.id)
+                    continue
+                if execution.user_id != message.user_id or execution.session_id != message.session_id:
+                    invalid_message_ids.add(message.id)
+                    continue
+            if message.answer_execution_id is not None:
+                if candidates != [message.answer_execution_id]:
+                    invalid_message_ids.add(message.id)
+                    continue
+            if candidates:
+                resolved[message.id] = candidates[0]
+        return resolved, frozenset(invalid_message_ids)
 
     async def load_for_message(
         self,
@@ -887,6 +974,7 @@ class AnswerExecutionStore:
     ) -> AnswerExecutionHandle:
         request_conditions = request.get("query_condition_set")
         request_provenance = request.get("condition_provenance")
+        reserved_assistant_message_id = request.get("assistant_message_id")
         if (
             request.get("schema") != _REQUEST_SCHEMA
             or request.get("session_id") != execution.session_id
@@ -898,6 +986,12 @@ class AnswerExecutionStore:
             or not isinstance(request_provenance, Mapping)
         ):
             raise ValueError("answer execution request is malformed")
+        if reserved_assistant_message_id is not None and (
+            not isinstance(reserved_assistant_message_id, str)
+            or not reserved_assistant_message_id
+            or reserved_assistant_message_id != reserved_assistant_message_id.strip()
+        ):
+            raise ValueError("answer execution reserved assistant message identity is invalid")
         question = str(request["question"]).strip()
         query_conditions = cls._query_conditions_from_record(
             request_conditions,
@@ -919,6 +1013,7 @@ class AnswerExecutionStore:
             request_id=str(request["request_id"]),
             user_id=execution.user_id,
             session_id=execution.session_id,
+            assistant_message_id=reserved_assistant_message_id,
             question=question,
             query_conditions=query_conditions,
             condition_provenance=provenance,
@@ -959,6 +1054,12 @@ class AnswerExecutionStore:
         assistant_message_id = terminal.get("assistant_message_id")
         if assistant_message_id is None:
             return
+        reserved_assistant_message_id = request.get("assistant_message_id")
+        if (
+            reserved_assistant_message_id is not None
+            and assistant_message_id != reserved_assistant_message_id
+        ):
+            raise ValueError("terminal answer execution contradicts its reserved assistant message identity")
         await self._validate_frozen_message_binding(
             execution=execution,
             message_id=assistant_message_id,
@@ -1267,6 +1368,11 @@ class AnswerExecutionStore:
             raise ValueError("answer outcome does not match the admitted question and conditions")
         if not assistant_message_id:
             raise ValueError("completed answer execution requires an assistant message binding")
+        if (
+            handle.assistant_message_id is not None
+            and assistant_message_id != handle.assistant_message_id
+        ):
+            raise ValueError("completed answer execution contradicts its reserved assistant message identity")
         kind = AnswerOutcome(outcome.kind.value)
         evidence_set = outcome.evidence_set.to_record() if outcome.evidence_set is not None else None
         if kind in _OUTCOMES_WITH_FROZEN_EVIDENCE and evidence_set is None:
@@ -1336,6 +1442,12 @@ class AnswerExecutionStore:
             not isinstance(assistant_message_id, str) or not assistant_message_id
         ):
             raise ValueError("terminal answer execution requires an assistant message binding")
+        if (
+            handle.assistant_message_id is not None
+            and assistant_message_id is not None
+            and assistant_message_id != handle.assistant_message_id
+        ):
+            raise ValueError("terminal answer execution contradicts its reserved assistant message identity")
         return {
             "schema": _RESULT_SCHEMA,
             "state": state.value,
@@ -1362,6 +1474,11 @@ class AnswerExecutionStore:
             or not isinstance(result.get("outcome"), str)
         ):
             raise ValueError("completed answer execution result is malformed")
+        if (
+            handle.assistant_message_id is not None
+            and result.get("assistant_message_id") != handle.assistant_message_id
+        ):
+            raise ValueError("completed answer execution result contradicts its reserved assistant message identity")
         outcome = AnswerOutcome(str(result["outcome"]))
         if not isinstance(result.get("text"), str):
             raise ValueError("completed answer execution text is malformed")
@@ -1573,6 +1690,12 @@ class AnswerExecutionStore:
             not isinstance(assistant_message_id, str) or not assistant_message_id
         ):
             raise ValueError("non-completed execution has a malformed assistant message binding")
+        if (
+            handle.assistant_message_id is not None
+            and assistant_message_id is not None
+            and assistant_message_id != handle.assistant_message_id
+        ):
+            raise ValueError("non-completed execution result contradicts its reserved assistant message identity")
         query_conditions = cls._validated_result_context(handle=handle, result=result)
         if any(
             result.get(field) is not None

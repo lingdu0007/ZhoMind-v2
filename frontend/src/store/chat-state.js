@@ -50,6 +50,8 @@ const answerExecutionStates = new Set([
   'completed'
 ]);
 
+const terminalExecutionStates = new Set(['stopped', 'failed', 'throttled', 'rejected']);
+
 const insufficientEvidenceReasons = new Set([
   'no_eligible_published_evidence',
   'decision_not_covered',
@@ -59,6 +61,13 @@ const insufficientEvidenceReasons = new Set([
   'evidence_budget_exceeded',
   'knowledge_needs_review'
 ]);
+const queryConditionLimits = {
+  maxConditions: 32,
+  maxConditionIdChars: 160,
+  maxConditionFieldChars: 160,
+  maxConditionOperatorChars: 64,
+  maxConditionValueChars: 512
+};
 
 const explicitQuestionCondition =
   /(?<![\p{L}\p{N}_])([A-Za-zİıſK][A-Za-z0-9_.İıſK-]{0,79})\s*=\s*([A-Za-z0-9_.:/İıſK-]{1,160})/gu;
@@ -91,9 +100,14 @@ const cloneConditions = (conditions) =>
     value: condition.value
   }));
 
+const codePointLength = (value) => Array.from(value).length;
+
 const requireConditionRecords = (conditions, label) => {
   if (!Array.isArray(conditions)) {
     throw new Error(`${label} has no condition list`);
+  }
+  if (conditions.length > queryConditionLimits.maxConditions) {
+    throw new Error(`${label} exceeds the condition limit`);
   }
   const conditionIds = new Set();
   const conditionKeys = new Set();
@@ -107,6 +121,14 @@ const requireConditionRecords = (conditions, label) => {
       operator: requireCanonicalText(condition.operator, `${label} condition operator`),
       value: requireCanonicalText(condition.value, `${label} condition value`)
     };
+    if (
+      codePointLength(normalized.condition_id) > queryConditionLimits.maxConditionIdChars ||
+      codePointLength(normalized.field) > queryConditionLimits.maxConditionFieldChars ||
+      codePointLength(normalized.operator) > queryConditionLimits.maxConditionOperatorChars ||
+      codePointLength(normalized.value) > queryConditionLimits.maxConditionValueChars
+    ) {
+      throw new Error(`${label} exceeds the condition limit`);
+    }
     const conditionKey = `${normalized.field}\u0000${normalized.operator}`;
     if (conditionIds.has(normalized.condition_id) || conditionKeys.has(conditionKey)) {
       throw new Error(`${label} contains duplicate conditions`);
@@ -346,6 +368,56 @@ export const validateExecutionTurnBinding = (execution, expectedTurn = undefined
   return { question, conditions, provenance };
 };
 
+const terminalExecutionHasCompletedFields = (execution) =>
+  Boolean(
+    execution.outcome !== undefined ||
+      execution.answer_text !== undefined ||
+      execution.evidence_set_identity !== undefined ||
+      execution.item_identities !== undefined ||
+      execution.snapshot_ids !== undefined ||
+      execution.knowledge_version_identities !== undefined ||
+      execution.evidence_summary !== undefined ||
+      execution.insufficient_evidence_reply !== undefined
+  );
+
+export const isClosedAnswerExecution = (execution) =>
+  execution?.state === 'completed' || terminalExecutionStates.has(execution?.state);
+
+const validateTerminalFailureCode = (execution, context) => {
+  if (typeof execution.failure_code !== 'string' || !execution.failure_code.trim()) {
+    throw new Error(`${context} has no failure code`);
+  }
+};
+
+export const validateUserExecutionProjection = (execution, expectedTurn = undefined) => {
+  validateExecutionTurnBinding(execution, expectedTurn);
+  if (execution.state === 'completed') {
+    if (typeof execution.assistant_message_id !== 'string' || !execution.assistant_message_id) {
+      throw new Error('completed user answer execution has no assistant message binding');
+    }
+    return { state: execution.state };
+  }
+  if (!terminalExecutionStates.has(execution.state)) return { state: execution.state };
+  if (terminalExecutionHasCompletedFields(execution)) {
+    throw new Error('terminal user answer execution retained a completed outcome');
+  }
+  validateTerminalFailureCode(execution, 'terminal user answer execution');
+  const assistantMessageId = execution.assistant_message_id;
+  if (assistantMessageId === undefined || assistantMessageId === null) {
+    if (
+      execution.state !== 'failed' ||
+      execution.failure_code !== 'ANSWER_EXECUTION_PERSISTENCE_FAILED'
+    ) {
+      throw new Error('terminal user answer execution has no assistant message binding');
+    }
+    return { state: execution.state };
+  }
+  if (typeof assistantMessageId !== 'string' || !assistantMessageId) {
+    throw new Error('terminal user answer execution assistant message binding is malformed');
+  }
+  return { state: execution.state };
+};
+
 export const resolveRetryTurn = (messages, messageIndex) => {
   if (!Array.isArray(messages) || !Number.isInteger(messageIndex)) return null;
   const selectedMessage = messages[messageIndex];
@@ -563,6 +635,146 @@ export const validateCompletedStreamProjection = (message, expectedTurn = undefi
     throw new Error('evidence-gated outcome contradicts the frozen evidence snapshots');
   }
   rejectEvidencePreview(summary);
+};
+
+const terminalMessageHasCompletedFields = (message, execution) =>
+  Boolean(
+    terminalExecutionHasCompletedFields(execution) ||
+      (message.outcome !== undefined && message.outcome !== null && message.outcome !== '') ||
+      (message.evidence_summary !== undefined && message.evidence_summary !== null) ||
+      (message.insufficient_evidence_reply !== undefined && message.insufficient_evidence_reply !== null)
+  );
+
+export const validateClosedAssistantProjection = (message, expectedTurn = undefined) => {
+  if (!isRecord(message)) {
+    throw new Error('assistant message is malformed');
+  }
+  const execution = message.answer_execution;
+  if (!isRecord(execution)) {
+    throw new Error('assistant message has no closed answer execution');
+  }
+
+  if (execution.state === 'completed') {
+    validateCompletedStreamProjection(message, expectedTurn);
+    return { state: 'completed' };
+  }
+
+  if (!terminalExecutionStates.has(execution.state)) {
+    throw new Error('assistant message has no closed terminal answer execution');
+  }
+  validateExecutionTurnBinding(execution, expectedTurn);
+  if (terminalMessageHasCompletedFields(message, execution)) {
+    throw new Error('terminal answer execution retained a completed outcome');
+  }
+  if (message.content !== '') {
+    throw new Error('terminal answer execution retained answer text');
+  }
+  validateTerminalFailureCode(execution, 'terminal answer execution');
+
+  const assistantMessageId = execution.assistant_message_id;
+  if (assistantMessageId === undefined || assistantMessageId === null) {
+    if (
+      execution.state !== 'failed' ||
+      execution.failure_code !== 'ANSWER_EXECUTION_PERSISTENCE_FAILED'
+    ) {
+      throw new Error('terminal answer execution has no assistant message binding');
+    }
+    return { state: execution.state };
+  }
+  if (
+    typeof assistantMessageId !== 'string' ||
+    !assistantMessageId ||
+    typeof message.id !== 'string' ||
+    !message.id ||
+    assistantMessageId !== message.id
+  ) {
+    throw new Error('terminal answer execution assistant message binding is malformed');
+  }
+  return { state: execution.state };
+};
+
+export const validateBoundUserExecutionProjection = (execution, messages, expectedTurn = undefined) => {
+  const projection = validateUserExecutionProjection(execution, expectedTurn);
+  const assistantMessageId = execution.assistant_message_id;
+  if (assistantMessageId === undefined || assistantMessageId === null) {
+    return projection;
+  }
+  if (!Array.isArray(messages)) {
+    throw new Error('bound user answer execution has no projected assistant messages');
+  }
+  const matchingAssistants = messages.filter(
+    (message) => message?.role === 'assistant' && message?.id === assistantMessageId
+  );
+  if (
+    matchingAssistants.length !== 1 ||
+    matchingAssistants[0]?.answer_execution?.id !== execution.id
+  ) {
+    throw new Error('bound user answer execution has no matching assistant projection');
+  }
+  validateClosedAssistantProjection(matchingAssistants[0], expectedTurn);
+  if (!sameFrozenProjection(matchingAssistants[0].answer_execution, execution)) {
+    throw new Error('bound user and assistant answer executions disagree');
+  }
+  return projection;
+};
+
+export const validateHistoryUserExecutionProjection = (
+  message,
+  messages,
+  expectedTurn = undefined
+) => {
+  if (!isRecord(message) || message.role !== 'user') {
+    throw new Error('stored user message is malformed');
+  }
+  const storedQuestion = requireCanonicalText(message.content, 'stored user message');
+  const executionQuestion = requireCanonicalText(
+    message.answer_execution?.question,
+    'answer execution question'
+  );
+  if (storedQuestion !== executionQuestion) {
+    throw new Error('stored user message contradicts the frozen answer execution question');
+  }
+  return validateBoundUserExecutionProjection(message.answer_execution, messages, expectedTurn);
+};
+
+export const findRecoveredClosedExecution = (
+  messages,
+  expectedTurn,
+  knownExecutionIds = new Set(),
+  expectedAssistantMessageId = ''
+) => {
+  if (
+    !Array.isArray(messages) ||
+    typeof expectedAssistantMessageId !== 'string' ||
+    !expectedAssistantMessageId ||
+    expectedAssistantMessageId !== expectedAssistantMessageId.trim()
+  ) {
+    return null;
+  }
+  const known =
+    knownExecutionIds instanceof Set
+      ? knownExecutionIds
+      : new Set(Array.isArray(knownExecutionIds) ? knownExecutionIds : []);
+
+  for (const message of [...messages].reverse()) {
+    const execution = message?.role === 'user' ? message.answer_execution : null;
+    if (
+      !isClosedAnswerExecution(execution) ||
+      typeof execution.id !== 'string' ||
+      !execution.id ||
+      execution.assistant_message_id !== expectedAssistantMessageId ||
+      known.has(execution.id)
+    ) {
+      continue;
+    }
+    try {
+      validateHistoryUserExecutionProjection(message, messages, expectedTurn);
+      return execution;
+    } catch {
+      // A recovered history item must independently satisfy the submitted-turn contract.
+    }
+  }
+  return null;
 };
 
 export const getProviderStatus = (trace) => {

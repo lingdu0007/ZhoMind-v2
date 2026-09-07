@@ -4,7 +4,17 @@ const coverageLabels = {
   unavailable: '证据不可用'
 };
 
+const assuranceLabels = {
+  source_grounded: 'Source-grounded assurance',
+  claim_linked: 'Claim-linked assurance',
+  release_assured: 'Release-assured assurance'
+};
+
+const controlledSourceLocator = /^controlled:\/\/[a-z0-9][a-z0-9._/-]{2,159}$/;
+const unsafeLocatorParts = ['credential', 'password', 'redirect', 'secret', 'signature', 'token'];
+
 export const getEvidenceCoverageLabel = (coverage) => coverageLabels[coverage] || coverageLabels.unavailable;
+export const getKnowledgeAssuranceLabel = (assurance) => assuranceLabels[assurance] || '';
 
 export const getEvidenceSourceLabel = (source) => {
   const safeSource = source || {};
@@ -25,6 +35,12 @@ export const getEvidenceSourceLabel = (source) => {
 };
 
 export const getEvidenceSourceUrl = (source) => {
+  if (
+    source?.source_access_scope === 'controlled_internal' ||
+    (source?.source_access_scope && source.source_access_scope !== 'public')
+  ) {
+    return '';
+  }
   const value = source?.source_url;
   if (typeof value !== 'string' || !value) return '';
   try {
@@ -50,4 +66,27 @@ export const getEvidenceSourceUrl = (source) => {
   } catch {
     return '';
   }
+};
+
+export const getControlledEvidenceSourceLocator = (source) => {
+  const value = source?.source_url;
+  if (
+    source?.source_access_scope !== 'controlled_internal' ||
+    typeof value !== 'string' ||
+    !controlledSourceLocator.test(value) ||
+    unsafeLocatorParts.some((part) => value.toLowerCase().includes(part))
+  ) {
+    return '';
+  }
+  return value;
+};
+
+export const hasSafeEvidenceSourceLocator = (source) => {
+  if (source?.source_access_scope === 'controlled_internal') {
+    return Boolean(getControlledEvidenceSourceLocator(source));
+  }
+  if (source?.source_access_scope && source.source_access_scope !== 'public') {
+    return false;
+  }
+  return Boolean(getEvidenceSourceUrl(source));
 };

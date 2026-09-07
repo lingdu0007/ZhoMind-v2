@@ -27,6 +27,19 @@ async def submit_knowledge_feedback(
     return _ok(data)
 
 
+@router.get("/knowledge-feedback")
+async def list_knowledge_feedback(
+    answer_id: str | None = None,
+    current_user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    data = await KnowledgeFeedbackService(session).list_for_user(
+        user_id=current_user.username,
+        answer_id=answer_id,
+    )
+    return _ok(data)
+
+
 @router.delete("/knowledge-feedback/{signal_id}")
 async def delete_knowledge_feedback(
     signal_id: str,

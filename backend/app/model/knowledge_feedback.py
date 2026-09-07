@@ -14,14 +14,15 @@ def _new_id() -> str:
 class KnowledgeFeedbackSignal(Base):
     __tablename__ = "knowledge_feedback_signals"
     __table_args__ = (
-        UniqueConstraint("user_id", "answer_id", "entry_id", name="uq_feedback_user_answer_entry"),
+        UniqueConstraint("user_id", "answer_id", "scope_key", name="uq_feedback_user_answer_scope"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_new_id)
     answer_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     user_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
-    entry_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
-    knowledge_edition: Mapped[str] = mapped_column(String(128), nullable=False)
+    entry_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    scope_key: Mapped[str] = mapped_column(String(96), nullable=False)
+    knowledge_edition: Mapped[str | None] = mapped_column(String(128), nullable=True)
     label: Mapped[str] = mapped_column(String(32), nullable=False)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     normalized_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)

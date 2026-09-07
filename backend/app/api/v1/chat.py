@@ -223,12 +223,13 @@ async def chat_stream(
     session: AsyncSession = Depends(get_db_session),
 ) -> StreamingResponse:
     service = ChatService(session)
-    progress_queue: asyncio.Queue[tuple[str, str] | None] = asyncio.Queue()
+    progress_queue: asyncio.Queue[tuple[str, str, str] | None] = asyncio.Queue()
     admitted_execution: AnswerExecutionHandle | None = None
     completed_stream_result: dict | None = None
+    answer_identity_announced = False
 
     async def progress(stage: str, message: str) -> None:
-        await progress_queue.put((stage, message))
+        await progress_queue.put(("stage", stage, message))
 
     async def remember_admitted(execution: AnswerExecutionHandle) -> None:
         nonlocal admitted_execution
@@ -238,6 +239,9 @@ async def chat_stream(
             user_id=current_user.username,
             session_id=execution.session_id,
         )
+        if not isinstance(execution.assistant_message_id, str) or not execution.assistant_message_id:
+            raise ValueError("admitted answer execution has no reserved assistant message identity")
+        await progress_queue.put(("answer_identity", execution.assistant_message_id, ""))
 
     async def run_chat_with_progress() -> dict:
         try:
@@ -335,8 +339,8 @@ async def chat_stream(
             session_id=admitted_execution.session_id,
         )
 
-    @staticmethod
     def _terminal_events_for_admitted_execution(execution: dict) -> list[str]:
+        nonlocal answer_identity_announced
         state = execution.get("state")
         if state not in {"stopped", "failed", "throttled", "rejected"}:
             raise ValueError("stream error did not retain a terminal answer execution")
@@ -345,7 +349,9 @@ async def chat_stream(
         if assistant_message_id is not None:
             if not isinstance(assistant_message_id, str) or not assistant_message_id:
                 raise ValueError("terminal answer execution has a malformed assistant binding")
-            events.append(_sse_event("answer_identity", {"answer_id": assistant_message_id}))
+            if not answer_identity_announced:
+                events.append(_sse_event("answer_identity", {"answer_id": assistant_message_id}))
+                answer_identity_announced = True
         events.append(_sse_event("answer_execution", {"answer_execution": execution}))
         return events
 
@@ -411,7 +417,7 @@ async def chat_stream(
     )
 
     async def event_generator():
-        nonlocal completed_stream_result
+        nonlocal completed_stream_result, answer_identity_announced
         result: dict | None = None
         terminal_done_yielded = False
         try:
@@ -420,17 +426,34 @@ async def chat_stream(
                     item = await progress_queue.get()
                     if item is None:
                         break
-                    stage, message = item
-                    yield _sse_event("stage", {"stage": stage, "message": message})
+                    event_type, value, message = item
+                    if event_type == "answer_identity":
+                        if answer_identity_announced:
+                            raise ValueError("stream answer identity was repeated")
+                        answer_identity_announced = True
+                        yield _sse_event("answer_identity", {"answer_id": value})
+                        continue
+                    if event_type != "stage":
+                        raise ValueError("stream emitted an unknown progress event")
+                    yield _sse_event("stage", {"stage": value, "message": message})
                 result = await chat_task
                 completed_stream_result = result
                 consume_task_result(chat_task)
                 _record_operational_context(request, result)
                 projected_message = service.project_message(result["message"], current_user.role)
 
-                yield _sse_event("answer_identity", {"answer_id": projected_message["id"]})
                 if admitted_execution is None:
                     raise ValueError("completed stream has no admitted answer execution")
+                if (
+                    projected_message.get("id") != admitted_execution.assistant_message_id
+                ):
+                    raise ValueError("completed stream contradicted its admitted answer identity")
+                if not answer_identity_announced:
+                    answer_identity_announced = True
+                    yield _sse_event(
+                        "answer_identity",
+                        {"answer_id": admitted_execution.assistant_message_id},
+                    )
                 projected_message = await service.refresh_pending_stream_message(
                     result["message"],
                     execution_id=admitted_execution.execution_id,

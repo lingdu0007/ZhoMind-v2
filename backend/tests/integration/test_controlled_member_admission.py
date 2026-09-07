@@ -642,6 +642,7 @@ def test_protected_route_matrix_uses_database_roles_and_rejects_stale_sessions(c
             "/api/v1/knowledge-feedback",
             {"answer_id": "missing-answer", "entry_id": "matrix-entry", "label": "helpful"},
         ),
+        ("GET", "/api/v1/knowledge-feedback?answer_id=missing-answer", None),
         ("DELETE", "/api/v1/knowledge-feedback/missing-signal", None),
     ]
     for method, path, payload in member_routes:

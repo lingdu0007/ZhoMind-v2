@@ -38,14 +38,21 @@
 
         <ChatMessageList
           :messages="chatStore.messages"
+          :coverage="publishedCoverage"
+          :coverage-error="coverageError"
+          :coverage-loading="coverageLoading"
           :retry-disabled="chatStore.loading"
           :show-diagnostics="authStore.isAdmin"
+          @ask-coverage="prefillCoverageQuestion"
+          @refine="prefillCoverageQuestion"
           @retry="retryAssistantMessage"
           @open-source="openSourceExcerpt"
         />
+        <RetainedFeedback />
 
         <div class="composer card">
         <el-input
+          ref="composerInputRef"
           v-model="input"
           type="textarea"
           :rows="3"
@@ -56,7 +63,10 @@
           <div class="query-conditions__header">
             <h2>查询条件</h2>
             <div class="query-conditions__actions">
-              <el-checkbox v-model="inheritConditions" :disabled="chatStore.loading">沿用上一轮条件</el-checkbox>
+              <el-checkbox
+                v-model="inheritConditions"
+                :disabled="chatStore.loading || !canInheritConditions"
+              >沿用上一轮条件</el-checkbox>
               <el-tooltip content="重置查询条件" placement="top">
                 <el-button
                   circle
@@ -125,8 +135,8 @@
       <aside v-if="selectedSource" class="evidence-excerpt" role="complementary" aria-label="来源摘录" @keydown.esc.prevent="closeSourceExcerpt">
         <header class="evidence-excerpt__header">
           <div>
-            <p>来源摘录</p>
-            <h2>{{ sourceLabel }}</h2>
+            <p>{{ evidenceExcerptHeading }}</p>
+            <h2>{{ selectedSource.entry_title || sourceLabel }}</h2>
           </div>
           <button ref="excerptCloseRef" type="button" class="evidence-excerpt__close" aria-label="关闭来源摘录" @click="closeSourceExcerpt">关闭</button>
         </header>
@@ -134,6 +144,26 @@
           {{ selectedSource.citation_id || selectedSource.source_id }}
         </p>
         <dl v-if="selectedSource.citation_id" class="evidence-excerpt__metadata">
+          <div v-if="selectedSource.entry_id">
+            <dt>Entry ID</dt>
+            <dd>{{ selectedSource.entry_id }}</dd>
+          </div>
+          <div v-if="selectedSource.section_id">
+            <dt>Section</dt>
+            <dd>{{ selectedSource.section_id }}</dd>
+          </div>
+          <div v-if="selectedSource.snapshot_id">
+            <dt>Snapshot</dt>
+            <dd>{{ selectedSource.snapshot_id }}</dd>
+          </div>
+          <div v-if="selectedSource.citation_identity">
+            <dt>Citation Identity</dt>
+            <dd>{{ selectedSource.citation_identity }}</dd>
+          </div>
+          <div v-if="controlledSourceLocator">
+            <dt>受控来源定位符</dt>
+            <dd>{{ controlledSourceLocator }}</dd>
+          </div>
           <div v-if="selectedSource.source_authority">
             <dt>来源机构</dt>
             <dd>{{ selectedSource.source_authority }}</dd>
@@ -149,6 +179,22 @@
           <div v-if="selectedSource.review_date">
             <dt>复核日期</dt>
             <dd>{{ selectedSource.review_date }}</dd>
+          </div>
+          <div v-if="selectedSource.review_status">
+            <dt>审查状态</dt>
+            <dd>{{ selectedSource.review_status }}</dd>
+          </div>
+          <div v-if="selectedSource.assurance_level">
+            <dt>保证级别</dt>
+            <dd>{{ selectedSource.assurance_level }}</dd>
+          </div>
+          <div v-if="formatConditions(selectedSource.applicability_conditions)">
+            <dt>适用条件</dt>
+            <dd>{{ formatConditions(selectedSource.applicability_conditions) }}</dd>
+          </div>
+          <div v-if="formatConditions(selectedSource.non_applicability_conditions)">
+            <dt>不适用条件</dt>
+            <dd>{{ formatConditions(selectedSource.non_applicability_conditions) }}</dd>
           </div>
         </dl>
         <a
@@ -169,11 +215,17 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Plus, RotateCcw, Trash2 } from 'lucide-vue-next';
 import ChatMessageList from '../components/ChatMessageList.vue';
+import RetainedFeedback from '../components/RetainedFeedback.vue';
 import SessionDrawer from '../components/SessionDrawer.vue';
 import { useChatStore } from '../store/chat';
 import { useAuthStore } from '../store/auth';
 import { resolveRetryTurn } from '../store/chat-state';
-import { getEvidenceSourceLabel, getEvidenceSourceUrl } from '../app/evidence-summary';
+import {
+  getControlledEvidenceSourceLocator,
+  getEvidenceSourceLabel,
+  getEvidenceSourceUrl
+} from '../app/evidence-summary';
+import { apiAdapter } from '../api/adapters';
 import { useRoute } from 'vue-router';
 
 const chatStore = useChatStore();
@@ -187,25 +239,59 @@ const chatSectionRef = ref(null);
 const sessionVisible = ref(false);
 const composerError = ref('');
 const sessionsLoading = ref(false);
+const publishedCoverage = ref(null);
+const coverageLoading = ref(false);
+const coverageError = ref('');
 const selectedSource = ref(null);
 const sourceTrigger = ref(null);
 const excerptCloseRef = ref(null);
+const composerInputRef = ref(null);
 
 const sourceLabel = computed(() => getEvidenceSourceLabel(selectedSource.value));
-const sourceUrl = computed(() => getEvidenceSourceUrl(selectedSource.value));
+const sourceUrl = computed(() =>
+  selectedSource.value?.withdrawal_notice ? '' : getEvidenceSourceUrl(selectedSource.value)
+);
+const controlledSourceLocator = computed(() =>
+  selectedSource.value?.withdrawal_notice ? '' : getControlledEvidenceSourceLocator(selectedSource.value)
+);
+const evidenceExcerptHeading = computed(() =>
+  selectedSource.value?.section_id === 'recommendation_or_reviewed_branches'
+    ? 'Governing Engineering Decision Entry'
+    : 'Published Engineering Decision Entry'
+);
+const canInheritConditions = computed(() =>
+  [...chatStore.messages]
+    .reverse()
+    .some(
+      (message) =>
+        message.role === 'assistant' &&
+        !message.contract_error &&
+        message.answer_execution?.state === 'completed'
+    )
+);
 
 const streamSubtitle = computed(() => {
-  if (chatStore.loading) return '流式生成中…';
-  const assistantMessages = chatStore.messages.filter((item) => item.role === 'assistant');
-  const lastAssistant = assistantMessages[assistantMessages.length - 1];
-  if (!lastAssistant) return '';
-  return lastAssistant.status || '';
+  return chatStore.loading ? '正在等待闭合执行记录…' : '';
 });
 
 const scrollToBottom = async () => {
   await nextTick();
   if (!chatSectionRef.value) return;
   chatSectionRef.value.scrollIntoView({ behavior: 'smooth', block: 'end' });
+};
+
+const formatConditions = (conditions) => {
+  if (!Array.isArray(conditions)) return '';
+  return conditions
+    .map((condition) => {
+      if (!condition || typeof condition !== 'object') return '';
+      const { field, operator, value } = condition;
+      return [field, operator, value].every((item) => typeof item === 'string' && item.trim())
+        ? `${field.trim()} ${operator.trim()} ${value.trim()}`
+        : '';
+    })
+    .filter(Boolean)
+    .join('；');
 };
 
 const loadSessions = async () => {
@@ -217,6 +303,24 @@ const loadSessions = async () => {
     ElMessage.error(error.message || '加载会话失败');
   } finally {
     sessionsLoading.value = false;
+  }
+};
+
+const loadPublishedCoverage = async () => {
+  if (!authStore.isLoggedIn) return;
+  coverageLoading.value = true;
+  coverageError.value = '';
+  publishedCoverage.value = null;
+  try {
+    const payload = await apiAdapter.getKnowledgeMap();
+    publishedCoverage.value = {
+      total_entries: Number.isInteger(payload?.total_entries) ? payload.total_entries : 0,
+      themes: Array.isArray(payload?.themes) ? payload.themes : []
+    };
+  } catch {
+    coverageError.value = '无法加载已发布知识覆盖。';
+  } finally {
+    coverageLoading.value = false;
   }
 };
 
@@ -271,6 +375,7 @@ const startNewSession = () => {
 };
 
 const openSourceExcerpt = async ({ source, trigger }) => {
+  if (!source) return;
   selectedSource.value = source;
   sourceTrigger.value = trigger;
   await nextTick();
@@ -278,9 +383,32 @@ const openSourceExcerpt = async ({ source, trigger }) => {
 };
 
 const closeSourceExcerpt = async () => {
+  const trigger = sourceTrigger.value;
   selectedSource.value = null;
+  sourceTrigger.value = null;
   await nextTick();
-  sourceTrigger.value?.focus();
+  trigger?.focus();
+};
+
+const prefillCoverageQuestion = async (request) => {
+  const question = typeof request === 'string' ? request : request?.question;
+  if (typeof question !== 'string' || !question.trim()) return;
+  if (request && typeof request === 'object' && Array.isArray(request.query_conditions)) {
+    inheritConditions.value = false;
+    queryConditions.value = request.query_conditions.map((condition) => ({
+      condition_id:
+        typeof condition?.condition_id === 'string' && condition.condition_id
+          ? condition.condition_id
+          : `condition-${Date.now().toString(36)}-${nextConditionNumber.value++}`,
+      field: typeof condition?.field === 'string' ? condition.field : '',
+      operator: typeof condition?.operator === 'string' ? condition.operator : '',
+      value: typeof condition?.value === 'string' ? condition.value : ''
+    }));
+  }
+  input.value = question.trim();
+  composerError.value = '';
+  await nextTick();
+  composerInputRef.value?.focus();
 };
 
 const addQueryCondition = () => {
@@ -334,6 +462,9 @@ const onSend = async () => {
   }
   let conditions;
   try {
+    if (inheritConditions.value && !canInheritConditions.value) {
+      throw new Error('当前会话没有可沿用的已完成查询条件。');
+    }
     conditions = inheritConditions.value ? undefined : preparedQueryConditions();
   } catch (error) {
     composerError.value = error.message || '查询条件无效。';
@@ -371,11 +502,51 @@ watch(
   }
 );
 
+watch(
+  () => chatStore.messages,
+  () => {
+    const selected = selectedSource.value;
+    if (!selected) return;
+    const identityKeys = ['citation_id', 'citation_identity', 'snapshot_id'];
+    if (
+      identityKeys.some(
+        (key) => typeof selected[key] !== 'string' || !selected[key]
+      )
+    ) {
+      selectedSource.value = null;
+      sourceTrigger.value = null;
+      return;
+    }
+    const currentSource = chatStore.messages
+      .filter((message) => message?.role === 'assistant')
+      .flatMap((message) =>
+        Array.isArray(message?.evidence_summary?.sources) ? message.evidence_summary.sources : []
+      )
+      .find(
+        (source) =>
+          source &&
+          identityKeys.every((key) => source[key] === selected[key])
+      );
+    if (!currentSource) {
+      selectedSource.value = null;
+      sourceTrigger.value = null;
+      return;
+    }
+    selectedSource.value = currentSource;
+  },
+  { deep: true }
+);
+
+watch(canInheritConditions, (canInherit) => {
+  if (!canInherit) inheritConditions.value = false;
+});
+
 onMounted(() => {
   if (typeof route.query.q === 'string' && route.query.q.trim()) {
     input.value = route.query.q.trim();
   }
   loadSessions();
+  loadPublishedCoverage();
 });
 </script>
 
@@ -621,6 +792,7 @@ onMounted(() => {
   color: var(--color-ink);
   font-size: 14px;
   line-height: 1.8;
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
