@@ -390,7 +390,7 @@ async def _seed_mixed_mode_retrieval_documents(
         await session.commit()
 
 
-def test_successful_build_requires_explicit_publication(monkeypatch) -> None:
+def test_successful_build_cannot_bypass_candidate_publication(monkeypatch) -> None:
     db_fd, db_path = tempfile.mkstemp(prefix="documents-publication-", suffix=".db")
     os.close(db_fd)
     db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
@@ -453,18 +453,19 @@ def test_successful_build_requires_explicit_publication(monkeypatch) -> None:
             assert _extract_data(preview.json())["generation"] == 1
 
             published = client.post(f"/api/v1/documents/{document_id}/publish", headers=headers)
-            assert published.status_code == 200
-            published_data = _extract_data(published.json())
-            assert published_data["status"] == "ready"
-            assert published_data["published_generation"] == 1
-            assert published_data["candidate_generation"] is None
+            assert published.status_code == 410
+            assert published.json()["code"] == "LEGACY_PUBLICATION_BYPASS_REJECTED"
+            still_candidate = _get_document_item(client, headers=headers, document_id=document_id)
+            assert still_candidate["status"] == "candidate"
+            assert still_candidate["published_generation"] == 0
+            assert still_candidate["candidate_generation"] == 1
     finally:
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
         os.remove(db_path)
 
 
-def test_replacement_keeps_published_generation_until_candidate_is_published() -> None:
+def test_replacement_candidate_cannot_bypass_ticket24_publication() -> None:
     db_fd, db_path = tempfile.mkstemp(prefix="documents-replacement-", suffix=".db")
     os.close(db_fd)
     db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
@@ -497,7 +498,12 @@ def test_replacement_keeps_published_generation_until_candidate_is_published() -
             assert initial.status_code == 200
             initial_data = _extract_data(initial.json())
             _poll_job_until_terminal(client, headers=headers, job_id=initial_data["job_id"])
-            assert client.post(f"/api/v1/documents/{initial_data['document_id']}/publish", headers=headers).status_code == 200
+            initial_publish = client.post(
+                f"/api/v1/documents/{initial_data['document_id']}/publish",
+                headers=headers,
+            )
+            assert initial_publish.status_code == 410
+            assert initial_publish.json()["code"] == "LEGACY_PUBLICATION_BYPASS_REJECTED"
 
             replacement = client.post(
                 "/api/v1/documents/upload",
@@ -511,7 +517,7 @@ def test_replacement_keeps_published_generation_until_candidate_is_published() -
 
             awaiting_review = _get_document_item(client, headers=headers, document_id=initial_data["document_id"])
             assert awaiting_review["status"] == "candidate"
-            assert awaiting_review["published_generation"] == 1
+            assert awaiting_review["published_generation"] == 0
             assert awaiting_review["candidate_generation"] == 2
 
             preview = client.get(f"/api/v1/documents/{initial_data['document_id']}/chunks", headers=headers)
@@ -519,10 +525,11 @@ def test_replacement_keeps_published_generation_until_candidate_is_published() -
             assert "candidate v2 evidence" in _extract_data(preview.json())["items"][0]["content"]
 
             published = client.post(f"/api/v1/documents/{initial_data['document_id']}/publish", headers=headers)
-            assert published.status_code == 200
-            current = _extract_data(published.json())
-            assert current["published_generation"] == 2
-            assert current["candidate_generation"] is None
+            assert published.status_code == 410
+            assert published.json()["code"] == "LEGACY_PUBLICATION_BYPASS_REJECTED"
+            current = _get_document_item(client, headers=headers, document_id=initial_data["document_id"])
+            assert current["published_generation"] == 0
+            assert current["candidate_generation"] == 2
     finally:
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())
@@ -769,11 +776,12 @@ def test_documents_and_jobs_flow(monkeypatch) -> None:
             assert any("line 1" in content and "line 3" in content for _, content, _ in upload_chunks)
 
             publish_response = client.post(f"/api/v1/documents/{document_id}/publish", headers=headers)
-            assert publish_response.status_code == 200
-            published_doc = _extract_data(publish_response.json())
-            assert published_doc["status"] == "ready"
-            assert published_doc["published_generation"] == 1
-            upload_chunk_count = published_doc["chunk_count"]
+            assert publish_response.status_code == 410
+            assert publish_response.json()["code"] == "LEGACY_PUBLICATION_BYPASS_REJECTED"
+            candidate_doc = _get_document_item(client, headers=headers, document_id=document_id)
+            assert candidate_doc["status"] == "candidate"
+            assert candidate_doc["published_generation"] == 0
+            assert candidate_doc["candidate_chunk_count"] > 0
 
             delay_next_build["enabled"] = True
             build_response = client.post(
@@ -793,8 +801,8 @@ def test_documents_and_jobs_flow(monkeypatch) -> None:
                 rebuilt_doc_during_pending = _get_document_item(client, headers=headers, document_id=document_id)
                 assert rebuilt_doc_during_pending["status"] == "pending"
                 assert rebuilt_doc_during_pending["chunk_strategy"] == "general"
-                assert rebuilt_doc_during_pending["chunk_count"] == upload_chunk_count
-                assert rebuilt_doc_during_pending["published_generation"] == 1
+                assert rebuilt_doc_during_pending["chunk_count"] == 0
+                assert rebuilt_doc_during_pending["published_generation"] == 0
 
                 published_chunk_response = client.get(
                     f"/api/v1/documents/{document_id}/chunks?page=1&page_size=5",
@@ -819,7 +827,7 @@ def test_documents_and_jobs_flow(monkeypatch) -> None:
 
             candidate_doc = _get_document_item(client, headers=headers, document_id=document_id)
             assert candidate_doc["status"] == "candidate"
-            assert candidate_doc["published_generation"] == 1
+            assert candidate_doc["published_generation"] == 0
             assert candidate_doc["candidate_generation"] == 2
 
             chunk_response = client.get(
@@ -834,7 +842,12 @@ def test_documents_and_jobs_flow(monkeypatch) -> None:
             assert any("line 1" in content and "line 3" in content for _, content, _ in rebuilt_chunks)
             assert all("demo.txt\npaper" not in content for _, content, _ in rebuilt_chunks)
 
-            assert client.post(f"/api/v1/documents/{document_id}/publish", headers=headers).status_code == 200
+            second_publication_bypass = client.post(
+                f"/api/v1/documents/{document_id}/publish",
+                headers=headers,
+            )
+            assert second_publication_bypass.status_code == 410
+            assert second_publication_bypass.json()["code"] == "LEGACY_PUBLICATION_BYPASS_REJECTED"
 
             batch_build_response = client.post(
                 "/api/v1/documents/batch-build",
@@ -849,7 +862,12 @@ def test_documents_and_jobs_flow(monkeypatch) -> None:
 
             batch_job_poll_data = _poll_job_until_terminal(client, headers=headers, job_id=batch_job_id)
             assert batch_job_poll_data["status"] == "succeeded"
-            assert client.post(f"/api/v1/documents/{document_id}/publish", headers=headers).status_code == 200
+            third_publication_bypass = client.post(
+                f"/api/v1/documents/{document_id}/publish",
+                headers=headers,
+            )
+            assert third_publication_bypass.status_code == 410
+            assert third_publication_bypass.json()["code"] == "LEGACY_PUBLICATION_BYPASS_REJECTED"
             batch_chunks = _get_chunk_snapshot(client, headers=headers, document_id=document_id)
             assert any("line 1" in content and "line 3" in content for _, content, _ in batch_chunks)
             assert all("demo.txt\nqa" not in content for _, content, _ in batch_chunks)
@@ -891,7 +909,7 @@ def test_documents_and_jobs_flow(monkeypatch) -> None:
             assert canceled_docs_response.status_code == 200
             canceled_docs_data = _extract_data(canceled_docs_response.json())
             canceled_doc = next(item for item in canceled_docs_data["items"] if item["document_id"] == document_id)
-            assert canceled_doc["status"] == "ready"
+            assert canceled_doc["status"] == "pending"
 
             canceled_chunk_response = client.get(
                 f"/api/v1/documents/{document_id}/chunks?page=1&page_size=5",
@@ -2305,7 +2323,9 @@ def test_documents_enqueue_failure_compensation(monkeypatch) -> None:
             document_id = upload_data["document_id"]
             upload_job_id = upload_data["job_id"]
             assert _poll_job_until_terminal(client, headers=headers, job_id=upload_job_id)["status"] == "succeeded"
-            assert client.post(f"/api/v1/documents/{document_id}/publish", headers=headers).status_code == 200
+            publication_bypass = client.post(f"/api/v1/documents/{document_id}/publish", headers=headers)
+            assert publication_bypass.status_code == 410
+            assert publication_bypass.json()["code"] == "LEGACY_PUBLICATION_BYPASS_REJECTED"
 
             fail_mode["enabled"] = True
             failed_replacement = client.post(
@@ -2315,8 +2335,8 @@ def test_documents_enqueue_failure_compensation(monkeypatch) -> None:
             )
             assert failed_replacement.status_code == 500
             preserved_document = _get_document_item(client, headers=headers, document_id=document_id)
-            assert preserved_document["status"] == "ready"
-            assert preserved_document["published_generation"] == 1
+            assert preserved_document["status"] == "candidate"
+            assert preserved_document["published_generation"] == 0
             assert any("content" in content for _, content, _ in _get_chunk_snapshot(client, headers=headers, document_id=document_id))
 
             failed_build = client.post(
@@ -2330,7 +2350,7 @@ def test_documents_enqueue_failure_compensation(monkeypatch) -> None:
             docs_after_build_fail = client.get("/api/v1/documents?page=1&page_size=20", headers=headers)
             assert docs_after_build_fail.status_code == 200
             doc_item = next(item for item in _extract_data(docs_after_build_fail.json())["items"] if item["document_id"] == document_id)
-            assert doc_item["status"] == "ready"
+            assert doc_item["status"] == "candidate"
 
             jobs_after_build_fail = client.get("/api/v1/documents/jobs?page=1&page_size=20", headers=headers)
             assert jobs_after_build_fail.status_code == 200
@@ -2352,7 +2372,7 @@ def test_documents_enqueue_failure_compensation(monkeypatch) -> None:
             docs_after_batch_fail = client.get("/api/v1/documents?page=1&page_size=20", headers=headers)
             assert docs_after_batch_fail.status_code == 200
             doc_item = next(item for item in _extract_data(docs_after_batch_fail.json())["items"] if item["document_id"] == document_id)
-            assert doc_item["status"] == "ready"
+            assert doc_item["status"] == "candidate"
             assert doc_item["chunk_strategy"] == "general"
 
             chunks_after_batch_fail = client.get(

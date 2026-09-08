@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -10,23 +11,50 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.canonical_json import canonical_json_sha256
 from app.common.config import Settings
 from app.common.exceptions import AppError
-from app.contracts.canonical import StableIdentity, StableIdentityKind
+from app.contracts.canonical import CanonicalRecordClass, StableIdentity, StableIdentityKind
 from app.editorial_authority.service import EditorialAuthorityService
 from app.model.canonical import CanonicalRecordModel
 from app.model.document import Document, DocumentChunk
 from app.rag.interfaces import RetrieveResult
 from app.retrieval.policy import PILOT_RETRIEVAL_PROFILE_ID, get_retrieval_policy
 from app.retrieval.sparse_bm25 import Bm25Chunk, LiteralPreservingTokenizer, SparseBm25Index
-from app.reviewed_bundles.inputs import FrozenCandidateBuildInput, load_frozen_candidate_build_input
-from app.reviewed_bundles.models import CandidateBuildChunk, CandidateBuildJob
+from app.reviewed_bundles.candidate_metadata import (
+    candidate_frozen_chunk_metadata,
+    candidate_frozen_published_chunk_metadata,
+)
+from app.reviewed_bundles.inputs import (
+    FrozenCandidateBuildInput,
+    load_frozen_candidate_build_input,
+    runtime_document_identity,
+)
+from app.reviewed_bundles.models import (
+    CandidateBuildChunk,
+    CandidateBuildJob,
+    PublishedKnowledgePointer,
+    PublishedKnowledgeVersion,
+)
 
 _ALLOWED_ASSURANCE_LEVELS = frozenset({"source_grounded", "claim_linked", "release_assured"})
 _KNOWN_ACCESS_SCOPES = frozenset({"public", "controlled_internal"})
 _SHA256_HEX = frozenset("0123456789abcdef")
 
 
+@dataclass(frozen=True)
+class _PublishedRuntimeProjection:
+    content_sha256: str
+    metadata: dict[str, object]
+
+
 class CurrentRetrievalAuthority(Protocol):
     async def get_retrieval_authority(self, entry_id: str, *, now: datetime | None = None) -> dict[str, Any]: ...
+
+    async def get_retrieval_authority_for_revision(
+        self,
+        entry_id: str,
+        revision_identity: str,
+        *,
+        now: datetime | None = None,
+    ) -> dict[str, Any]: ...
 
 
 class AuthorizedRetrievalCandidatePool:
@@ -64,6 +92,11 @@ class AuthorizedRetrievalCandidatePool:
         bm25_chunks: list[Bm25Chunk] = []
         exclusions: list[dict[str, str]] = []
         authority_cache: dict[str, tuple[dict[str, Any] | None, str | None]] = {}
+        published_authority_cache: dict[tuple[str, str], tuple[dict[str, Any] | None, str | None]] = {}
+        published_runtime_projection_cache: dict[
+            tuple[str, int],
+            _PublishedRuntimeProjection | None,
+        ] = {}
 
         for chunk, document in result.all():
             metadata = dict(chunk.chunk_metadata) if isinstance(chunk.chunk_metadata, dict) else {}
@@ -77,9 +110,46 @@ class AuthorizedRetrievalCandidatePool:
                 exclusions.append({"chunk_id": chunk.id, "reason": "identity_metadata_missing"})
                 continue
             entry_id, entry_identity, revision_identity, section_id = metadata_identity
+            published_version_state = await self._published_knowledge_version(
+                document=document,
+                metadata=metadata,
+            )
+            if published_version_state is None:
+                exclusions.append({"chunk_id": chunk.id, "reason": "published_version_identity_invalid"})
+                continue
+            publication_identity, published_version = published_version_state
             authority, authority_error = await self._current_authority(entry_id, authority_cache)
             reason = self._authority_exclusion_reason(authority, authority_error)
-            if reason is not None:
+            needs_published_version_authority = (
+                reason == "entry_not_published"
+                or (
+                    reason in {None, "source_unavailable"}
+                    and authority is not None
+                    and authority.get("editorial_revision_identity") != revision_identity
+                )
+            )
+            if needs_published_version_authority:
+                if published_version is None:
+                    exclusions.append({"chunk_id": chunk.id, "reason": reason or "editorial_revision_mismatch"})
+                    continue
+                preserved_authority, preserved_error = await self._published_version_authority(
+                    version=published_version,
+                    entry_id=entry_id,
+                    entry_identity=entry_identity,
+                    revision_identity=revision_identity,
+                    current_authority=authority,
+                    cache=published_authority_cache,
+                )
+                if preserved_authority is None:
+                    exclusions.append(
+                        {
+                            "chunk_id": chunk.id,
+                            "reason": preserved_error or reason or "published_version_authority_invalid",
+                        }
+                    )
+                    continue
+                authority = preserved_authority
+            elif reason is not None:
                 exclusions.append({"chunk_id": chunk.id, "reason": reason})
                 continue
             assert authority is not None
@@ -87,7 +157,7 @@ class AuthorizedRetrievalCandidatePool:
                 exclusions.append({"chunk_id": chunk.id, "reason": "current_authority_missing"})
                 continue
             if authority.get("editorial_revision_identity") != revision_identity:
-                exclusions.append({"chunk_id": chunk.id, "reason": "superseded_revision"})
+                exclusions.append({"chunk_id": chunk.id, "reason": "editorial_revision_mismatch"})
                 continue
             decision_query = authority.get("decision_query")
             if not isinstance(decision_query, str) or not decision_query.strip():
@@ -111,7 +181,15 @@ class AuthorizedRetrievalCandidatePool:
             if reason is not None:
                 exclusions.append({"chunk_id": chunk.id, "reason": reason})
                 continue
-
+            reason = await self._published_runtime_projection_exclusion_reason(
+                version=published_version,
+                chunk=chunk,
+                metadata=metadata,
+                cache=published_runtime_projection_cache,
+            )
+            if reason is not None:
+                exclusions.append({"chunk_id": chunk.id, "reason": reason})
+                continue
             candidate = self._published_candidate(
                 chunk=chunk,
                 document=document,
@@ -119,6 +197,7 @@ class AuthorizedRetrievalCandidatePool:
                 authority=authority,
                 source_relationships=source_relationships,
                 profile_identity=policy.identity,
+                publication_identity=publication_identity,
             )
             candidates[chunk.id] = candidate
             bm25_chunks.append(
@@ -391,6 +470,110 @@ class AuthorizedRetrievalCandidatePool:
             return "withdrawn"
         return "entry_not_published"
 
+    async def _published_version_authority(
+        self,
+        *,
+        version: PublishedKnowledgeVersion,
+        entry_id: str,
+        entry_identity: str,
+        revision_identity: str,
+        current_authority: dict[str, Any] | None,
+        cache: dict[tuple[str, str], tuple[dict[str, Any] | None, str | None]],
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        if current_authority is None:
+            return None, "current_authority_missing"
+        reasons = current_authority.get("eligibility_reasons")
+        if current_authority.get("editorial_revision_identity") != revision_identity:
+            if current_authority.get("answer_eligible") is not True and (
+                not isinstance(reasons, list)
+                or set(reasons) - {
+                    "editorial_approval_missing", "not_published",
+                    "source_unavailable", "source_availability_missing", "decisive_source_loss",
+                }
+            ):
+                return None, "entry_not_published"
+        elif not isinstance(reasons, list) or set(reasons) - {
+            "editorial_approval_missing",
+            "not_published",
+        }:
+            return None, "entry_not_published"
+        cache_key = (version.id, revision_identity)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+        candidate = await self._session.get(CanonicalRecordModel, version.candidate_id)
+        job = await self._session.scalar(
+            select(CandidateBuildJob).where(CandidateBuildJob.candidate_id == version.candidate_id)
+        )
+        if (
+            candidate is None
+            or candidate.stable_id != version.candidate_id
+            or candidate.identity_kind != StableIdentityKind.CANDIDATE.value
+            or candidate.record_class != CanonicalRecordClass.IMMUTABLE.value
+            or candidate.state != "candidate_ready"
+            or not isinstance(candidate.payload, dict)
+            or candidate.payload.get("schema") != "candidate_build_candidate/v1"
+            or job is None
+            or job.candidate_id != version.candidate_id
+            or job.entry_identity != entry_identity
+        ):
+            cached = (None, "published_version_binding_invalid")
+            cache[cache_key] = cached
+            return cached
+        try:
+            frozen_input = await load_frozen_candidate_build_input(self._session, job.id)
+        except AppError:
+            cached = (None, "published_version_binding_invalid")
+            cache[cache_key] = cached
+            return cached
+        artifact = frozen_input.artifact
+        if (
+            not frozen_input.matches_job(job)
+            or version.entry_identity != entry_identity
+            or version.document_identity != runtime_document_identity(frozen_input.document_identity)
+            or version.generation != frozen_input.requested_generation
+            or version.frozen_input_sha256 != frozen_input.frozen_input_sha256
+            or candidate.payload.get("entry_identity") != entry_identity
+            or candidate.payload.get("frozen_input_sha256") != frozen_input.frozen_input_sha256
+            or artifact.get("entry_id") != entry_id
+            or artifact.get("entry_identity") != entry_identity
+        ):
+            cached = (None, "published_version_binding_invalid")
+            cache[cache_key] = cached
+            return cached
+        if artifact.get("editorial_revision_identity") != revision_identity:
+            cached = (None, "editorial_revision_mismatch")
+            cache[cache_key] = cached
+            return cached
+        try:
+            authority = await self._authority.get_retrieval_authority_for_revision(
+                entry_id,
+                revision_identity,
+                now=self._now,
+            )
+        except AppError as exc:
+            if "SOURCE" in exc.code:
+                cached = (None, "source_unavailable")
+            elif "ASSURANCE" in exc.code or "ACCEPTANCE" in exc.code:
+                cached = (None, "assurance_ineligible")
+            else:
+                cached = (None, "published_version_authority_invalid")
+        except (RuntimeError, ValueError):
+            cached = (None, "published_version_authority_invalid")
+        else:
+            if (
+                not isinstance(authority, dict)
+                or authority.get("answer_eligible") is not True
+                or authority.get("entry_id") != entry_id
+                or authority.get("entry_identity") != entry_identity
+                or authority.get("editorial_revision_identity") != revision_identity
+            ):
+                cached = (None, "published_version_authority_invalid")
+            else:
+                cached = (authority, None)
+        cache[cache_key] = cached
+        return cached
+
     @staticmethod
     def _section_relationships(authority: dict[str, Any], section_id: str) -> list[dict[str, str]] | None:
         relationships_by_section = authority.get("section_source_relationships")
@@ -454,6 +637,13 @@ class AuthorizedRetrievalCandidatePool:
             return "source_relationship_missing"
         if metadata_relationships != source_relationships:
             return "source_relationship_mismatch"
+        candidate_evidence_source_identity = metadata.get("candidate_evidence_source_identity")
+        if candidate_evidence_source_identity is not None and (
+            not isinstance(candidate_evidence_source_identity, str)
+            or candidate_evidence_source_identity
+            not in {relationship["source_identity"] for relationship in source_relationships}
+        ):
+            return "candidate_evidence_projection_invalid"
         if metadata.get("assurance_level") != assurance_level or assurance_level not in _ALLOWED_ASSURANCE_LEVELS:
             return "assurance_ineligible"
         if not isinstance(metadata.get("applicability_conditions"), list) or not metadata["applicability_conditions"]:
@@ -480,6 +670,190 @@ class AuthorizedRetrievalCandidatePool:
             return "freshness_metadata_mismatch"
         return None
 
+    async def _published_knowledge_version(
+        self,
+        *,
+        document: Document,
+        metadata: dict[str, Any],
+    ) -> tuple[str, PublishedKnowledgeVersion | None] | None:
+        if "published_knowledge_version_identity" not in metadata:
+            if document.file_type == "reviewed_release_bundle":
+                return None
+            return f"published_knowledge_version:legacy:{document.id}:v{document.published_generation}", None
+        recorded_identity = metadata["published_knowledge_version_identity"]
+        if not isinstance(recorded_identity, str):
+            return None
+        try:
+            identity = StableIdentity.from_stable_id(recorded_identity)
+        except ValueError:
+            return None
+        if identity.kind is not StableIdentityKind.PUBLISHED_KNOWLEDGE_VERSION:
+            return None
+        version = await self._session.get(PublishedKnowledgeVersion, identity.stable_id)
+        record = await self._session.get(CanonicalRecordModel, identity.stable_id)
+        entry_identity = metadata.get("entry_identity")
+        if (
+            version is None
+            or record is None
+            or record.identity_kind != StableIdentityKind.PUBLISHED_KNOWLEDGE_VERSION.value
+            or record.record_class != CanonicalRecordClass.IMMUTABLE.value
+            or record.state != "published"
+            or not isinstance(record.payload, dict)
+            or record.payload.get("schema") != "published_knowledge_version/v1"
+            or not isinstance(entry_identity, str)
+            or version.entry_identity != entry_identity
+            or version.document_identity != document.id
+            or version.generation != document.published_generation
+            or any(
+                record.payload.get(field) != value
+                for field, value in {
+                    "candidate_id": version.candidate_id,
+                    "entry_identity": version.entry_identity,
+                    "document_identity": version.document_identity,
+                    "generation": version.generation,
+                    "bundle_sha256": version.bundle_sha256,
+                    "frozen_input_sha256": version.frozen_input_sha256,
+                    "configuration_identity": version.configuration_identity,
+                    "inspection_record_identity": version.inspection_record_identity,
+                    "acceptance_record_identity": version.acceptance_record_identity,
+                    "supersedes_version_id": version.supersedes_version_id,
+                }.items()
+            )
+        ):
+            return None
+        pointer = await self._session.get(PublishedKnowledgePointer, version.entry_identity)
+        if (
+            pointer is None
+            or pointer.current_version_id != version.id
+            or pointer.entry_identity != version.entry_identity
+            or pointer.document_identity != version.document_identity
+            or pointer.generation != version.generation
+        ):
+            return None
+        return version.id, version
+
+    async def _published_runtime_projection_exclusion_reason(
+        self,
+        *,
+        version: PublishedKnowledgeVersion | None,
+        chunk: DocumentChunk,
+        metadata: dict[str, Any],
+        cache: dict[tuple[str, int], _PublishedRuntimeProjection | None],
+    ) -> str | None:
+        if version is None:
+            return None
+        cache_key = (version.id, chunk.chunk_index)
+        if cache_key not in cache:
+            cache[cache_key] = await self._published_runtime_projection(
+                version=version,
+                chunk_index=chunk.chunk_index,
+            )
+        expected = cache[cache_key]
+        if expected is None:
+            return "published_runtime_projection_invalid"
+        if (
+            chunk.content_sha256 != expected.content_sha256
+            or hashlib.sha256(chunk.content.encode("utf-8")).hexdigest()
+            != expected.content_sha256
+            or metadata != expected.metadata
+        ):
+            return "published_runtime_projection_invalid"
+        return None
+
+    async def _published_runtime_projection(
+        self,
+        *,
+        version: PublishedKnowledgeVersion,
+        chunk_index: int,
+    ) -> _PublishedRuntimeProjection | None:
+        candidate = await self._session.get(CanonicalRecordModel, version.candidate_id)
+        job = await self._session.scalar(
+            select(CandidateBuildJob).where(CandidateBuildJob.candidate_id == version.candidate_id)
+        )
+        if (
+            candidate is None
+            or candidate.stable_id != version.candidate_id
+            or candidate.identity_kind != StableIdentityKind.CANDIDATE.value
+            or candidate.record_class != CanonicalRecordClass.IMMUTABLE.value
+            or candidate.state != "candidate_ready"
+            or not isinstance(candidate.payload, dict)
+            or candidate.payload.get("schema") != "candidate_build_candidate/v1"
+            or job is None
+            or job.candidate_id != version.candidate_id
+            or job.entry_identity != version.entry_identity
+        ):
+            return None
+        try:
+            frozen_input = await load_frozen_candidate_build_input(self._session, job.id)
+        except AppError:
+            return None
+        artifact = frozen_input.artifact
+        entry = artifact.get("entry")
+        if (
+            not frozen_input.matches_job(job)
+            or version.document_identity != runtime_document_identity(frozen_input.document_identity)
+            or version.generation != frozen_input.requested_generation
+            or version.frozen_input_sha256 != frozen_input.frozen_input_sha256
+            or candidate.payload.get("entry_identity") != version.entry_identity
+            or candidate.payload.get("frozen_input_sha256") != frozen_input.frozen_input_sha256
+            or artifact.get("entry_identity") != version.entry_identity
+            or not isinstance(entry, dict)
+            or entry.get("assurance_level") not in _ALLOWED_ASSURANCE_LEVELS
+        ):
+            return None
+        candidate_chunks = (
+            await self._session.execute(
+                select(CandidateBuildChunk).where(
+                    CandidateBuildChunk.candidate_id == version.candidate_id,
+                    CandidateBuildChunk.job_id == job.id,
+                    CandidateBuildChunk.chunk_index == chunk_index,
+                )
+            )
+        ).scalars().all()
+        if len(candidate_chunks) != 1:
+            return None
+        candidate_chunk = candidate_chunks[0]
+        expected_hashes = candidate.payload.get("chunk_sha256s")
+        if (
+            not isinstance(expected_hashes, list)
+            or chunk_index < 0
+            or chunk_index >= len(expected_hashes)
+            or not isinstance(expected_hashes[chunk_index], str)
+            or candidate_chunk.document_identity != frozen_input.document_identity
+            or candidate_chunk.generation != frozen_input.requested_generation
+            or candidate_chunk.attempt != job.attempt
+            or candidate_chunk.content_sha256 != expected_hashes[chunk_index]
+            or hashlib.sha256(candidate_chunk.content.encode("utf-8")).hexdigest()
+            != candidate_chunk.content_sha256
+            or not isinstance(candidate_chunk.chunk_metadata, dict)
+        ):
+            return None
+        section_id = candidate_chunk.chunk_metadata.get("section_id")
+        if not isinstance(section_id, str) or not section_id:
+            return None
+        try:
+            expected_metadata = candidate_frozen_chunk_metadata(
+                artifact=artifact,
+                entry_identity=version.entry_identity,
+                chunk_strategy=frozen_input.chunk_strategy,
+                section_id=section_id,
+            )
+            runtime_metadata = candidate_frozen_published_chunk_metadata(
+                artifact=artifact,
+                entry_identity=version.entry_identity,
+                chunk_strategy=frozen_input.chunk_strategy,
+                section_id=section_id,
+                publication_identity=version.id,
+            )
+        except ValueError:
+            return None
+        if candidate_chunk.chunk_metadata != expected_metadata:
+            return None
+        return _PublishedRuntimeProjection(
+            content_sha256=candidate_chunk.content_sha256,
+            metadata=runtime_metadata,
+        )
+
     @staticmethod
     def _published_candidate(
         *,
@@ -489,25 +863,37 @@ class AuthorizedRetrievalCandidatePool:
         authority: dict[str, Any],
         source_relationships: list[dict[str, str]],
         profile_identity: str,
+        publication_identity: str,
     ) -> dict[str, Any]:
         entry_id = str(authority["entry_id"])
         entry_identity = str(authority["entry_identity"])
+        editorial_revision_identity = str(metadata["editorial_revision_identity"])
         section_id = str(metadata["section_id"])
         access_scopes = sorted({item["access_scope"] for item in source_relationships})
         access_scope = access_scopes[0] if len(access_scopes) == 1 else "mixed_team_shared"
-        publication_identity = f"published_knowledge_version:legacy:{document.id}:v{document.published_generation}"
+        recorded_version = metadata.get("publication_version")
+        publication_version = (
+            publication_identity
+            if metadata.get("published_knowledge_version_identity") == publication_identity
+            else (
+                recorded_version.strip()
+                if isinstance(recorded_version, str) and recorded_version.strip()
+                else f"v{document.published_generation}"
+            )
+        )
         authoritative_metadata = dict(metadata)
         authoritative_metadata.update(
             {
                 "entry_id": entry_id,
                 "entry_identity": entry_identity,
-                "editorial_revision_identity": authority["editorial_revision_identity"],
+                "editorial_revision_identity": editorial_revision_identity,
                 "source_relationships": source_relationships,
                 "assurance_level": authority["assurance_level"],
                 "applicability_conditions": authority["applicability_conditions"],
                 "freshness_triggers": authority["freshness_triggers"],
                 "lifecycle_state": authority["lifecycle_state"],
                 "decision_query": authority["decision_query"],
+                "publication_version": publication_version,
             }
         )
         if isinstance(authority.get("non_applicability_conditions"), list):
@@ -526,9 +912,9 @@ class AuthorizedRetrievalCandidatePool:
             "retrieval_source": "sparse_bm25",
             "entry_id": entry_id,
             "entry_identity": entry_identity,
-            "editorial_revision_identity": authority["editorial_revision_identity"],
+            "editorial_revision_identity": editorial_revision_identity,
             "publication_identity": publication_identity,
-            "publication_version": f"v{document.published_generation}",
+            "publication_version": publication_version,
             "section_id": section_id,
             "section_identity": f"{entry_identity}#{section_id}",
             "decision_query": authority["decision_query"],

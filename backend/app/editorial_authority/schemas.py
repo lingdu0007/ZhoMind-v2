@@ -17,27 +17,15 @@ from app.contracts.canonical import (
     StableIdentity,
     StableIdentityKind,
 )
+from app.contracts.claim_materiality import content_indicates_high_impact, is_high_impact_claim, is_material_claim
+from app.rag.claim_evidence import ClaimEvidenceContractError, parse_claim_evidence_contract
+from app.rag.evidence_sufficiency import QueryConditionSet
 
 _COVERAGE_POSITIONS = frozenset(position.value for position in CoveragePosition)
 _ASSURANCE_LEVELS = frozenset(level.value for level in KnowledgeAssuranceLevel)
 _SOURCE_TIERS = frozenset(tier.value for tier in KnowledgeSourceTier)
 _ACCESS_SCOPES = frozenset(scope.value for scope in SourceAccessScope)
 _ENTRY_ID = r"^[a-z0-9][a-z0-9._:-]{2,159}$"
-_HIGH_IMPACT_CLAIM_KINDS = frozenset({"prescriptive", "numeric", "version", "security", "privacy", "high_impact"})
-_HIGH_IMPACT_TEXT = re.compile(
-    r"""
-    \b(?:must|shall|require|requires|never|only)\b
-    |\b(?:security|privacy|authentication|authorization|permissions?|prompt[- ]?injection)\b
-    |\b(?:version|v\d+(?:\.\d+)+)\b
-    |(?:<=|>=|==|!=|&&|\|\|)
-    |\b\d+(?:\.\d+)?\s*(?:%|ms|seconds?|minutes?|hours?|days?)\b
-    |(?:必须|应当|需要|不得|禁止|仅能|仅可)
-    |(?:安全|隐私|认证|授权|权限|提示注入)
-    |(?:版本|发布|生产环境|复核)
-    |\d+(?:\.\d+)?\s*(?:%|毫秒|秒|分钟|小时|天)
-    """,
-    re.IGNORECASE | re.VERBOSE,
-)
 _BODY_SECTIONS = (
     "decision_query",
     "recommendation_or_reviewed_branches",
@@ -120,6 +108,7 @@ class CreateEditorialEntryRequest(BaseModel):
     body: dict[str, Any] | None = None
     section_source_relationships: list[dict[str, Any]] | None = None
     claims: list[dict[str, Any]] | None = None
+    claim_evidence_contract: dict[str, Any] | None = None
     relationship: dict[str, Any] | None = None
     release_assurance: dict[str, Any] | None = None
 
@@ -138,7 +127,11 @@ class RecordSourceAvailabilityRequest(BaseModel):
     availability: str = Field(min_length=1, max_length=80)
 
 
-def review_validation_reasons(payload: CreateEditorialEntryRequest) -> list[dict[str, str]]:
+def review_validation_reasons(
+    payload: CreateEditorialEntryRequest,
+    *,
+    allow_legacy_claim_linked_contract: bool = False,
+) -> list[dict[str, str]]:
     required_values = {
         "coverage_position": payload.coverage_position,
         "assurance_level": payload.assurance_level,
@@ -200,6 +193,7 @@ def review_validation_reasons(payload: CreateEditorialEntryRequest) -> list[dict
     reasons.extend(source_reasons)
     reasons.extend(_validate_section_sources(payload.section_source_relationships, source_tiers))
     reasons.extend(_validate_claims(payload.claims, payload.assurance_level, source_tiers, payload.body))
+    reasons.extend(_validate_claim_evidence_contract(payload))
     reasons.extend(_validate_relationship(payload.relationship))
     reasons.extend(_validate_release_assurance(payload.assurance_level, payload.release_assurance))
     return reasons
@@ -452,6 +446,30 @@ def _validate_acceptance_queries(
             query_ids.add(query_id)
         if not isinstance(query.get("query"), str) or not query["query"].strip():
             reasons.append({"field": f"{prefix}.query", "code": "required", "message": "query is required"})
+        elif "query_conditions" in query:
+            raw_conditions = query.get("query_conditions")
+            if not isinstance(raw_conditions, list):
+                reasons.append(
+                    {
+                        "field": f"{prefix}.query_conditions",
+                        "code": "invalid",
+                        "message": "query_conditions must be a list of explicit query conditions",
+                    }
+                )
+            else:
+                try:
+                    QueryConditionSet.from_records(
+                        normalized_question=query["query"].strip(),
+                        records=raw_conditions,
+                    )
+                except ValueError:
+                    reasons.append(
+                        {
+                            "field": f"{prefix}.query_conditions",
+                            "code": "invalid",
+                            "message": "query_conditions must be explicit, complete, and non-duplicated",
+                        }
+                    )
         if query.get("expected_outcome") != expected_outcome:
             reasons.append(
                 {
@@ -685,8 +703,8 @@ def _validate_claims(
         source_ids = claim.get("source_ids")
         if not isinstance(source_ids, list):
             source_ids = []
-        is_high_impact = kind in _HIGH_IMPACT_CLAIM_KINDS or _content_indicates_high_impact(statement)
-        is_material = claim.get("material") is True or is_high_impact
+        is_high_impact = is_high_impact_claim(claim)
+        is_material = is_material_claim(claim)
         material_claim_seen = material_claim_seen or is_material
         requires_link = is_high_impact or (assurance_level in {"claim_linked", "release_assured"} and is_material)
         if requires_link and not source_ids:
@@ -742,7 +760,7 @@ def _validate_claims(
     if isinstance(body, dict):
         for section_id in _BODY_SECTIONS:
             if (
-                _content_indicates_high_impact(body.get(section_id))
+                content_indicates_high_impact(body.get(section_id))
                 and section_id not in linked_high_impact_claim_sections
             ):
                 reasons.append(
@@ -753,6 +771,87 @@ def _validate_claims(
                     }
                 )
     return reasons
+
+
+def _validate_claim_evidence_contract(payload: CreateEditorialEntryRequest) -> list[dict[str, str]]:
+    value = payload.claim_evidence_contract
+    if payload.assurance_level != "claim_linked":
+        if value is None:
+            return []
+        return [
+            {
+                "field": "claim_evidence_contract",
+                "code": "not_applicable",
+                "message": "Claim-Evidence contracts are only retained for Claim-Linked assurance",
+            }
+        ]
+    if value is None:
+        return []
+    if not isinstance(value, dict):
+        return [
+            {
+                "field": "claim_evidence_contract",
+                "code": "invalid",
+                "message": "when supplied, a Claim-Evidence contract must be valid",
+            }
+        ]
+    try:
+        contract = parse_claim_evidence_contract(value)
+    except ClaimEvidenceContractError:
+        return [
+            {
+                "field": "claim_evidence_contract",
+                "code": "invalid",
+                "message": "when supplied, a Claim-Evidence contract must be valid",
+            }
+        ]
+
+    claims = payload.claims if isinstance(payload.claims, list) else []
+    material_claims: dict[str, dict[str, Any]] = {}
+    for claim in claims:
+        if not isinstance(claim, dict):
+            continue
+        claim_id = claim.get("claim_id")
+        is_material = is_material_claim(claim)
+        if isinstance(claim_id, str) and is_material:
+            material_claims[claim_id] = claim
+
+    if {claim.claim_id for claim in contract.claims} != set(material_claims):
+        return [
+            {
+                "field": "claim_evidence_contract.claims",
+                "code": "claim_set_mismatch",
+                "message": "Claim-Evidence contracts must bind exactly the material editorial claims",
+            }
+        ]
+
+    for contract_claim in contract.claims:
+        editorial_claim = material_claims[contract_claim.claim_id]
+        section_id = editorial_claim.get("section_id")
+        source_ids = editorial_claim.get("source_ids")
+        if not isinstance(section_id, str) or not isinstance(source_ids, list):
+            return [
+                {
+                    "field": "claim_evidence_contract.claims",
+                    "code": "claim_link_mismatch",
+                    "message": "Claim-Evidence contracts must match the editorial claim links",
+                }
+            ]
+        expected_links = {
+            (section_id, source_id)
+            for source_id in source_ids
+            if isinstance(source_id, str)
+        }
+        contract_links = {(link.section_id, link.source_id) for link in contract_claim.evidence}
+        if not expected_links or contract_links != expected_links:
+            return [
+                {
+                    "field": "claim_evidence_contract.claims",
+                    "code": "claim_link_mismatch",
+                    "message": "Claim-Evidence contracts must match the editorial claim links",
+                }
+            ]
+    return []
 
 
 def _validate_relationship(value: object) -> list[dict[str, str]]:
@@ -893,10 +992,6 @@ def _controlled_locator(value: object) -> bool:
 
 def _same_lightweight_text(before: str, after: str) -> bool:
     return re.sub(r"\s+", " ", before).strip() == re.sub(r"\s+", " ", after).strip()
-
-
-def _content_indicates_high_impact(value: object) -> bool:
-    return isinstance(value, str) and bool(_HIGH_IMPACT_TEXT.search(value))
 
 
 def _normalized_field_name(value: str | None) -> str:

@@ -403,6 +403,69 @@ class AcceptanceCheckInput(BaseModel):
         return self
 
 
+class CandidatePublicationBindingInput(BaseModel):
+    """Exact immutable identities required to accept a Candidate publication."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_identity: str
+    inspection_record_identity: str
+    acceptance_record_identity: str
+    published_knowledge_version_identity: str
+    entry_identity: str
+    configuration_identity: str
+    bundle_sha256: str
+    frozen_input_sha256: str
+
+    @field_validator("candidate_identity")
+    @classmethod
+    def validate_candidate_identity(cls, value: str) -> str:
+        return _exact_identity_of(value, {"candidate"})
+
+    @field_validator("inspection_record_identity", "acceptance_record_identity")
+    @classmethod
+    def validate_event_identity(cls, value: str) -> str:
+        return _exact_identity_of(value, {"event"})
+
+    @field_validator("published_knowledge_version_identity")
+    @classmethod
+    def validate_published_version_identity(cls, value: str) -> str:
+        return _exact_identity_of(value, {"published_knowledge_version"})
+
+    @field_validator("entry_identity")
+    @classmethod
+    def validate_entry_identity(cls, value: str) -> str:
+        return _exact_identity_of(value, {"entry"})
+
+    @field_validator("configuration_identity")
+    @classmethod
+    def validate_configuration_identity(cls, value: str) -> str:
+        return _exact_identity_of(value, {"configuration"})
+
+    @field_validator("bundle_sha256", "frozen_input_sha256")
+    @classmethod
+    def validate_sha256(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) != 64 or any(character not in "0123456789abcdef" for character in normalized):
+            raise ValueError("publication hashes must be lowercase SHA-256 values")
+        return normalized
+
+    @property
+    def exact_identities(self) -> set[str]:
+        return {
+            self.candidate_identity,
+            self.inspection_record_identity,
+            self.acceptance_record_identity,
+            self.published_knowledge_version_identity,
+            self.entry_identity,
+            self.configuration_identity,
+        }
+
+    @property
+    def persisted_record_identities(self) -> set[str]:
+        return self.exact_identities - {self.entry_identity}
+
+
 class CreateDeliveryAcceptanceRecordRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -418,6 +481,7 @@ class CreateDeliveryAcceptanceRecordRequest(BaseModel):
     conditions: dict[str, str] = Field(default_factory=dict, max_length=20)
     assumptions: list[str] = Field(default_factory=list, max_length=20)
     checks: list[AcceptanceCheckInput] = Field(min_length=1, max_length=50)
+    candidate_publication_binding: CandidatePublicationBindingInput | None = None
     known_limits: list[str] = Field(default_factory=list, max_length=20)
     risks: list[str] = Field(default_factory=list, max_length=20)
     evidence_links: list[str] = Field(min_length=1, max_length=20)
@@ -463,6 +527,7 @@ class CreateDeliveryAcceptanceRecordRequest(BaseModel):
                     "candidate",
                     "editorial_revision",
                     "entry",
+                    "event",
                     "evidence_set",
                     "evidence_snapshot",
                     "published_knowledge_version",
@@ -581,6 +646,32 @@ class CreateDeliveryAcceptanceRecordRequest(BaseModel):
         }
         if self.affected_scope.deployment_identity is not None:
             declared_identities.add(self.affected_scope.deployment_identity)
+        has_candidate_publication_identities = (
+            any(identity.startswith("candidate:") for identity in declared_identities)
+            and any(identity.startswith("published_knowledge_version:") for identity in declared_identities)
+        )
+        if has_candidate_publication_identities and self.candidate_publication_binding is None:
+            raise ValueError("Candidate publication evidence requires an exact Candidate publication binding")
+        if self.candidate_publication_binding is not None:
+            declared_identities.update(self.candidate_publication_binding.exact_identities)
+            required_content_identities = {
+                self.candidate_publication_binding.candidate_identity,
+                self.candidate_publication_binding.inspection_record_identity,
+                self.candidate_publication_binding.acceptance_record_identity,
+                self.candidate_publication_binding.published_knowledge_version_identity,
+                self.candidate_publication_binding.entry_identity,
+            }
+            if not required_content_identities.issubset(self.content_identities):
+                raise ValueError("Candidate publication binding identities must be declared as content identities")
+            if self.candidate_publication_binding.configuration_identity not in self.product_identities:
+                raise ValueError("Candidate publication configuration must be declared as a product identity")
+            if {
+                self.candidate_publication_binding.entry_identity,
+                self.candidate_publication_binding.published_knowledge_version_identity,
+            } - set(self.affected_scope.entry_identities):
+                raise ValueError("Candidate publication must bind the exact entry and published Knowledge Version scope")
+            if self.candidate_publication_binding.configuration_identity not in self.affected_scope.configuration_identities:
+                raise ValueError("Candidate publication must bind the exact configuration scope")
         if self.change_classification is AcceptanceChangeClassification.PROTECTED_PRODUCT_PATH:
             if not self.affected_scope.protected_capability_identities:
                 raise ValueError("protected changes must bind affected protected capabilities")
@@ -601,6 +692,15 @@ class CreateDeliveryAcceptanceRecordRequest(BaseModel):
                 raise ValueError(
                     f"entry checks must bind {entry_identity}: {', '.join(sorted(missing_entry_evidence))}"
                 )
+        if self.candidate_publication_binding is not None:
+            for check_id in entry_check_ids:
+                if not self.candidate_publication_binding.exact_identities.issubset(
+                    checks_by_id[check_id].identity_dependencies
+                ):
+                    raise ValueError(
+                        "Candidate publication entry checks must bind the exact Candidate, inspection, "
+                        "acceptance, Published Knowledge Version, entry, and configuration"
+                    )
         for check in self.checks:
             if any(self.conditions.get(key) != value for key, value in check.applicability_conditions.items()):
                 raise ValueError("check applicability conditions must be bound by the record conditions")

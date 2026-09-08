@@ -28,3 +28,18 @@ class CanonicalEditorialExportVerifier:
             artifact_sha256,
         ) as verified:
             yield verified
+
+    async def record_candidate_publication(
+        self,
+        artifact: dict,
+        *,
+        candidate_identity: str,
+        published_knowledge_version_identity: str,
+        actor_identity: str,
+    ) -> None:
+        await self._authority.record_candidate_publication(
+            artifact,
+            candidate_identity=candidate_identity,
+            published_knowledge_version_identity=published_knowledge_version_identity,
+            actor_identity=actor_identity,
+        )

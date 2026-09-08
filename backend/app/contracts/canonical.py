@@ -215,7 +215,11 @@ _TRANSITIONS: dict[type[Enum], dict[str, frozenset[str]]] = {
         EntryLifecycleState.EDITORIAL_REVIEW.value: frozenset({EntryLifecycleState.CANDIDATE_BUILD.value}),
         EntryLifecycleState.CANDIDATE_BUILD.value: frozenset({EntryLifecycleState.PUBLISHED.value}),
         EntryLifecycleState.PUBLISHED.value: frozenset(
-            {EntryLifecycleState.NEEDS_REVIEW.value, EntryLifecycleState.WITHDRAWN.value}
+            {
+                EntryLifecycleState.EDITORIAL_REVIEW.value,
+                EntryLifecycleState.NEEDS_REVIEW.value,
+                EntryLifecycleState.WITHDRAWN.value,
+            }
         ),
         EntryLifecycleState.NEEDS_REVIEW.value: frozenset(
             {EntryLifecycleState.EDITORIAL_REVIEW.value, EntryLifecycleState.WITHDRAWN.value}

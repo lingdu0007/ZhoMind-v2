@@ -94,16 +94,28 @@ separate role facts. An Author or material reviser cannot approve the same
 material revision; a Reviewer may edit, but a material reviewer-reviser must
 assign a distinct reviewer. The assigned Maintainer must append an explicit
 responsibility-acceptance event for each revision before review, approval, or
-export. A System Administrator cannot inspect or modify the Private Editorial
-Repository and may receive only an approved export.
+export. A System Administrator cannot inspect or directly modify the Private
+Editorial Repository and may receive only an approved export for editorial
+handling. Candidate publication is a narrow server-side exception, not an
+administrator editorial command: only after `CandidatePublicationService`
+re-verifies one exact frozen approved export under the finalization fence and
+atomically writes exact Candidate and Published Knowledge Version identities
+may `EditorialAuthorityService` append machine-derived `candidate_build` and
+`published` lifecycle events. The path exposes no private editorial content,
+accepts no administrator-selected editorial field, and cannot revise a private
+record.
 
 The private lifecycle writes `draft`, `evidence_collected`, and
 `editorial_review` events. Evidence collection and review require a complete
 revision. Material changes create a new immutable revision and require
-Editorial Review; wording-only changes require an approved base revision, a
-distinct lightweight acceptance, and may normalize title and authored-body
-whitespace only. Any punctuation, case, token, comparison/operator, or
-structured-authority change is material. T01 records no Reviewed Release Bundle,
+Editorial Review, including when they begin from `published`; the existing
+Published Knowledge Version pointer remains live until a separately approved
+successor passes Candidate publication. A wording-only revision may retain
+`published` while it receives its own Maintainer responsibility acceptance and
+lightweight approval. Wording-only changes require an approved base revision
+and may normalize title and authored-body whitespace only. Any punctuation,
+case, token, comparison/operator, or structured-authority change is material.
+T01 records no Reviewed Release Bundle,
 Candidate Build, publication, replacement, or withdrawal action: those are
 owned by later tickets. An availability event for
 `unavailable_for_new_evidence` records decisive source loss and, for an
@@ -345,8 +357,132 @@ frozen-input match; a mismatch preserves those assets and keeps the obligation
 recoverable rather than deleting data under an unverified binding.
 Intake, retry, recovery, cleanup, supersession, and Candidate completion never
 create or change a Published Knowledge Version, a legacy published generation,
-or a runtime publication pointer. Candidate inspection, publication,
-replacement switching, and withdrawal remain later responsibilities.
+or a runtime publication pointer. Only the separate Candidate inspection and
+explicit publication contract below may create the runtime projection.
+
+## Candidate Inspection And Explicit Publication
+
+Candidate inspection is an administrator-only read of one exact immutable
+Candidate binding: Candidate record, matching `candidate_ready` job, frozen
+input, bundle/item hashes, current generation, contiguous content-hashed
+Candidate chunks, and effective embedding configuration. Recording inspection
+creates immutable `candidate_inspection/v1` evidence plus an append-only
+Candidate event. It re-verifies the retained approved editorial export and
+creates or verifies the content-addressed immutable configuration record.
+A Claim-Linked Candidate Build must copy its exact frozen Candidate
+Claim-Evidence contract and canonical hash into each Candidate chunk. That
+contract binds exactly its material claims and their reviewed section/source
+links; it does not require a resolver, calibration, or a Release-Assured gate.
+A missing, malformed, hash-mismatched, or link-mismatched contract fails the
+build before Candidate persistence. The approved export freezes that canonical
+JSON and hash at the artifact root. An editorial revision may additionally
+retain a full Claim-Evidence contract as a compatibility projection, but its
+resolver and calibration requirements remain Release-Assured authority.
+A replacement inspection snapshots the current
+`replaces_published_knowledge_version_identity` in immutable inspection
+evidence, returns that exact Published Knowledge Version plus deterministic
+per-index chunk `added`, `changed`, and `removed` hashes, and may be reloaded
+for administrator audit even after the Candidate becomes stale. Candidate
+acceptance copies that exact replacement identity, and a changed pointer fails
+publication eligibility and confirmation. Inspection never makes material
+retrievable or changes a publication pointer.
+
+Candidate acceptance is an administrator-only adapter to the closed evidence
+contract, not ordinary retrieval and not a provider invocation. For a
+Claim-Linked section, the adapter creates one ephemeral Candidate-bound
+evidence projection per reviewed source link so the closed executor must select
+every required Claim-Evidence Link; those temporary source identities are
+retained only in the immutable acceptance binding and never enter ordinary
+retrieval. It records one supported query whose frozen Answer Evidence Set contains the exact
+Candidate, build generation, governing entry and
+`recommendation_or_reviewed_branches` section, content-hashed chunk, snapshot,
+and citation marker. An acceptance query may retain an explicit QCS as the
+same complete four-field condition records used by closed Answer Execution;
+otherwise its QCS is derived from the frozen question. A supported query
+requires the exact applicable conditions. It also records one Boundary Query
+as a closed `decision_not_covered` or `decisive_condition_missing`
+insufficiency reply with zero citations and zero provider calls. The immutable
+`candidate_acceptance/v1` record binds the exact inspection event, Candidate,
+bundle/item and input hashes, and configuration. Diagnostic preview, an older
+or stale Candidate, a different configuration, or a mismatched frozen input
+cannot satisfy this acceptance.
+Both acceptance queries use the same closed Answer Evidence selector as Answer
+Execution: it requires complete QCS parsing, exact Candidate-bound
+source/assurance/section bindings, governing and required complement selection,
+deterministic budget checks, and normal evidence, snapshot, and citation
+construction. It never evaluates only a first chunk, truncates a Candidate to
+establish support, tolerates malformed condition records, or hand-assembles
+evidence.
+
+Reload and publication eligibility verify the retained inspection's complete
+entry, document, bundle/item, revision, generation, hash and configuration
+binding. They validate the whole deterministic acceptance result against the
+exact frozen Candidate, including QCS, evidence items, snapshots, citation
+markers and JSON scalar types; a shape-compatible or corrupted record cannot
+grant eligibility. This verification calls no provider, writes no new
+acceptance record, and does not revise the historical result. Administrator
+inspection reload exposes the retained acceptance and its exact bindings.
+The administrator view keeps those records inspectable and distinguishes
+partial publication from complete batch success.
+
+Release-Assured acceptance recognizes both a stable `event:` reference and the
+32-character lowercase UUID hex retained by `canonical_events.id` in an
+authoritative editorial snapshot. It rejects other unqualified references and
+does not normalize, rewrite, or rehash the frozen export to bridge these forms.
+
+An administrator may reload a historical inspection after a Candidate becomes
+stale or its job reaches `superseded`, but eligibility remains latest-generation
+only. The administrator-only Candidate publication read projection reports that
+Candidate's immutable Published Knowledge Version identity, its exact
+inspection/acceptance and superseded-version identities, and whether it remains
+the current entry pointer. An eligible Candidate must still prove current approved editorial authority,
+the latest Candidate generation, exact inspection, exact Candidate acceptance,
+and the same bundle and configuration identities. An administrator submits a
+strict selected batch whose every item names the Candidate, `create` or
+`replace` effect, the current Published Knowledge Version identity (or `null`
+for create), and the exact immutable inspection and acceptance record
+identities. The confirmation identifier is idempotent only for the same actor
+and canonical selected payload. A changed selection, inspection/acceptance
+identity, or replacement pointer fails closed.
+
+Each selected item is a separate transaction. It first writes the runtime
+`Document` and `DocumentChunk` projection tagged with the immutable
+`published_knowledge_version` identity, then writes the immutable Published
+Knowledge Version record with those exact inspection/acceptance identities and
+its append-only publication event, and only then creates or switches the one
+mutable entry pointer. Final verification holds the approved editorial
+authority fence through this commit and advances the same verified entry from
+`editorial_review`, through `candidate_build`, to `published` when needed, so
+ordinary retrieval resolves the current publication pointer rather than a
+Candidate preview. An otherwise-safe unpublished successor revision does not
+replace the pointer's frozen Published Knowledge Version authority. A failure
+rolls back that item before pointer switching and produces a retryable
+`failed` result; other selected items continue independently.
+Before allocating a new runtime source document, publication checks the
+first-release maximum of 500 published source documents. A `replace` reuses
+the existing published source allocation; a new entry at the limit fails only
+that selected item with `PUBLISHED_SOURCE_LIMIT_REACHED`.
+Batch output always separates `published`, `failed`, and `skipped`, and
+`batch_complete` is true only when no item failed or was skipped. A duplicate
+confirmation returns its retained outcome without writing a second version or
+moving a pointer. A retained `processing` confirmation resumes from its
+persisted item results; a version committed before its result was recorded is
+recovered only when its exact selected inspection/acceptance identities match.
+
+Publication reads verify each version projection against its immutable
+canonical publication record and frozen Candidate, and verify the entry
+pointer's document and generation against that version. A missing or
+inconsistent pointed version cannot become a replacement inspection.
+A terminal failed confirmation remains immutable in meaning: repeating its
+identifier replays the same per-item results. Retrying failed items requires a
+new explicit confirmation containing only the still-eligible selected items;
+already-published siblings and their pointers remain unchanged.
+
+`POST /documents/{id}/publish` rejects every identity because that legacy
+compatibility route could bypass Candidate inspection, acceptance, and explicit
+confirmation. Ticket 24 does not implement withdrawal, redaction, or historical
+deletion: Ticket 25 will add those events while preserving the immutable
+Published Knowledge Version identity and the later withdrawal seam.
 
 ## Retrieval Answer Policy And Authorized Candidate Pool
 
@@ -359,16 +495,18 @@ profile. It keeps reranking, lexical-answer anchors, semantic near-duplicate
 removal, query expansion, and online LLM sufficiency judging disabled. The
 effective profile identity is carried with every retrieval result and trace.
 
-Until a later ticket replaces the legacy runtime projection with canonical
-Published Knowledge Versions, Pilot forms its ordinary pre-sufficiency
-Candidate Pool only from the compatibility projection of a current legacy
-published generation. A chunk is eligible only when its `Document` is not
+Pilot forms its ordinary pre-sufficiency Candidate Pool only from the current
+published runtime projection. A Ticket 24 projection carries an exact
+immutable `published_knowledge_version` identity; older documents without that
+field retain the explicitly labeled `published_knowledge_version:legacy:*`
+compatibility mapping. A malformed claimed Published Knowledge Version
+identity fails closed. A chunk is eligible only when its `Document` is not
 withdrawn and its generation equals that document's current published
 generation. Before ranking, the pool resolves the current Private Editorial
 Repository authority for the entry: the current revision, lifecycle
 eligibility, exact per-section verified source relationship, assurance,
-applicability, freshness, and team-shared access scope. Compatibility metadata
-is only a binding to those current facts; missing, malformed, or mismatched
+applicability, freshness, and team-shared access scope. Projection metadata is
+only a binding to those current facts; missing, malformed, or mismatched
 metadata never grants eligibility. Its lifecycle is `published`, or
 `needs_re_review` only within the seven-day grace interval; known
 contradictions, integrity defects, expired grace, unavailable sources,
@@ -380,6 +518,23 @@ authority-qualified candidate may be marked eligible for later evidence
 selection, but that pre-sufficiency boundary does not decide sufficiency. The
 pool deduplicates exact content and repeated `(entry, section)` pairs
 deterministically before it returns at most 20 candidates.
+When the current authority reports a later safe but unpublished revision, the
+pool may preserve a genuinely pointed Published Knowledge Version only by
+reconstructing its exact Candidate, frozen input, and retained revision, then
+revalidating current source and release-assurance records. Runtime projection
+metadata can bind that reconstruction only; it cannot supply a decision query,
+source relationship, assurance, condition, freshness, or access authority.
+Any missing, malformed, mismatched, or newly unusable retained fact excludes
+the pointed version.
+
+A successor's unverified or unavailable new source does not itself revoke the
+pointed predecessor. The pool revalidates the pointed revision's own sources,
+approval and integrity facts before retaining it. Decisive loss of a source
+used by that revision remains blocking after source recovery; a later
+successor approval cannot truncate that revision's loss history. A new revision
+approved after the loss is evaluated from its own approval boundary. Both
+current and historical authority use the same validated source/section
+projection, while their eligibility decisions remain separately scoped.
 
 Candidate Build chunks and Candidate records are not members of this ordinary
 pool. Candidate preview is an explicit, administrator-only, isolated path:
@@ -750,12 +905,12 @@ administrator issues a new invitation for any pending admission.
 | --- | --- | --- | --- |
 | 14 | User, invitation, and Redis session admission/authority paths | Member/invitation identities and content-free identity audit events | One-time invitation consumption, database-derived role checks, and append-only identity audit are used by every pilot identity path |
 | 16 | Markdown/front-matter authoring and runtime document copies | Private Editorial Repository entry, revision, source, and deterministic `editorial_export/v1` authority | T02 consumes only reviewed immutable exports and no authoritative editorial write remains on legacy/runtime rows |
-| 17 | Upload and batch build dispatch | Reviewed Release Bundle, bundle item, build generation, recoverable Candidate Build | Reviewed bundles are the only new authority-bearing intake; Candidate work has no publication side effect and legacy publication paths remain compatibility-only |
-| 18 | Unqualified legacy retrieval and Candidate-derived chunks | Versioned Pilot Sparse BM25 and an authorized current-Published Candidate Pool | Ordinary retrieval returns only current, authorized compatibility-published chunks; Candidate preview remains administrator-only and diagnostic |
+| 17 | Upload and batch build dispatch | Reviewed Release Bundle, bundle item, build generation, recoverable Candidate Build | Reviewed bundles are the only new authority-bearing intake; Candidate work has no publication side effect |
+| 18 | Unqualified legacy retrieval and Candidate-derived chunks | Versioned Pilot Sparse BM25 and an authorized current-Published Candidate Pool | Ordinary retrieval returns only current, authorized Published projections; Candidate preview remains administrator-only and diagnostic |
 | 19 | First-three selection, non-empty context gate, and candidate-derived citations | Deterministic evidence sufficiency and immutable Answer Evidence Set | Active Pilot uses only an authorized pool, exact QCS and assurance rules, one frozen selected set, and its bound citation identities |
 | 20 | `ChatMessage.rag_trace`, transport-specific gates/generation, persistence, snapshot slicing, and outcome inference | Private append-only Answer Execution with frozen QCS and closed result | Normal HTTP, SSE, linked persistence, reload, and private history project one retained execution; legacy trace is diagnostic only |
 | 21 | Chat UI view state and later interaction adapters | Private Answer Execution projection | Browser and later UI paths display the retained execution state and completed result without adding a second semantic owner |
-| 24 | Candidate inspection and publication | Candidate and Published Knowledge Version | Publication checks canonical generation, hash and acceptance identities |
+| 24 | Candidate inspection and publication | Immutable inspection/acceptance events, Published Knowledge Version, and mutable entry pointer | Publication checks exact Candidate generation, bundle/input hashes, configuration and acceptance identities; `runtime-document:*` legacy publication rejects |
 | 25 | Tombstone and redaction | Withdrawal event and retained publication identity | All withdrawal reads and writes use canonical publication identity |
 | 27 | Feedback and review work items | Maintenance item and validated finding | Raw feedback references can expire without losing the durable canonical decision |
 | 15 | Acceptance scripts and evidence | Delivery Acceptance Record and status events | Acceptance binds exact canonical identities, never branch or `latest` |

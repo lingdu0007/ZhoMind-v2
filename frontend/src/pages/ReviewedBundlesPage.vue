@@ -15,6 +15,15 @@
           <RefreshCw :size="16" :class="{ 'reviewed-bundles__refresh-icon--spinning': loading }" aria-hidden="true" />
           <span>{{ loading ? '正在刷新' : '刷新' }}</span>
         </button>
+        <button
+          v-if="publicationSelections.length"
+          type="button"
+          :disabled="publicationLoading"
+          @click="openPublicationConfirmation"
+        >
+          <Send :size="16" aria-hidden="true" />
+          <span>发布已选择 {{ publicationSelections.length }} 项</span>
+        </button>
       </div>
     </header>
 
@@ -28,7 +37,12 @@
         <span>{{ listError }}</span>
         <button type="button" @click="loadBundles">重新加载</button>
       </p>
-      <p v-if="actionMessage" class="reviewed-bundles__success" role="status">{{ actionMessage }}</p>
+      <p
+        v-if="actionMessage"
+        class="reviewed-bundles__success"
+        :class="{ 'reviewed-bundles__partial': publicationResults && !publicationResults.batch_complete }"
+        role="status"
+      >{{ actionMessage }}</p>
       <p v-if="actionError" class="reviewed-bundles__error" role="alert">{{ actionError }}</p>
 
       <div class="reviewed-bundles__workspace" :aria-busy="loading">
@@ -195,11 +209,235 @@
                       >
                         <XCircle :size="16" aria-hidden="true" />
                       </button>
+                      <button
+                        v-if="jobFor(item)?.candidate_id"
+                        type="button"
+                        :disabled="Boolean(candidateLoading[jobFor(item).candidate_id])"
+                        :aria-label="`查看 Candidate ${jobFor(item).candidate_id}`"
+                        title="查看 Candidate"
+                        @click="viewCandidate(jobFor(item).candidate_id)"
+                      >
+                        <Eye :size="16" aria-hidden="true" />
+                      </button>
                     </td>
                   </tr>
                 </tbody>
               </table>
             </div>
+
+            <section
+              v-if="selectedCandidateDetail"
+              class="reviewed-bundles__candidate-panel"
+              aria-labelledby="reviewed-candidate-title"
+            >
+              <header class="reviewed-bundles__section-header">
+                <div>
+                  <p class="reviewed-bundles__detail-eyebrow">Candidate inspection</p>
+                  <h2 id="reviewed-candidate-title">{{ selectedCandidateDetail.candidate.candidate_id }}</h2>
+                </div>
+                <div class="reviewed-bundles__candidate-actions">
+                  <button
+                    type="button"
+                    :disabled="Boolean(candidateLoading[selectedCandidateDetail.candidate.candidate_id])"
+                    :aria-label="`刷新 Candidate ${selectedCandidateDetail.candidate.candidate_id}`"
+                    title="刷新 Candidate"
+                    @click="viewCandidate(selectedCandidateDetail.candidate.candidate_id)"
+                  >
+                    <RefreshCw
+                      :size="16"
+                      :class="{ 'reviewed-bundles__refresh-icon--spinning': Boolean(candidateLoading[selectedCandidateDetail.candidate.candidate_id]) }"
+                      aria-hidden="true"
+                    />
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="Boolean(candidateLoading[selectedCandidateDetail.candidate.candidate_id])"
+                    :aria-label="`记录 Candidate inspection ${selectedCandidateDetail.candidate.candidate_id}`"
+                    title="记录 Candidate inspection"
+                    @click="recordCandidateInspection(selectedCandidateDetail.candidate.candidate_id)"
+                  >
+                    <ClipboardCheck :size="16" aria-hidden="true" />
+                  </button>
+                  <button
+                    v-if="selectedCandidateDetail.inspection"
+                    type="button"
+                    :disabled="Boolean(candidateLoading[selectedCandidateDetail.candidate.candidate_id])"
+                    :aria-label="`执行 Candidate 验收 ${selectedCandidateDetail.candidate.candidate_id}`"
+                    title="执行 Candidate 验收"
+                    @click="acceptCandidate(selectedCandidateDetail.candidate.candidate_id)"
+                  >
+                    <ShieldCheck :size="16" aria-hidden="true" />
+                  </button>
+                </div>
+              </header>
+
+              <dl class="reviewed-bundles__facts reviewed-bundles__candidate-facts">
+                <div v-for="[field, label] in candidateIdentityFields" :key="field">
+                  <dt>{{ label }}</dt>
+                  <dd class="reviewed-bundles__identifier">{{ selectedCandidateDetail.candidate[field] || '-' }}</dd>
+                </div>
+                <div>
+                  <dt>Candidate generation</dt>
+                  <dd>{{ selectedCandidateDetail.candidate.generation }}</dd>
+                </div>
+                <div>
+                  <dt>Configuration</dt>
+                  <dd class="reviewed-bundles__identifier">{{ selectedCandidateDetail.candidate.configuration_identity }}</dd>
+                </div>
+                <div class="reviewed-bundles__candidate-configuration">
+                  <dt>Effective configuration</dt>
+                  <dd><pre>{{ formatStructured(selectedCandidateDetail.candidate.configuration) }}</pre></dd>
+                </div>
+                <div>
+                  <dt>Inspection</dt>
+                  <dd class="reviewed-bundles__identifier">{{ selectedCandidateDetail.inspection?.record_identity || '尚未记录' }}</dd>
+                </div>
+                <div>
+                  <dt>Publication eligibility</dt>
+                  <dd>{{ selectedCandidateEligibility?.eligible ? '可发布' : '尚未满足' }}</dd>
+                </div>
+              </dl>
+
+              <details v-if="selectedCandidateDetail.candidate.metadata" class="reviewed-bundles__record-detail">
+                <summary>Entry metadata</summary>
+                <pre>{{ formatStructured(selectedCandidateDetail.candidate.metadata) }}</pre>
+              </details>
+              <details v-if="selectedCandidateDetail.inspection" class="reviewed-bundles__record-detail">
+                <summary>Inspection 绑定</summary>
+                <pre>{{ formatStructured(selectedCandidateDetail.inspection) }}</pre>
+              </details>
+
+              <section
+                v-if="selectedCandidateDetail.acceptance"
+                class="reviewed-bundles__acceptance"
+                aria-label="Candidate 验收记录"
+              >
+                <p class="reviewed-bundles__detail-eyebrow">Candidate 验收记录</p>
+                <p class="reviewed-bundles__identifier">{{ selectedCandidateDetail.acceptance.record_identity }}</p>
+                <dl class="reviewed-bundles__facts">
+                  <div><dt>Supported outcome</dt><dd>{{ selectedCandidateDetail.acceptance.supported.outcome }}</dd></div>
+                  <div><dt>Boundary outcome</dt><dd>{{ selectedCandidateDetail.acceptance.boundary.outcome }}</dd></div>
+                  <div>
+                    <dt>Governing entry</dt>
+                    <dd>{{ selectedCandidateDetail.acceptance.supported.expected_governing_entry_identity }}</dd>
+                  </div>
+                  <div>
+                    <dt>Governing section</dt>
+                    <dd>{{ selectedCandidateDetail.acceptance.supported.expected_governing_section_id }}</dd>
+                  </div>
+                  <div>
+                    <dt>Answer Evidence Set</dt>
+                    <dd>{{ selectedCandidateDetail.acceptance.supported.answer_evidence_set.identity }}</dd>
+                  </div>
+                  <div>
+                    <dt>Citation markers</dt>
+                    <dd>{{ selectedCandidateDetail.acceptance.supported.citation_markers.join(', ') }}</dd>
+                  </div>
+                  <div><dt>Boundary reason</dt><dd>{{ selectedCandidateDetail.acceptance.boundary.reason }}</dd></div>
+                  <div>
+                    <dt>Boundary provider calls / citations</dt>
+                    <dd>{{ selectedCandidateDetail.acceptance.boundary.provider_call_count }} / {{ selectedCandidateDetail.acceptance.boundary.citation_markers.length }}</dd>
+                  </div>
+                </dl>
+                <details class="reviewed-bundles__record-detail">
+                  <summary>Evidence snapshots 与精确验收绑定</summary>
+                  <pre>{{ formatStructured(selectedCandidateDetail.acceptance) }}</pre>
+                </details>
+              </section>
+
+              <div class="reviewed-bundles__replacement">
+                <div>
+                  <p class="reviewed-bundles__detail-eyebrow">Replacement</p>
+                  <p class="reviewed-bundles__replacement-title">
+                    {{ selectedCandidateDetail.replacement.effect === 'replace' ? '替换当前 Published Knowledge Version' : '创建新的 Published Knowledge Version' }}
+                  </p>
+                  <p v-if="selectedCandidateDetail.replacement.current_published_knowledge_version" class="reviewed-bundles__identifier">
+                    {{ selectedCandidateDetail.replacement.current_published_knowledge_version.identity }}
+                  </p>
+                  <details v-if="selectedCandidateDetail.replacement.current_published_knowledge_version" class="reviewed-bundles__record-detail">
+                    <summary>Published version 绑定</summary>
+                    <pre>{{ formatStructured(selectedCandidateDetail.replacement.current_published_knowledge_version) }}</pre>
+                  </details>
+                </div>
+                <dl class="reviewed-bundles__diff">
+                  <div>
+                    <dt>新增 chunk</dt>
+                    <dd>{{ selectedCandidateDetail.replacement.diff.added.length }}</dd>
+                  </div>
+                  <div>
+                    <dt>变更 chunk</dt>
+                    <dd>{{ selectedCandidateDetail.replacement.diff.changed.length }}</dd>
+                  </div>
+                  <div>
+                    <dt>移除 chunk</dt>
+                    <dd>{{ selectedCandidateDetail.replacement.diff.removed.length }}</dd>
+                  </div>
+                </dl>
+                <div v-if="selectedCandidateDetail.replacement.diff.added.length" class="reviewed-bundles__replacement-content">
+                  <div v-for="item in selectedCandidateDetail.replacement.diff.added" :key="`added-${item.chunk_index}`">
+                    <p>Chunk {{ item.chunk_index }}：新增 Candidate 内容</p>
+                    <pre>{{ item.candidate_content || selectedCandidateDetail.candidate.chunks.find((chunk) => chunk.chunk_index === item.chunk_index)?.content }}</pre>
+                  </div>
+                </div>
+                <div v-if="selectedCandidateDetail.replacement.diff.changed.length" class="reviewed-bundles__replacement-content">
+                  <div v-for="item in selectedCandidateDetail.replacement.diff.changed" :key="`changed-${item.chunk_index}`">
+                    <p>Chunk {{ item.chunk_index }}：当前已发布内容</p>
+                    <pre>{{ item.published_content }}</pre>
+                    <p>Chunk {{ item.chunk_index }}：Candidate 内容</p>
+                    <pre>{{ item.candidate_content }}</pre>
+                  </div>
+                </div>
+                <div v-if="selectedCandidateDetail.replacement.diff.removed.length" class="reviewed-bundles__replacement-content">
+                  <div v-for="item in selectedCandidateDetail.replacement.diff.removed" :key="`removed-${item.chunk_index}`">
+                    <p>Chunk {{ item.chunk_index }}：将移除的已发布内容</p>
+                    <pre>{{ item.published_content }}</pre>
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="selectedCandidateEligibility?.reasons?.length" class="reviewed-bundles__candidate-reasons">
+                {{ selectedCandidateEligibility.reasons.join('；') }}
+              </div>
+
+              <label
+                v-if="selectedCandidateEligibility?.eligible || isPublicationSelected(selectedCandidateDetail.candidate.candidate_id)"
+                class="reviewed-bundles__publication-choice"
+              >
+                <input
+                  type="checkbox"
+                  :checked="isPublicationSelected(selectedCandidateDetail.candidate.candidate_id)"
+                  :disabled="!selectedCandidateEligibility?.eligible && !isPublicationSelected(selectedCandidateDetail.candidate.candidate_id)"
+                  @change="togglePublicationSelection(selectedCandidateDetail.candidate.candidate_id)"
+                />
+                <span>选择或撤销此 Candidate 的显式批量发布</span>
+              </label>
+
+              <div class="reviewed-bundles__candidate-chunks">
+                <p class="reviewed-bundles__detail-eyebrow">Candidate chunks</p>
+                <article
+                  v-for="chunk in selectedCandidateDetail.candidate.chunks"
+                  :key="chunk.chunk_id"
+                  class="reviewed-bundles__candidate-chunk"
+                >
+                  <header>
+                    <span>Chunk {{ chunk.chunk_index + 1 }} · {{ chunk.metadata?.section_id || 'unknown section' }}</span>
+                    <code>{{ chunk.content_sha256 }}</code>
+                  </header>
+                  <dl class="reviewed-bundles__chunk-facts">
+                    <div>
+                      <dt>Strategy</dt>
+                      <dd>{{ chunk.metadata?.chunk_strategy_id || '-' }}</dd>
+                    </div>
+                    <div>
+                      <dt>Sources</dt>
+                      <dd>{{ (chunk.metadata?.source_identities || []).join(', ') || '-' }}</dd>
+                    </div>
+                  </dl>
+                  <pre>{{ chunk.content }}</pre>
+                  <pre class="reviewed-bundles__chunk-metadata">{{ formatStructured(chunk.metadata) }}</pre>
+                </article>
+              </div>
+            </section>
           </template>
 
           <p v-else class="reviewed-bundles__detail-empty" role="status">选择一个 Bundle 以查看其不可变输入和任务状态。</p>
@@ -259,15 +497,106 @@
         </button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="publicationConfirmationVisible"
+      class="reviewed-bundles__publication-dialog"
+      width="min(92vw, 720px)"
+      :close-on-click-modal="false"
+      @closed="publicationConfirmationAcknowledged = false"
+    >
+      <template #header>
+        <div>
+          <p class="reviewed-bundles__detail-eyebrow">Explicit selected batch</p>
+          <h2>确认发布 Candidate</h2>
+        </div>
+      </template>
+
+      <div class="reviewed-bundles__publication-confirmation">
+        <ul>
+          <li v-for="item in publicationConfirmationSelections" :key="item.candidate_id">
+            <code>{{ item.candidate_id }}</code>
+            <span>{{ item.effect === 'replace' ? '替换' : '创建' }}</span>
+            <code v-if="item.current_published_knowledge_version">{{ item.current_published_knowledge_version }}</code>
+            <dl class="reviewed-bundles__confirmation-bindings">
+              <div><dt>Inspection</dt><dd>{{ item.inspection_record_identity }}</dd></div>
+              <div><dt>Acceptance</dt><dd>{{ item.acceptance_record_identity }}</dd></div>
+            </dl>
+          </li>
+        </ul>
+        <label class="reviewed-bundles__publication-choice">
+          <input v-model="publicationConfirmationAcknowledged" type="checkbox" />
+          <span>我确认发布以上精确选择项。</span>
+        </label>
+        <p
+          v-if="publicationResults"
+          class="reviewed-bundles__publication-outcome"
+          :class="{ 'reviewed-bundles__partial': !publicationResults.batch_complete }"
+          role="status"
+        >
+          已发布 {{ publicationResults.published.length }} 项，失败 {{ publicationResults.failed.length }} 项，跳过 {{ publicationResults.skipped.length }} 项。
+        </p>
+        <ul v-if="publicationResults" class="reviewed-bundles__publication-result-list">
+          <li v-for="item in publicationResults.published" :key="`published-${item.candidate_id}`">
+            <code>{{ item.candidate_id }}</code><span>已发布</span><code>{{ item.publication_identity }}</code>
+          </li>
+          <li v-for="item in publicationResults.failed" :key="`failed-${item.candidate_id}`">
+            <code>{{ item.candidate_id }}</code><span>失败</span><code>{{ item.reason }}</code>
+          </li>
+          <li v-for="item in publicationResults.skipped" :key="`skipped-${item.candidate_id}`">
+            <code>{{ item.candidate_id }}</code><span>跳过</span><code>{{ item.reason }}</code>
+          </li>
+        </ul>
+      </div>
+
+      <template #footer>
+        <button type="button" class="reviewed-bundles__dialog-button" :disabled="publicationLoading" @click="publicationConfirmationVisible = false">
+          取消
+        </button>
+        <button
+          type="button"
+          class="reviewed-bundles__dialog-button reviewed-bundles__dialog-button--primary"
+          :disabled="publicationLoading || !publicationConfirmationAcknowledged || !publicationConfirmationSelections.length"
+          @click="confirmPublication"
+        >
+          <Send v-if="!publicationLoading" :size="16" aria-hidden="true" />
+          <RefreshCw v-else :size="16" class="reviewed-bundles__refresh-icon--spinning" aria-hidden="true" />
+          <span>{{ publicationLoading ? '正在发布' : '确认发布' }}</span>
+        </button>
+      </template>
+    </el-dialog>
   </section>
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
-import { FileText, FileUp, Monitor, Play, RefreshCw, RotateCcw, XCircle } from 'lucide-vue-next';
+import {
+  ClipboardCheck,
+  Eye,
+  FileText,
+  FileUp,
+  Monitor,
+  Play,
+  RefreshCw,
+  RotateCcw,
+  Send,
+  ShieldCheck,
+  XCircle
+} from 'lucide-vue-next';
 import { apiAdapter } from '../api/adapters';
 
 const POLL_DELAY_MS = 1000;
+const candidateIdentityFields = [
+  ['entry_identity', 'Entry'],
+  ['document_identity', 'Document'],
+  ['bundle_id', 'Candidate bundle'],
+  ['bundle_item_id', 'Candidate bundle item'],
+  ['editorial_source_revision', 'Candidate source revision'],
+  ['bundle_sha256', 'Candidate bundle SHA-256'],
+  ['bundle_item_sha256', 'Candidate item SHA-256'],
+  ['input_sha256', 'Input SHA-256'],
+  ['frozen_input_sha256', 'Frozen input SHA-256']
+];
 
 const bundles = ref([]);
 const selectedBundleId = ref('');
@@ -286,7 +615,18 @@ const importLoading = ref(false);
 const importError = ref('');
 const selectedFilename = ref('');
 const bundleFileInput = ref(null);
+const selectedCandidateDetail = ref(null);
+const selectedCandidateEligibility = ref(null);
+const candidateLoading = ref({});
+const publicationSelectionByCandidate = ref({});
+const publicationConfirmationVisible = ref(false);
+const publicationConfirmationAcknowledged = ref(false);
+const activePublicationConfirmationId = ref(null);
+const activePublicationConfirmationSelections = ref(null);
+const publicationLoading = ref(false);
+const publicationResults = ref(null);
 let pollTimer = null;
+let candidateSelectionEpoch = 0;
 
 const bundleStateLabel = (state) =>
   ({
@@ -342,6 +682,9 @@ const nextActionLabel = (action) =>
     await_candidate_build: '等待构建',
     cancel_or_await_candidate_build: '等待或取消',
     await_candidate_inspection: '等待后续 inspection',
+    await_candidate_acceptance: '等待 Candidate 验收',
+    await_explicit_publication: '等待显式发布确认',
+    published: '已发布',
     correct_item_in_new_bundle: '在新 Bundle 中修正',
     review_explicit_no_op: '复核无变更',
     requires_t04_publication_workflow: '等待后续 publication workflow',
@@ -402,6 +745,11 @@ const canCancel = (item) => jobFor(item)?.allowed_next_action === 'cancel_or_awa
 const hasActiveSelectedJob = computed(
   () => selectedBundle.value?.items?.some((item) => canCancel(item) && !canDispatch(item)) || false
 );
+const publicationSelections = computed(() => Object.values(publicationSelectionByCandidate.value));
+const publicationConfirmationSelections = computed(
+  () => activePublicationConfirmationSelections.value || publicationSelections.value
+);
+const formatStructured = (value) => JSON.stringify(value || {}, null, 2);
 
 const mergeJob = (job) => {
   if (job?.job_id) jobsById.value = { ...jobsById.value, [job.job_id]: job };
@@ -416,6 +764,33 @@ const applyActionResult = (job, successMessage, failureFallback) => {
     return false;
   }
   actionMessage.value = successMessage;
+  return true;
+};
+
+const beginCandidateSelection = () => {
+  const selectionEpoch = ++candidateSelectionEpoch;
+  selectedCandidateDetail.value = null;
+  selectedCandidateEligibility.value = null;
+  return selectionEpoch;
+};
+
+const loadCandidateSelection = async (candidateId, selectionEpoch) => {
+  const detail = await apiAdapter.getReviewedCandidateInspection(candidateId);
+  let eligibility = null;
+  try {
+    eligibility = await apiAdapter.getReviewedCandidatePublicationEligibility(candidateId);
+  } catch (_error) {
+    // Inspection remains useful when current eligibility cannot be read.
+  }
+  if (
+    selectionEpoch !== candidateSelectionEpoch ||
+    detail?.candidate?.candidate_id !== candidateId ||
+    (eligibility && eligibility.candidate_id !== candidateId)
+  ) {
+    return false;
+  }
+  selectedCandidateDetail.value = detail;
+  selectedCandidateEligibility.value = eligibility;
   return true;
 };
 
@@ -455,6 +830,7 @@ const schedulePoll = () => {
 const selectBundle = async (bundleId) => {
   selectedBundleId.value = bundleId;
   actionError.value = '';
+  beginCandidateSelection();
   try {
     selectedBundle.value = await apiAdapter.getReviewedReleaseBundle(bundleId);
     await loadSelectedJobs();
@@ -477,6 +853,9 @@ const loadBundles = async () => {
       selectedBundleId.value = '';
       selectedBundle.value = null;
       jobsById.value = {};
+      selectedCandidateDetail.value = null;
+      selectedCandidateEligibility.value = null;
+      publicationSelectionByCandidate.value = {};
     }
   } catch (error) {
     listError.value = friendlyError(error, '加载 Reviewed Release Bundle 失败，请重新加载。');
@@ -584,6 +963,145 @@ const cancelJob = async (jobId) => {
   }
 };
 
+const viewCandidate = async (candidateId) => {
+  actionMessage.value = '';
+  actionError.value = '';
+  const selectionEpoch = beginCandidateSelection();
+  candidateLoading.value[candidateId] = true;
+  try {
+    await loadCandidateSelection(candidateId, selectionEpoch);
+  } catch (error) {
+    if (selectionEpoch === candidateSelectionEpoch) {
+      actionError.value = friendlyError(error, `加载 Candidate ${candidateId} 失败。`);
+    }
+  } finally {
+    delete candidateLoading.value[candidateId];
+  }
+};
+
+const recordCandidateInspection = async (candidateId) => {
+  actionMessage.value = '';
+  actionError.value = '';
+  const selectionEpoch = beginCandidateSelection();
+  candidateLoading.value[candidateId] = true;
+  try {
+    await apiAdapter.inspectReviewedCandidate(candidateId);
+    if (await loadCandidateSelection(candidateId, selectionEpoch)) {
+      actionMessage.value = `Candidate ${candidateId} 的 inspection 已记录。`;
+    }
+  } catch (error) {
+    if (selectionEpoch === candidateSelectionEpoch) {
+      actionError.value = friendlyError(error, `记录 Candidate ${candidateId} 的 inspection 失败。`);
+    }
+  } finally {
+    delete candidateLoading.value[candidateId];
+  }
+};
+
+const acceptCandidate = async (candidateId) => {
+  actionMessage.value = '';
+  actionError.value = '';
+  const selectionEpoch = beginCandidateSelection();
+  candidateLoading.value[candidateId] = true;
+  try {
+    await apiAdapter.acceptReviewedCandidate(candidateId);
+    if (await loadCandidateSelection(candidateId, selectionEpoch)) {
+      actionMessage.value = `Candidate ${candidateId} 的 Supported 与 Boundary 验收已记录。`;
+    }
+  } catch (error) {
+    if (selectionEpoch === candidateSelectionEpoch) {
+      actionError.value = friendlyError(error, `执行 Candidate ${candidateId} 验收失败。`);
+    }
+  } finally {
+    delete candidateLoading.value[candidateId];
+  }
+};
+
+const isPublicationSelected = (candidateId) => Boolean(publicationSelectionByCandidate.value[candidateId]);
+
+const togglePublicationSelection = (candidateId) => {
+  if (isPublicationSelected(candidateId)) {
+    const { [candidateId]: _removed, ...remaining } = publicationSelectionByCandidate.value;
+    publicationSelectionByCandidate.value = remaining;
+    return;
+  }
+  const eligibility = selectedCandidateEligibility.value;
+  if (!eligibility?.eligible || eligibility.candidate_id !== candidateId) return;
+  publicationSelectionByCandidate.value = {
+    ...publicationSelectionByCandidate.value,
+    [candidateId]: {
+      candidate_id: candidateId,
+      effect: eligibility.effect,
+      current_published_knowledge_version: eligibility.current_published_knowledge_version?.identity || null,
+      inspection_record_identity: eligibility.inspection_record_identity,
+      acceptance_record_identity: eligibility.acceptance_record_identity
+    }
+  };
+};
+
+const openPublicationConfirmation = () => {
+  publicationResults.value = null;
+  publicationConfirmationAcknowledged.value = false;
+  publicationConfirmationVisible.value = true;
+};
+
+const publicationConfirmationId = () => {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return `candidate-publication-${globalThis.crypto.randomUUID()}`;
+  }
+  return `candidate-publication-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+};
+
+const shouldReplacePublicationConfirmation = (error) =>
+  error?.status >= 400 &&
+  error?.status < 500 &&
+  !['PUBLICATION_CONFIRMATION_IN_PROGRESS', 'PUBLICATION_CONFIRMATION_LEASE_LOST'].includes(error?.code);
+
+const confirmPublication = async () => {
+  actionMessage.value = '';
+  actionError.value = '';
+  publicationLoading.value = true;
+  try {
+    if (!activePublicationConfirmationId.value) {
+      activePublicationConfirmationId.value = publicationConfirmationId();
+      activePublicationConfirmationSelections.value = publicationSelections.value.map((item) => ({ ...item }));
+    }
+    const selectedItems = activePublicationConfirmationSelections.value || [];
+    const result = await apiAdapter.publishReviewedCandidateBatch({
+      confirmation_id: activePublicationConfirmationId.value,
+      selected_items: selectedItems
+    });
+    publicationResults.value = result;
+    const retryableIds = new Set([
+      ...result.failed.map((item) => item.candidate_id),
+      ...result.skipped.map((item) => item.candidate_id)
+    ]);
+    publicationSelectionByCandidate.value = Object.fromEntries(
+      selectedItems
+        .filter((item) => retryableIds.has(item.candidate_id))
+        .map((item) => [item.candidate_id, item])
+    );
+    activePublicationConfirmationId.value = null;
+    activePublicationConfirmationSelections.value = null;
+    if (selectedCandidateDetail.value) await viewCandidate(selectedCandidateDetail.value.candidate.candidate_id);
+    try {
+      await loadSelectedJobs();
+    } catch (error) {
+      actionError.value = friendlyError(error, '发布结果已保存，任务状态刷新失败。');
+    }
+    const batchState = result.batch_complete ? '批次发布完成' : '批次未全部发布';
+    actionMessage.value = `${batchState}：${result.published.length} 项已发布，${result.failed.length} 项失败，${result.skipped.length} 项跳过。`;
+  } catch (error) {
+    if (shouldReplacePublicationConfirmation(error)) {
+      activePublicationConfirmationId.value = null;
+      activePublicationConfirmationSelections.value = null;
+    }
+    actionError.value = friendlyError(error, '批次发布失败。');
+  } finally {
+    publicationLoading.value = false;
+  }
+};
+
 const updateViewportScope = () => {
   const wasDesktop = isDesktop.value;
   isDesktop.value = window.innerWidth >= 768;
@@ -658,6 +1176,50 @@ onBeforeUnmount(() => {
 .reviewed-bundles__actions { justify-content: flex-end; }
 .reviewed-bundles__actions button { width: 30px; min-width: 30px; padding: 0; }
 .reviewed-bundles__actions .reviewed-bundles__cancel { border-color: var(--color-danger); color: var(--color-danger); }
+.reviewed-bundles__candidate-panel { margin-top: var(--space-5); padding-top: var(--space-4); border-top: 1px solid var(--color-rule); }
+.reviewed-bundles__candidate-panel .reviewed-bundles__section-header > div:first-child { min-width: 0; overflow-wrap: anywhere; }
+.reviewed-bundles__candidate-actions { flex-shrink: 0; }
+.reviewed-bundles__record-detail { min-width: 0; margin: var(--space-3) 0; font-size: 12px; }
+.reviewed-bundles__record-detail summary { cursor: pointer; color: var(--color-ink-soft); }
+.reviewed-bundles__record-detail pre, .reviewed-bundles__replacement-content pre { max-height: 300px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 11px; line-height: 1.6; }
+.reviewed-bundles__acceptance { padding: var(--space-4) 0; border-top: 1px solid var(--color-rule); }
+.reviewed-bundles__replacement-content { grid-column: 1 / -1; min-width: 0; font-size: 12px; }
+.reviewed-bundles__confirmation-bindings { grid-column: 1 / -1; min-width: 0; margin: 0; }
+.reviewed-bundles__confirmation-bindings dd { margin: 4px 0 var(--space-2); overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 11px; }
+.reviewed-bundles__candidate-actions { display: flex; align-items: center; gap: var(--space-2); }
+.reviewed-bundles__candidate-actions button { display: inline-flex; width: 30px; min-width: 30px; min-height: 30px; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--color-rule); border-radius: var(--radius-control); background: var(--color-paper-raised); color: var(--color-ink); cursor: pointer; }
+.reviewed-bundles__candidate-actions button:disabled { cursor: wait; opacity: 0.65; }
+.reviewed-bundles__candidate-actions button:not(:disabled):hover { border-color: var(--color-copper); color: var(--color-copper-strong); }
+.reviewed-bundles__candidate-facts { margin-bottom: var(--space-4); }
+.reviewed-bundles__candidate-configuration { grid-column: 1 / -1; }
+.reviewed-bundles__candidate-configuration pre { max-height: 180px; margin: var(--space-2) 0 0; overflow: auto; padding: var(--space-2); border-top: 1px solid var(--color-rule); background: var(--color-paper-muted); color: var(--color-ink); font-family: var(--font-mono); font-size: 10px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.reviewed-bundles__replacement { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-4); align-items: start; padding: var(--space-3) 0; border-top: 1px solid var(--color-rule); border-bottom: 1px solid var(--color-rule); }
+.reviewed-bundles__replacement-title { margin: 0; color: var(--color-ink); font-size: 13px; font-weight: 600; }
+.reviewed-bundles__replacement .reviewed-bundles__identifier { margin-top: var(--space-1); }
+.reviewed-bundles__diff { display: grid; grid-template-columns: repeat(3, minmax(52px, 1fr)); margin: 0; border-left: 1px solid var(--color-rule); }
+.reviewed-bundles__diff div { padding: 0 var(--space-3); text-align: center; }
+.reviewed-bundles__diff dt { color: var(--color-ink-soft); font-size: 11px; white-space: nowrap; }
+.reviewed-bundles__diff dd { margin: var(--space-1) 0 0; color: var(--color-ink); font-size: 16px; font-weight: 600; }
+.reviewed-bundles__candidate-reasons { margin-top: var(--space-3); padding: var(--space-2) var(--space-3); border-left: 3px solid var(--color-warning); background: var(--color-warning-soft); color: var(--color-warning); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.reviewed-bundles__publication-choice { display: inline-flex; align-items: center; gap: var(--space-2); margin-top: var(--space-3); color: var(--color-ink); font-size: 13px; cursor: pointer; }
+.reviewed-bundles__publication-choice input { width: 16px; height: 16px; accent-color: var(--color-moss); }
+.reviewed-bundles__candidate-chunks { margin-top: var(--space-4); }
+.reviewed-bundles__candidate-chunk { margin-top: var(--space-2); border-top: 1px solid var(--color-rule); border-bottom: 1px solid var(--color-rule); background: var(--color-paper-muted); }
+.reviewed-bundles__candidate-chunk header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--color-rule); color: var(--color-ink-soft); font-size: 11px; }
+.reviewed-bundles__candidate-chunk code { overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 10px; text-align: right; }
+.reviewed-bundles__candidate-chunk pre { max-height: 240px; margin: 0; overflow: auto; padding: var(--space-3); color: var(--color-ink); font-family: var(--font-mono); font-size: 11px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.reviewed-bundles__chunk-facts { display: grid; grid-template-columns: minmax(120px, 0.35fr) minmax(0, 1fr); gap: 0; margin: 0; border-bottom: 1px solid var(--color-rule); }
+.reviewed-bundles__chunk-facts div { min-width: 0; padding: var(--space-2) var(--space-3); }
+.reviewed-bundles__chunk-facts dt { color: var(--color-ink-soft); font-size: 10px; }
+.reviewed-bundles__chunk-facts dd { margin: 2px 0 0; overflow-wrap: anywhere; color: var(--color-ink); font-family: var(--font-mono); font-size: 10px; }
+.reviewed-bundles__candidate-chunk .reviewed-bundles__chunk-metadata { max-height: 220px; border-top: 1px solid var(--color-rule); background: var(--color-paper-raised); color: var(--color-ink-soft); }
+.reviewed-bundles__publication-confirmation { display: grid; gap: var(--space-4); }
+.reviewed-bundles__publication-confirmation ul { display: grid; gap: var(--space-2); max-height: 320px; margin: 0; padding: 0; overflow: auto; list-style: none; }
+.reviewed-bundles__publication-confirmation li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2) var(--space-3); align-items: center; padding: var(--space-3); border-top: 1px solid var(--color-rule); border-bottom: 1px solid var(--color-rule); background: var(--color-paper-muted); color: var(--color-ink-soft); font-size: 12px; }
+.reviewed-bundles__publication-confirmation li code { min-width: 0; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 11px; }
+.reviewed-bundles__publication-confirmation li code:last-child { grid-column: 1 / -1; }
+.reviewed-bundles__publication-outcome { margin: 0; padding: var(--space-3); border-left: 3px solid var(--color-moss); background: var(--color-moss-soft); color: var(--color-moss); font-size: 13px; }
+.reviewed-bundles__partial { border-left-color: var(--color-warning); background: var(--color-warning-soft); color: var(--color-warning); }
 .reviewed-bundles__detail-empty, .reviewed-bundles__state { color: var(--color-ink-soft); font-size: 13px; text-align: center; }
 .reviewed-bundles__detail-empty { margin: 150px 0; }
 .reviewed-bundles__state { height: 180px; }
@@ -672,5 +1234,7 @@ onBeforeUnmount(() => {
 @media (max-width: 1180px) {
   .reviewed-bundles__workspace { grid-template-columns: minmax(290px, 0.72fr) minmax(0, 1.45fr); }
   .reviewed-bundles__inventory, .reviewed-bundles__detail { padding: var(--space-3); }
+  .reviewed-bundles__replacement { grid-template-columns: 1fr; }
+  .reviewed-bundles__diff { border-top: 1px solid var(--color-rule); border-left: 0; padding-top: var(--space-3); }
 }
 </style>

@@ -178,23 +178,6 @@
                   <FileSearch :size="16" aria-hidden="true" />
                 </button>
                 <button
-                  v-if="canPublish(document)"
-                  type="button"
-                  class="document-library__icon-action"
-                  :aria-label="`发布候选构建 ${document.document_id}`"
-                  title="发布候选构建"
-                  :disabled="Boolean(publicationLoading[document.document_id])"
-                  @click="publishDocument(document)"
-                >
-                  <RefreshCw
-                    v-if="publicationLoading[document.document_id]"
-                    :size="16"
-                    class="document-library__refresh-icon--spinning"
-                    aria-hidden="true"
-                  />
-                  <CircleCheck v-else :size="16" aria-hidden="true" />
-                </button>
-                <button
                   v-if="canRebuild(document)"
                   type="button"
                   class="document-library__icon-action"
@@ -424,7 +407,6 @@ const rebuildLoading = ref(false);
 const rebuildError = ref('');
 const rebuildJobs = ref({});
 const deletionLoading = ref({});
-const publicationLoading = ref({});
 const deleteSuccess = ref('');
 const deleteError = ref('');
 const selectedDocumentIds = ref([]);
@@ -542,8 +524,6 @@ const chunkInspectionErrorMessage = (error) => {
 const hasPublishedGeneration = (document) => Number(document?.published_generation) > 0;
 
 const canInspectChunks = (document) => Number(document?.candidate_generation) > 0 || hasPublishedGeneration(document);
-
-const canPublish = (document) => document.status === 'candidate' && Number(document?.candidate_generation) > 0;
 
 const canRebuild = (document) => ['ready', 'candidate', 'failed'].includes(document.status);
 
@@ -694,31 +674,6 @@ const deleteErrorMessage = (error) => {
   if (error?.status === 404) return '文档已不在文档库中，请刷新确认当前状态。';
   if (error?.status === 409) return '文档当前正在变更，请刷新后重试。';
   return '请稍后重试。';
-};
-
-const publishDocument = async (document) => {
-  try {
-    await ElMessageBox.confirm(
-      `确认发布文档“${document.filename}”的候选构建？发布后它将立即用于后续检索。`,
-      '发布候选构建',
-      { type: 'warning', confirmButtonText: '发布', cancelButtonText: '取消' }
-    );
-  } catch {
-    return;
-  }
-
-  publicationLoading.value = { ...publicationLoading.value, [document.document_id]: true };
-  try {
-    const published = await apiAdapter.publishDocument(document.document_id);
-    documents.value = documents.value.map((item) =>
-      item.document_id === document.document_id ? { ...item, ...published } : item
-    );
-  } catch (error) {
-    deleteError.value = `发布候选构建失败：${deleteErrorMessage(error)}`;
-  } finally {
-    const { [document.document_id]: _completed, ...remaining } = publicationLoading.value;
-    publicationLoading.value = remaining;
-  }
 };
 
 const deleteDocument = async (document) => {

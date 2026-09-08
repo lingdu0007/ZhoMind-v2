@@ -4,6 +4,7 @@ import hashlib
 import json
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -11,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.common.config import get_settings
 from app.common.exceptions import AppError
 from app.contracts.canonical import (
     AcceptanceStatus,
@@ -32,9 +34,14 @@ from app.model.base import Base
 from app.model.canonical import CanonicalEventModel, CanonicalRecordModel
 from app.model.document import Document
 from app.model.user import User
+from app.rag.claim_evidence import parse_claim_evidence_contract
+from app.retrieval.candidate_pool import AuthorizedRetrievalCandidatePool
+from app.reviewed_bundles.build_service import CandidateBuildService
 from app.reviewed_bundles.models import CandidateBuildJob
+from app.reviewed_bundles.publication import CandidatePublicationService
 from app.reviewed_bundles.service import ReviewedReleaseBundleService
 from app.reviewed_bundles.verifier import CanonicalEditorialExportVerifier
+from app.service.identity_audit_service import IdentityAuditService
 
 
 def _canonical_sha256(value: object) -> str:
@@ -418,6 +425,271 @@ async def test_distinct_reviewer_approves_private_revision_and_admin_exports_det
     assert await db_session.scalar(select(func.count()).select_from(Document)) == 0
 
 
+async def test_claim_linked_approved_export_freezes_the_validated_claim_evidence_contract(db_session) -> None:
+    author = User(username="claim-author", password_hash="hash", role="user", is_active=True)
+    reviewer = User(username="claim-reviewer", password_hash="hash", role="user", is_active=True)
+    maintainer = User(username="claim-maintainer", password_hash="hash", role="user", is_active=True)
+    administrator = User(username="claim-administrator", password_hash="hash", role="admin", is_active=True)
+    db_session.add_all([author, reviewer, maintainer, administrator])
+    await db_session.commit()
+
+    contract = parse_claim_evidence_contract(
+        {
+            "schema_version": 1,
+            "review_id": "claim-linked-export-review",
+            "review_revision": "2026-09-08.1",
+            "conflict_state": "none",
+            "unknown_state": "none",
+            "resolver": {
+                "resolver_id": "claim-linked-export-resolver",
+                "calibration_id": "claim-linked-export-calibration",
+                "calibration_version": "2026-09-08",
+                "minimum_confidence": 0.8,
+            },
+            "claims": [
+                {
+                    "claim_id": "claim-source-admission-policy",
+                    "scope": "team_shared",
+                    "evidence": [
+                        {
+                            "section_id": "recommendation_or_reviewed_branches",
+                            "source_id": "source-rag-admission-001",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    entry = _review_ready_entry(
+        entry_id="claim-linked-export-001",
+        assurance_level="claim_linked",
+    )
+    entry.approving_reviewer_username = reviewer.username
+    entry.accountable_maintainer_username = maintainer.username
+    entry.claim_evidence_contract = contract.to_record()
+    authority = EditorialAuthorityService(db_session)
+    draft = await authority.create_draft(entry, author)
+    await _prepare_editorial_review(authority, draft["entry_id"], author, maintainer)
+    approved = await authority.approve_current_revision(draft["entry_id"], reviewer)
+
+    exported = await authority.export_approved_revision(draft["entry_id"], administrator)
+    reconstructed = await authority.reconstruct_export(draft["entry_id"], approved["revision_identity"])
+
+    assert exported["artifact"]["claim_evidence_contract"] == contract.canonical_json
+    assert exported["artifact"]["claim_evidence_contract_sha256"] == contract.sha256
+    assert exported["artifact"]["entry"]["claim_evidence_contract"] == contract.to_record()
+    assert reconstructed["artifact"] == exported["artifact"]
+
+
+async def test_claim_linked_entry_without_a_release_assured_contract_freezes_its_reviewed_links(
+    db_session,
+) -> None:
+    author = User(username="claim-links-author", password_hash="hash", role="user", is_active=True)
+    reviewer = User(username="claim-links-reviewer", password_hash="hash", role="user", is_active=True)
+    maintainer = User(username="claim-links-maintainer", password_hash="hash", role="user", is_active=True)
+    administrator = User(username="claim-links-administrator", password_hash="hash", role="admin", is_active=True)
+    db_session.add_all([author, reviewer, maintainer, administrator])
+    await db_session.commit()
+
+    entry = _review_ready_entry(
+        entry_id="claim-linked-links-only-001",
+        assurance_level="claim_linked",
+    )
+    entry.sources.append(
+        {
+            "source_id": "source-rag-admission-002",
+            "source_tier": "primary_evidence_source",
+            "title": "Chinese security review authority",
+            "authority": "ZhoMind architecture group",
+            "version_or_date": "2026-09-08",
+            "availability": "verified_usable",
+            "access_scope": "public",
+            "public_url": "https://example.com/rag/security-review",
+            "independent_public_verifiability": True,
+        }
+    )
+    for relationship in entry.section_source_relationships:
+        if relationship["section_id"] == "recommendation_or_reviewed_branches":
+            relationship["source_ids"].append("source-rag-admission-002")
+    entry.claims.append(
+        {
+            "claim_id": "claim-z-chinese-security-review",
+            "claim_kind": "ordinary",
+            "statement": "安全策略必须在七天内复核生产环境的授权变更。",
+            "section_id": "recommendation_or_reviewed_branches",
+            "source_ids": ["source-rag-admission-002"],
+            "material": False,
+            "scope": "team_shared",
+        }
+    )
+    entry.approving_reviewer_username = reviewer.username
+    entry.accountable_maintainer_username = maintainer.username
+    authority = EditorialAuthorityService(db_session)
+    draft = await authority.create_draft(entry, author)
+    await authority.collect_evidence(draft["entry_id"], author)
+    await authority.accept_maintainer_responsibility(draft["entry_id"], maintainer)
+    await authority.record_source_availability(
+        draft["entry_id"],
+        "source-rag-admission-001",
+        "verified_usable",
+        maintainer,
+    )
+    await authority.record_source_availability(
+        draft["entry_id"],
+        "source-rag-admission-002",
+        "verified_usable",
+        maintainer,
+    )
+    await authority.request_editorial_review(draft["entry_id"], author)
+    approved = await authority.approve_current_revision(draft["entry_id"], reviewer)
+
+    exported = await authority.export_approved_revision(draft["entry_id"], administrator)
+    frozen_contract = json.loads(exported["artifact"]["claim_evidence_contract"])
+
+    assert approved["revision_identity"] == exported["editorial_revision_identity"]
+    assert frozen_contract == {
+        "schema": "candidate_claim_evidence_contract/v1",
+        "entry_identity": draft["entry_identity"],
+        "editorial_revision_identity": approved["revision_identity"],
+        "claims": [
+            {
+                "claim_id": "claim-source-admission-policy",
+                "section_id": "recommendation_or_reviewed_branches",
+                "source_ids": ["source-rag-admission-001"],
+            },
+            {
+                "claim_id": "claim-z-chinese-security-review",
+                "section_id": "recommendation_or_reviewed_branches",
+                "source_ids": ["source-rag-admission-002"],
+            },
+        ],
+    }
+    assert "resolver" not in frozen_contract
+
+
+async def test_legacy_claim_linked_export_remains_verifiable_after_claim_contract_extension(
+    db_session,
+    monkeypatch,
+) -> None:
+    author = User(username="legacy-claim-author", password_hash="hash", role="user", is_active=True)
+    reviewer = User(username="legacy-claim-reviewer", password_hash="hash", role="user", is_active=True)
+    maintainer = User(username="legacy-claim-maintainer", password_hash="hash", role="user", is_active=True)
+    administrator = User(username="legacy-claim-administrator", password_hash="hash", role="admin", is_active=True)
+    db_session.add_all([author, reviewer, maintainer, administrator])
+    await db_session.commit()
+
+    contract = parse_claim_evidence_contract(
+        {
+            "schema_version": 1,
+            "review_id": "legacy-claim-linked-export-review",
+            "review_revision": "2026-09-08.1",
+            "conflict_state": "none",
+            "unknown_state": "none",
+            "resolver": {
+                "resolver_id": "legacy-claim-linked-export-resolver",
+                "calibration_id": "legacy-claim-linked-export-calibration",
+                "calibration_version": "2026-09-08",
+                "minimum_confidence": 0.8,
+            },
+            "claims": [
+                {
+                    "claim_id": "claim-source-admission-policy",
+                    "scope": "A retained historic Claim-Linked entry.",
+                    "evidence": [
+                        {
+                            "section_id": "recommendation_or_reviewed_branches",
+                            "source_id": "source-rag-admission-001",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    entry = _review_ready_entry(
+        entry_id="legacy-claim-linked-export-001",
+        assurance_level="claim_linked",
+    )
+    entry.approving_reviewer_username = reviewer.username
+    entry.accountable_maintainer_username = maintainer.username
+    entry.claim_evidence_contract = contract.to_record()
+    authority = EditorialAuthorityService(db_session)
+    draft = await authority.create_draft(entry, author)
+    await _prepare_editorial_review(authority, draft["entry_id"], author, maintainer)
+    approved = await authority.approve_current_revision(draft["entry_id"], reviewer)
+
+    revision = await db_session.get(CanonicalRecordModel, approved["revision_identity"])
+    assert revision is not None
+    payload = dict(revision.payload)
+    retained_draft = dict(payload["draft"])
+    retained_draft.pop("claim_evidence_contract", None)
+    original_revision = authority._revision
+
+    async def legacy_revision(revision_identity: str):
+        retained = await original_revision(revision_identity)
+        return SimpleNamespace(
+            stable_id=retained.stable_id,
+            payload={**payload, "draft": retained_draft},
+        )
+
+    monkeypatch.setattr(authority, "_revision", legacy_revision)
+
+    reconstructed = await authority.reconstruct_export(draft["entry_id"], approved["revision_identity"])
+    verified = await authority.verify_approved_export(
+        reconstructed["artifact"],
+        reconstructed["artifact_sha256"],
+    )
+
+    assert "claim_evidence_contract" not in reconstructed["artifact"]
+    assert "claim_evidence_contract_sha256" not in reconstructed["artifact"]
+    assert "claim_evidence_contract" not in reconstructed["artifact"]["entry"]
+    assert "claim_evidence_contract" not in verified["entry"]
+
+
+async def test_legacy_source_grounded_export_remains_verifiable_after_claim_contract_extension(
+    db_session,
+    monkeypatch,
+) -> None:
+    author = User(username="legacy-author", password_hash="hash", role="user", is_active=True)
+    reviewer = User(username="legacy-reviewer", password_hash="hash", role="user", is_active=True)
+    maintainer = User(username="legacy-maintainer", password_hash="hash", role="user", is_active=True)
+    db_session.add_all([author, reviewer, maintainer])
+    await db_session.commit()
+
+    authority = EditorialAuthorityService(db_session)
+    entry = _review_ready_entry(entry_id="legacy-source-grounded-export-001")
+    entry.approving_reviewer_username = reviewer.username
+    entry.accountable_maintainer_username = maintainer.username
+    draft = await authority.create_draft(entry, author)
+    await _prepare_editorial_review(authority, draft["entry_id"], author, maintainer)
+    approved = await authority.approve_current_revision(draft["entry_id"], reviewer)
+
+    # This record shape is what a Source-Grounded revision retained before Ticket 24.
+    revision = await db_session.get(CanonicalRecordModel, approved["revision_identity"])
+    assert revision is not None
+    payload = dict(revision.payload)
+    retained_draft = dict(payload["draft"])
+    retained_draft.pop("claim_evidence_contract", None)
+    original_revision = authority._revision
+
+    async def legacy_revision(revision_identity: str):
+        retained = await original_revision(revision_identity)
+        return SimpleNamespace(
+            stable_id=retained.stable_id,
+            payload={**payload, "draft": retained_draft},
+        )
+
+    monkeypatch.setattr(authority, "_revision", legacy_revision)
+
+    reconstructed = await authority.reconstruct_export(draft["entry_id"], approved["revision_identity"])
+    verified = await authority.verify_approved_export(
+        reconstructed["artifact"],
+        reconstructed["artifact_sha256"],
+    )
+
+    assert "claim_evidence_contract" not in reconstructed["artifact"]["entry"]
+    assert "claim_evidence_contract" not in verified["entry"]
+
+
 async def test_bundle_intake_verifier_reads_only_the_retained_approved_export_and_current_source_authority(
     db_session,
 ) -> None:
@@ -522,6 +794,158 @@ async def test_retrieval_authority_uses_current_published_source_facts_and_fails
 
     assert revoked["answer_eligible"] is False
     assert set(revoked["eligibility_reasons"]) >= {"decisive_source_loss", "source_unavailable"}
+
+
+async def test_published_revision_authority_retains_decisive_source_loss_after_source_recovers(
+    db_session,
+) -> None:
+    author = User(username="historical-author", password_hash="hash", role="user", is_active=True)
+    reviewer = User(username="historical-reviewer", password_hash="hash", role="user", is_active=True)
+    maintainer = User(username="historical-maintainer", password_hash="hash", role="user", is_active=True)
+    db_session.add_all([author, reviewer, maintainer])
+    await db_session.commit()
+
+    authority = EditorialAuthorityService(db_session)
+    entry_input = _review_ready_entry(entry_id="historical-source-loss-001")
+    entry_input.approving_reviewer_username = reviewer.username
+    entry_input.accountable_maintainer_username = maintainer.username
+    draft = await authority.create_draft(entry_input, author)
+    await _prepare_editorial_review(authority, draft["entry_id"], author, maintainer)
+    approved = await authority.approve_current_revision(draft["entry_id"], reviewer)
+
+    entry, events = await authority._entry_and_events(draft["entry_id"])
+    await authority._append_entry_event(
+        entry,
+        events,
+        event_type=CanonicalEventType.STATE_CHANGED,
+        from_state="editorial_review",
+        to_state="candidate_build",
+        action="candidate_build_admitted_for_historical_source_loss",
+        revision_identity=approved["revision_identity"],
+        actor_identity="member:historical-administrator",
+    )
+    await db_session.commit()
+    entry, events = await authority._entry_and_events(draft["entry_id"])
+    await authority._append_entry_event(
+        entry,
+        events,
+        event_type=CanonicalEventType.PUBLISHED,
+        from_state="candidate_build",
+        to_state="published",
+        action="published_for_historical_source_loss",
+        revision_identity=approved["revision_identity"],
+        actor_identity="member:historical-administrator",
+    )
+    await db_session.commit()
+
+    await authority.record_source_availability(
+        draft["entry_id"],
+        "source-rag-admission-001",
+        "unavailable_for_new_evidence",
+        maintainer,
+    )
+    await authority.record_source_availability(
+        draft["entry_id"],
+        "source-rag-admission-001",
+        "verified_usable",
+        maintainer,
+    )
+
+    historical = await authority.get_retrieval_authority_for_revision(
+        draft["entry_id"],
+        approved["revision_identity"],
+    )
+
+    assert historical["answer_eligible"] is False
+    assert "decisive_source_loss" in historical["eligibility_reasons"]
+
+
+@pytest.mark.parametrize("successor_change_kind", ["wording_only", "material"])
+async def test_published_revision_authority_retains_a_later_source_loss_across_successor_revisions(
+    db_session,
+    successor_change_kind: str,
+) -> None:
+    author = User(username="successor-loss-author", password_hash="hash", role="user", is_active=True)
+    reviewer = User(username="successor-loss-reviewer", password_hash="hash", role="user", is_active=True)
+    maintainer = User(username="successor-loss-maintainer", password_hash="hash", role="user", is_active=True)
+    db_session.add_all([author, reviewer, maintainer])
+    await db_session.commit()
+
+    authority = EditorialAuthorityService(db_session)
+    entry = _review_ready_entry(entry_id="successor-source-loss-001")
+    entry.approving_reviewer_username = reviewer.username
+    entry.accountable_maintainer_username = maintainer.username
+    draft = await authority.create_draft(entry, author)
+    await _prepare_editorial_review(authority, draft["entry_id"], author, maintainer)
+    first_approval = await authority.approve_current_revision(draft["entry_id"], reviewer)
+    first_export = await authority.reconstruct_export(draft["entry_id"], first_approval["revision_identity"])
+    await authority.record_candidate_publication(
+        first_export["artifact"],
+        candidate_identity="candidate:successor-source-loss-r1",
+        published_knowledge_version_identity="published_knowledge_version:successor-source-loss-r1",
+        actor_identity="member:ticket24-publication",
+    )
+
+    wording = entry.model_copy(deep=True)
+    wording.body["trade_offs"] = "Verification  adds review work but retains auditable support."
+    second_revision = await authority.revise_entry(
+        draft["entry_id"],
+        ReviseEditorialEntryRequest(
+            entry=wording,
+            change_kind=successor_change_kind,
+            lightweight_reason="clarity-only wording correction",
+        ),
+        maintainer,
+    )
+    await authority.accept_maintainer_responsibility(draft["entry_id"], maintainer)
+    if successor_change_kind == "wording_only":
+        await authority.accept_wording_revision(draft["entry_id"], reviewer)
+    else:
+        await authority.approve_current_revision(draft["entry_id"], reviewer)
+
+    await authority.record_source_availability(
+        draft["entry_id"],
+        "source-rag-admission-001",
+        "unavailable_for_new_evidence",
+        maintainer,
+    )
+    await authority.record_source_availability(
+        draft["entry_id"],
+        "source-rag-admission-001",
+        "verified_usable",
+        maintainer,
+    )
+
+    third_entry = wording.model_copy(deep=True)
+    third_entry.body["recommendation_or_reviewed_branches"] = (
+        "Require a durable authority record before source admission."
+    )
+    third_revision = await authority.revise_entry(
+        draft["entry_id"],
+        ReviseEditorialEntryRequest(entry=third_entry, change_kind="material"),
+        author,
+    )
+    assert third_revision["revision_identity"] != second_revision["revision_identity"]
+    await authority.accept_maintainer_responsibility(draft["entry_id"], maintainer)
+    third_approval = await authority.approve_current_revision(draft["entry_id"], reviewer)
+    third_export = await authority.reconstruct_export(draft["entry_id"], third_approval["revision_identity"])
+    await authority.record_candidate_publication(
+        third_export["artifact"],
+        candidate_identity="candidate:successor-source-loss-r3",
+        published_knowledge_version_identity="published_knowledge_version:successor-source-loss-r3",
+        actor_identity="member:ticket24-publication",
+    )
+
+    historical = await authority.get_retrieval_authority_for_revision(
+        draft["entry_id"],
+        first_approval["revision_identity"],
+    )
+    current = await authority.get_retrieval_authority(draft["entry_id"])
+
+    assert historical["answer_eligible"] is False
+    assert "decisive_source_loss" in historical["eligibility_reasons"]
+    assert current["editorial_revision_identity"] == third_approval["revision_identity"]
+    assert current["answer_eligible"] is True
 
 
 async def test_non_ascii_approved_export_imports_as_an_immutable_reviewed_bundle(db_session) -> None:
@@ -835,6 +1259,25 @@ def test_duplicate_claim_and_acceptance_query_ids_return_structured_reasons() ->
     } in reasons
 
 
+def test_acceptance_query_conditions_must_match_the_closed_execution_contract() -> None:
+    invalid = _review_ready_entry()
+    invalid.acceptance_material["supported_queries"][0]["query_conditions"] = [
+        {
+            "condition_id": "environment-production",
+            "field": "environment",
+            "operator": "equals",
+        }
+    ]
+
+    reasons = review_validation_reasons(invalid)
+
+    assert {
+        "field": "acceptance_material.supported_queries[0].query_conditions",
+        "code": "invalid",
+        "message": "query_conditions must be explicit, complete, and non-duplicated",
+    } in reasons
+
+
 def test_wording_only_revisions_fail_closed_for_semantic_operators() -> None:
     previous = _review_ready_entry()
     whitespace_only = previous.model_copy(deep=True)
@@ -944,6 +1387,93 @@ async def test_release_assured_requires_retained_active_canonical_assurance_reco
 
     collected = await authority.collect_evidence(draft["entry_id"], author)
     assert collected["lifecycle_state"] == "evidence_collected"
+
+
+async def test_real_release_assured_export_builds_accepts_and_publishes_without_rewriting_its_snapshot(db_session) -> None:
+    author = User(username="author", password_hash="hash", role="user", is_active=True)
+    reviewer = User(username="reviewer", password_hash="hash", role="user", is_active=True)
+    maintainer = User(username="maintainer", password_hash="hash", role="user", is_active=True)
+    administrator = User(username="administrator", password_hash="hash", role="admin", is_active=True)
+    db_session.add_all([author, reviewer, maintainer, administrator])
+    await db_session.commit()
+    actor = await IdentityAuditService(db_session).ensure_member_record(administrator, admission_path="candidate_publication")
+    entry = _review_ready_entry(assurance_level="release_assured")
+    entry.acceptance_material["supported_queries"][0]["query"] = (
+        "Which source admission conditions are required? deployment=production"
+    )
+    entry.release_assurance = {
+        "contract_identity": "product_path:claim-contract-v1",
+        "calibration_identity": "configuration:resolver-calibration-v1",
+        "frozen_acceptance_identity": "delivery_acceptance_record:editorial-preview-001",
+        "named_gate": "capability:release-assurance-gate-v1",
+    }
+    db_session.add_all(_release_assurance_authority_records(
+        entry_identity=f"entry:{entry.entry_id}",
+        contract_identity=entry.release_assurance["contract_identity"],
+        calibration_identity=entry.release_assurance["calibration_identity"],
+        acceptance_identity=entry.release_assurance["frozen_acceptance_identity"],
+        named_gate=entry.release_assurance["named_gate"],
+        qualified_active_status=True,
+    ))
+    await db_session.commit()
+    authority = EditorialAuthorityService(db_session)
+    draft = await authority.create_draft(entry, author)
+    await _prepare_editorial_review(authority, draft["entry_id"], author, maintainer)
+    await authority.approve_current_revision(draft["entry_id"], reviewer)
+    exported = await authority.export_approved_revision(draft["entry_id"], administrator)
+    snapshot = deepcopy(exported["artifact"]["release_assurance_snapshot"])
+    event_id = snapshot["frozen_acceptance_status"]["event_id"]
+    assert len(event_id) == 32 and ":" not in event_id
+
+    verifier = CanonicalEditorialExportVerifier(db_session)
+    bundle = await ReviewedReleaseBundleService(db_session, editorial_export_verifier=verifier).import_bundle(
+        _bundle_from_export(exported, bundle_id="release-assured-publication"),
+        actor_identity=actor,
+    )
+    build = CandidateBuildService(db_session, editorial_export_verifier=verifier)
+    job_id = bundle["items"][0]["job_id"]
+    assert await build.dispatch_job(job_id, actor_identity=actor)
+    candidate = await build.process_job(job_id)
+    assert candidate["status"] == "candidate_ready"
+    publication = CandidatePublicationService(db_session, editorial_export_verifier=verifier)
+    candidate_id = candidate["candidate_id"]
+    inspection = await publication.inspect(candidate_id, actor_identity=actor)
+    acceptance = await publication.accept(candidate_id, actor_identity=actor)
+    assert acceptance["supported"]["outcome"] == "evidence_gated_answer"
+    assert acceptance["boundary"]["outcome"] == "insufficient_evidence_reply"
+    result = await publication.confirm_publication_batch(
+        {
+            "confirmation_id": "release-assured-publication",
+            "selected_items": [{
+                "candidate_id": candidate_id,
+                "effect": "create",
+                "current_published_knowledge_version": None,
+                "inspection_record_identity": inspection["inspection"]["record_identity"],
+                "acceptance_record_identity": acceptance["record_identity"],
+            }],
+        },
+        actor_identity=actor,
+    )
+    assert result["batch_complete"] is True
+    reconstructed = await authority.reconstruct_export(entry.entry_id, exported["artifact"]["editorial_revision_identity"])
+    assert reconstructed["artifact"]["release_assurance_snapshot"] == snapshot
+    assert reconstructed["artifact_sha256"] == exported["artifact_sha256"]
+    successor = entry.model_copy(deep=True)
+    successor.sources.append({**successor.sources[0], "source_id": "source-successor-unverified"})
+    successor.section_source_relationships[0]["source_ids"].append("source-successor-unverified")
+    await authority.revise_entry(
+        entry.entry_id,
+        ReviseEditorialEntryRequest(entry=successor, change_kind="material"),
+        author,
+    )
+    current = await authority.get_retrieval_authority(entry.entry_id)
+    assert "source_unavailable" in current["eligibility_reasons"]
+    retrieved = await AuthorizedRetrievalCandidatePool(db_session, settings=get_settings()).retrieve(
+        "Which source admission conditions are required? deployment=production", top_k=5,
+    )
+    assert retrieved.items
+    assert {item["publication_identity"] for item in retrieved.items} == {result["published"][0]["publication_identity"]}
+    assert {item["editorial_revision_identity"] for item in retrieved.items} == {exported["artifact"]["editorial_revision_identity"]}
 
 
 async def test_release_assured_rejects_unqualified_delivery_acceptance_active_event(db_session) -> None:
@@ -1071,6 +1601,14 @@ async def test_material_revision_requires_new_review_while_wording_revision_uses
     draft = await authority.create_draft(_review_ready_entry(), author)
     await _prepare_editorial_review(authority, draft["entry_id"], author, maintainer)
     first_approval = await authority.approve_current_revision(draft["entry_id"], reviewer)
+    first_export = await authority.reconstruct_export(draft["entry_id"], first_approval["revision_identity"])
+    await authority.record_candidate_publication(
+        first_export["artifact"],
+        candidate_identity="candidate:published-revision-r1",
+        published_knowledge_version_identity="published_knowledge_version:published-revision-r1",
+        actor_identity="member:ticket24-publication",
+    )
+    assert (await authority.get_projection(draft["entry_id"]))["lifecycle_state"] == "published"
 
     incomplete = CreateEditorialEntryRequest(
         entry_id=draft["entry_id"],
@@ -1115,6 +1653,14 @@ async def test_material_revision_requires_new_review_while_wording_revision_uses
     assert exc_info.value.code == "EDITORIAL_SELF_APPROVAL_FORBIDDEN"
     await authority.accept_maintainer_responsibility(draft["entry_id"], maintainer)
     second_approval = await authority.approve_current_revision(draft["entry_id"], reviewer_two)
+    second_export = await authority.reconstruct_export(draft["entry_id"], second_approval["revision_identity"])
+    await authority.record_candidate_publication(
+        second_export["artifact"],
+        candidate_identity="candidate:published-revision-r2",
+        published_knowledge_version_identity="published_knowledge_version:published-revision-r2",
+        actor_identity="member:ticket24-publication",
+    )
+    assert (await authority.get_projection(draft["entry_id"]))["lifecycle_state"] == "published"
 
     wording = material.model_copy(deep=True)
     wording.body["trade_offs"] = "Verification  adds review work but retains auditable support."

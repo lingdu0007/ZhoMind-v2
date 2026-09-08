@@ -4,7 +4,7 @@ Status: Accepted
 
 Date: 2026-09-05
 
-Updated: 2026-09-06
+Updated: 2026-09-08
 
 ## Context
 
@@ -52,7 +52,14 @@ authority boundary and make later reconstruction unauditable.
   approve that material revision. The assigned Maintainer must append a
   revision-specific responsibility acceptance before review, approval, or
   export. Administrators receive approved exports only and cannot inspect or
-  modify private editorial records.
+  directly modify private editorial records. Candidate publication is a narrow
+  server-side exception, not an administrator editorial command: only after
+  `CandidatePublicationService` re-verifies one exact frozen approved export
+  under the finalization fence and atomically writes exact Candidate and
+  Published Knowledge Version identities may `EditorialAuthorityService` append
+  machine-derived `candidate_build` and `published` lifecycle events. That path
+  exposes no private editorial content, accepts no administrator-selected
+  editorial field, and cannot revise a private record.
 - Use explicit entry `schema_version` 1 from the first retained editorial
   revision. There is no prior editorial schema to migrate; an incompatible
   future version must provide its own migration before acceptance.
@@ -194,6 +201,12 @@ authority boundary and make later reconstruction unauditable.
   sufficiency. The retained
   `retrieval-answer-policy/lexical-heuristic-migration-v1` path is explicitly
   migration/diagnostic and is never represented as Sparse BM25.
+- If a later safe revision is not yet published, ordinary retrieval may keep
+  using an existing pointed Published Knowledge Version only after it
+  reconstructs the exact frozen Candidate and retained revision and
+  revalidates current source records. Runtime metadata binds the projection but
+  never supplies source, decision, assurance, or applicability authority;
+  missing or unusable retained sources exclude the pointed version.
 
 ## Consequences
 

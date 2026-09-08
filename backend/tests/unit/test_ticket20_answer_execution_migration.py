@@ -8,9 +8,11 @@ from alembic import command
 from app.common.config import get_settings
 
 
+@pytest.mark.parametrize("prior_head", ["20260908_0021", "20260908_t24_candidate_pub"])
 def test_answer_execution_tail_migration_adds_private_append_only_persistence(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
+    prior_head: str,
 ) -> None:
     database_path = tmp_path / "answer-execution-tail.db"
     connection = sqlite3.connect(database_path)
@@ -43,6 +45,7 @@ def test_answer_execution_tail_migration_adds_private_append_only_persistence(
     config = Config(str(backend_directory / "alembic.ini"))
     config.set_main_option("script_location", str(backend_directory / "alembic"))
     try:
+        command.upgrade(config, prior_head)
         command.upgrade(config, "head")
     finally:
         get_settings.cache_clear()
@@ -176,7 +179,14 @@ def test_answer_execution_tail_migration_adds_private_append_only_persistence(
         "answer_executions_immutable_update",
     }
     assert "knowledge_feedback_signals" not in tables
-    assert revision == ("20260908_0021",)
+    assert {
+        "generation_route_secrets",
+        "generation_route_state",
+        "published_knowledge_versions",
+        "published_knowledge_pointers",
+        "candidate_publication_confirmations",
+    }.issubset(tables)
+    assert revision == ("20260908_merge_t22_t24",)
 
 
 def test_answer_execution_migration_defines_postgresql_immutable_update_guards() -> None:

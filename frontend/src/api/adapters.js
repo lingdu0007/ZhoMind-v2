@@ -115,10 +115,6 @@ export const apiAdapter = {
     const { data } = await http.post(`/documents/${encodeURIComponent(documentId)}/build`, payload);
     return unwrapData(data);
   },
-  async publishDocument(documentId) {
-    const { data } = await http.post(`/documents/${encodeURIComponent(documentId)}/publish`);
-    return unwrapData(data);
-  },
   async batchBuildDocuments(payload) {
     const { data } = await http.post('/documents/batch-build', payload);
     return unwrapData(data);
@@ -177,6 +173,40 @@ export const apiAdapter = {
   },
   async cancelReviewedBundleJob(jobId) {
     const { data } = await http.post(`/reviewed-release-bundles/jobs/${encodeURIComponent(jobId)}/cancel`);
+    return unwrapData(data);
+  },
+  async getReviewedCandidateInspection(candidateId) {
+    const { data } = await http.get(
+      `/reviewed-release-bundles/candidates/${encodeURIComponent(candidateId)}/inspection`
+    );
+    return unwrapData(data);
+  },
+  async inspectReviewedCandidate(candidateId) {
+    const { data } = await http.post(
+      `/reviewed-release-bundles/candidates/${encodeURIComponent(candidateId)}/inspection`
+    );
+    return unwrapData(data);
+  },
+  async acceptReviewedCandidate(candidateId) {
+    const { data } = await http.post(
+      `/reviewed-release-bundles/candidates/${encodeURIComponent(candidateId)}/acceptance`
+    );
+    return unwrapData(data);
+  },
+  async getReviewedCandidatePublicationEligibility(candidateId) {
+    const { data } = await http.get(
+      `/reviewed-release-bundles/candidates/${encodeURIComponent(candidateId)}/publication-eligibility`
+    );
+    return unwrapData(data);
+  },
+  async getReviewedCandidatePublication(candidateId) {
+    const { data } = await http.get(
+      `/reviewed-release-bundles/candidates/${encodeURIComponent(candidateId)}/publication`
+    );
+    return unwrapData(data);
+  },
+  async publishReviewedCandidateBatch(payload) {
+    const { data } = await http.post('/reviewed-release-bundles/publication-batches', payload);
     return unwrapData(data);
   },
 

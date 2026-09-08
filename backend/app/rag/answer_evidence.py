@@ -42,6 +42,7 @@ _GATE_METADATA_KEYS = (
     "review_status",
     "evidence_conflict",
     "source_id",
+    "source_identity",
     "source_availability",
     "source_review_date",
     "source_freshness_days",
@@ -50,6 +51,7 @@ _GATE_METADATA_KEYS = (
     "assurance_level",
     "claim_evidence_contract",
     "claim_evidence_contract_sha256",
+    "candidate_evidence_source_identity",
 )
 _AGENT_CITATION_KEYS = (
     "entry_id",
@@ -386,15 +388,26 @@ def _frozen_identity_binding_is_valid(
     metadata: Mapping[str, object],
     excerpt: str | None,
 ) -> bool:
-    if not isinstance(binding, Mapping) or set(binding) != {
-        "entry_identity",
-        "editorial_revision_identity",
-        "publication_identity",
-        "section_identity",
-        "chunk_identity",
-        "snapshot_id",
-        "source_content_length",
-    }:
+    if not isinstance(binding, Mapping):
+        return False
+
+    required_fields = frozenset(
+        {
+            "entry_identity",
+            "editorial_revision_identity",
+            "publication_identity",
+            "section_identity",
+            "chunk_identity",
+            "snapshot_id",
+            "source_content_length",
+        }
+    )
+    source_binding_field = "candidate_evidence_source_identity"
+    binding_fields = frozenset(binding)
+    if binding_fields not in (
+        required_fields,
+        required_fields | {source_binding_field},
+    ):
         return False
     if canonical_json_sha256(binding) != item_identity:
         return False
@@ -404,6 +417,20 @@ def _frozen_identity_binding_is_valid(
     section_identity = binding.get("section_identity")
     chunk_identity = binding.get("chunk_identity")
     source_content_length = binding.get("source_content_length")
+    source_evidence_identity = binding.get(source_binding_field)
+    if source_binding_field in binding:
+        if not isinstance(source_evidence_identity, str):
+            return False
+        try:
+            source_identity = StableIdentity.from_stable_id(source_evidence_identity)
+        except ValueError:
+            return False
+        if (
+            source_identity.kind is not StableIdentityKind.SOURCE
+            or source_evidence_identity != metadata.get("source_identity")
+            or source_identity.value != metadata.get("source_id")
+        ):
+            return False
     if (
         not _identity_has_kind(entry_identity, StableIdentityKind.ENTRY)
         or not _identity_has_kind(editorial_revision_identity, StableIdentityKind.EDITORIAL_REVISION)
