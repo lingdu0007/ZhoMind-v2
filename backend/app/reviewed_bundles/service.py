@@ -61,6 +61,15 @@ class EditorialExportVerifier(Protocol):
         artifact_sha256: str,
     ) -> AbstractAsyncContextManager[dict]: ...
 
+    async def record_candidate_publication(
+        self,
+        artifact: dict,
+        *,
+        candidate_identity: str,
+        published_knowledge_version_identity: str,
+        actor_identity: str,
+    ) -> None: ...
+
 
 class ReviewedReleaseBundleService:
     def __init__(

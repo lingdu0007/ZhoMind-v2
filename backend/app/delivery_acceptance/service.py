@@ -45,6 +45,7 @@ class DeliveryAcceptanceService:
         administrator: User,
     ) -> dict[str, Any]:
         related_records = await self._lock_records(await self._create_related_record_ids(payload))
+        self._validate_candidate_publication_binding(payload, related_records)
         await self._validate_predecessor(payload, related_records)
         await self._validate_pilot_baseline(payload, related_records)
         await self._validate_carried_forward_checks(payload, related_records)
@@ -104,6 +105,7 @@ class DeliveryAcceptanceService:
             "conditions": payload["conditions"],
             "assumptions": payload["assumptions"],
             "checks": [check.model_dump(mode="json") for check in checks],
+            "candidate_publication_binding": payload.get("candidate_publication_binding"),
             "change_owner_identity": payload["change_owner_identity"],
             "evaluator_identity": payload["evaluator_identity"],
             "approver_identities": self._approver_identities(events),
@@ -258,7 +260,144 @@ class DeliveryAcceptanceService:
             for check in payload.checks
             if check.carried_forward_from is not None
         )
+        if payload.candidate_publication_binding is not None:
+            related_ids.update(payload.candidate_publication_binding.persisted_record_identities)
+        related_ids.update(await self._referenced_published_knowledge_version_ids(payload))
         return related_ids
+
+    def _validate_candidate_publication_binding(
+        self,
+        payload: CreateDeliveryAcceptanceRecordRequest,
+        records: dict[str, CanonicalRecordModel],
+    ) -> None:
+        binding = payload.candidate_publication_binding
+        if binding is None:
+            if any(
+                record.identity_kind == StableIdentityKind.PUBLISHED_KNOWLEDGE_VERSION.value
+                and isinstance(record.payload, dict)
+                and record.payload.get("schema") == "published_knowledge_version/v1"
+                for record in records.values()
+            ):
+                raise self._candidate_publication_binding_error()
+            return
+
+        candidate = self._bound_record(
+            records,
+            binding.candidate_identity,
+            identity_kind=StableIdentityKind.CANDIDATE,
+            schema="candidate_build_candidate/v1",
+        )
+        inspection = self._bound_record(
+            records,
+            binding.inspection_record_identity,
+            identity_kind=StableIdentityKind.EVENT,
+            schema="candidate_inspection/v1",
+        )
+        acceptance = self._bound_record(
+            records,
+            binding.acceptance_record_identity,
+            identity_kind=StableIdentityKind.EVENT,
+            schema="candidate_acceptance/v1",
+        )
+        published = self._bound_record(
+            records,
+            binding.published_knowledge_version_identity,
+            identity_kind=StableIdentityKind.PUBLISHED_KNOWLEDGE_VERSION,
+            schema="published_knowledge_version/v1",
+        )
+        configuration = self._bound_record(
+            records,
+            binding.configuration_identity,
+            identity_kind=StableIdentityKind.CONFIGURATION,
+            schema="candidate_publication_configuration/v1",
+        )
+
+        candidate_payload = self._record_payload(candidate)
+        inspection_payload = self._record_payload(inspection)
+        acceptance_payload = self._record_payload(acceptance)
+        published_payload = self._record_payload(published)
+        configuration_payload = self._record_payload(configuration)
+        expected = {
+            "candidate_id": binding.candidate_identity,
+            "entry_identity": binding.entry_identity,
+            "bundle_sha256": binding.bundle_sha256,
+            "frozen_input_sha256": binding.frozen_input_sha256,
+            "configuration_identity": binding.configuration_identity,
+        }
+        publication_records = (inspection_payload, acceptance_payload, published_payload)
+        if (
+            candidate_payload.get("entry_identity") != binding.entry_identity
+            or candidate_payload.get("bundle_sha256") != binding.bundle_sha256
+            or candidate_payload.get("frozen_input_sha256") != binding.frozen_input_sha256
+            or candidate_payload.get("embedding_configuration") != configuration_payload.get("configuration")
+            or inspection_payload.get("inspection_record_identity") != inspection.stable_id
+            or acceptance_payload.get("acceptance_record_identity") != acceptance.stable_id
+            or acceptance_payload.get("inspection_record_identity") != inspection.stable_id
+            or published_payload.get("inspection_record_identity") != inspection.stable_id
+            or published_payload.get("acceptance_record_identity") != acceptance.stable_id
+            or any(
+                record_payload.get(key) != value
+                for record_payload in publication_records
+                for key, value in expected.items()
+            )
+            or published_payload.get("candidate_id") != binding.candidate_identity
+        ):
+            raise self._candidate_publication_binding_error()
+
+    async def _referenced_published_knowledge_version_ids(
+        self,
+        payload: CreateDeliveryAcceptanceRecordRequest,
+    ) -> set[str]:
+        declared_identities = {
+            *payload.affected_scope.entry_identities,
+            *payload.affected_scope.collection_identities,
+            *payload.affected_scope.product_path_identities,
+            *payload.affected_scope.configuration_identities,
+            *payload.affected_scope.protected_capability_identities,
+            *payload.affected_scope.public_claim_identities,
+            *payload.content_identities,
+            *payload.product_identities,
+        }
+        if payload.affected_scope.deployment_identity is not None:
+            declared_identities.add(payload.affected_scope.deployment_identity)
+        published_version_identities = {
+            identity for identity in declared_identities if identity.startswith("published_knowledge_version:")
+        }
+        if not published_version_identities:
+            return set()
+        result = await self.session.execute(
+            select(CanonicalRecordModel.stable_id).where(
+                CanonicalRecordModel.stable_id.in_(published_version_identities),
+                CanonicalRecordModel.identity_kind == StableIdentityKind.PUBLISHED_KNOWLEDGE_VERSION.value,
+            )
+        )
+        return set(result.scalars())
+
+    @staticmethod
+    def _bound_record(
+        records: dict[str, CanonicalRecordModel],
+        record_identity: str,
+        *,
+        identity_kind: StableIdentityKind,
+        schema: str,
+    ) -> CanonicalRecordModel:
+        record = records.get(record_identity)
+        if (
+            record is None
+            or record.identity_kind != identity_kind.value
+            or not isinstance(record.payload, dict)
+            or record.payload.get("schema") != schema
+        ):
+            raise DeliveryAcceptanceService._candidate_publication_binding_error()
+        return record
+
+    @staticmethod
+    def _candidate_publication_binding_error() -> AppError:
+        return AppError(
+            status_code=409,
+            code="ACCEPTANCE_CANDIDATE_PUBLICATION_BINDING_INVALID",
+            message="delivery acceptance cannot prove its exact Candidate publication binding",
+        )
 
     async def _ancestor_record_ids(self, initial_identity: object) -> set[str]:
         if initial_identity is None:
@@ -482,7 +621,13 @@ class DeliveryAcceptanceService:
         )
         records = {record.stable_id: record for record in result.scalars()}
         for record_identity in record_identities:
-            self._required_record(records, record_identity)
+            if record_identity not in records:
+                raise AppError(
+                    status_code=404,
+                    code="RESOURCE_NOT_FOUND",
+                    message="canonical record not found",
+                    detail={"record_identity": record_identity},
+                )
         return records
 
     async def _status_events(self, record_identity: str) -> list[CanonicalEventModel]:

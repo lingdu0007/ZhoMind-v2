@@ -403,7 +403,7 @@ def test_registration_rejects_the_twenty_sixth_active_member(client: TestClient)
     assert response.json()["code"] == "ACTIVE_MEMBER_LIMIT_REACHED"
 
 
-def test_publication_rejects_the_five_hundred_and_first_published_source(client: TestClient) -> None:
+def test_legacy_publication_bypass_rejects_before_source_capacity_evaluation(client: TestClient) -> None:
     admin_token = _register(client, username="publication-capacity-admin", role="admin")
 
     async def _seed_published_sources() -> None:
@@ -439,8 +439,8 @@ def test_publication_rejects_the_five_hundred_and_first_published_source(client:
 
     response = client.post("/api/v1/documents/candidate-over-capacity/publish", headers=_headers(admin_token))
 
-    assert response.status_code == 409
-    assert response.json()["code"] == "PUBLISHED_SOURCE_LIMIT_REACHED"
+    assert response.status_code == 410
+    assert response.json()["code"] == "LEGACY_PUBLICATION_BYPASS_REJECTED"
 
 
 def test_chat_rejects_requests_over_the_five_concurrent_chat_limit(client: TestClient) -> None:

@@ -165,19 +165,12 @@ test('System Administrator can inspect published chunks for a ready document', {
   assert.equal(await page.getByText('关键词：部署、审批').isVisible(), true);
 });
 
-test('System Administrator can inspect and explicitly publish a Candidate Build', { timeout: 30000 }, async (t) => {
+test('System Administrator cannot invoke legacy Candidate publication from Document Library', { timeout: 30000 }, async (t) => {
   const { page, baseUrl } = await startWorkbench(t, {});
   await loginAdmin(page, baseUrl);
   await openLibrary(page, baseUrl);
 
   assert.equal(await page.getByText('待发布候选 (candidate)').first().isVisible(), true);
-  await page.getByRole('button', { name: '发布候选构建 browser-candidate' }).click();
-  await page.getByRole('dialog').getByText(/确认发布文档“browser-candidate.md”的候选构建/).waitFor();
-  await page.getByRole('dialog').getByRole('button', { name: '发布', exact: true }).click();
-  // Wait for the publication to complete: the publish button must disappear.
-  // (The generic '可检索 (ready)' label is already present from seed data, so
-  // it cannot signal the transition.)
-  await page.getByRole('button', { name: '发布候选构建 browser-candidate' }).waitFor({ state: 'detached' });
   assert.equal(await page.getByRole('button', { name: '发布候选构建 browser-candidate' }).count(), 0);
 });
 

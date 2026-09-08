@@ -16,6 +16,7 @@ from app.model.canonical import CanonicalEventModel
 from app.retrieval.candidate_pool import AuthorizedRetrievalCandidatePool
 from app.reviewed_bundles.build_service import CandidateBuildService
 from app.reviewed_bundles.models import CandidateBuildJob
+from app.reviewed_bundles.publication import CandidatePublicationService
 from app.reviewed_bundles.runtime import candidate_build_runtime
 from app.reviewed_bundles.service import ReviewedReleaseBundleService
 from app.reviewed_bundles.verifier import CanonicalEditorialExportVerifier
@@ -27,6 +28,14 @@ router = APIRouter(prefix="/reviewed-release-bundles", tags=["reviewed-release-b
 
 def _ok(data: dict) -> dict:
     return ok_response(data=data, request_id=get_request_id())
+
+
+def _candidate_publication_service(session: AsyncSession) -> CandidatePublicationService:
+    return CandidatePublicationService(
+        session,
+        editorial_export_verifier=CanonicalEditorialExportVerifier(session),
+        settings=get_runtime_settings(),
+    )
 
 
 def _timestamp(value: datetime | None) -> str | None:
@@ -161,6 +170,81 @@ async def preview_candidate(
             "candidate_exclusions": result.candidate_exclusions,
         }
     )
+
+
+@router.get("/candidates/{candidate_id}/inspection")
+async def get_candidate_inspection(
+    candidate_id: str,
+    _: object = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    result = await _candidate_publication_service(session).get_inspection(candidate_id)
+    return _ok(result)
+
+
+@router.post("/candidates/{candidate_id}/inspection")
+async def inspect_candidate(
+    candidate_id: str,
+    current_user=Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    actor_identity = await IdentityAuditService(session).ensure_member_record(
+        current_user,
+        admission_path="candidate_inspection",
+    )
+    result = await _candidate_publication_service(session).inspect(candidate_id, actor_identity=actor_identity)
+    return _ok(result)
+
+
+@router.post("/candidates/{candidate_id}/acceptance")
+async def accept_candidate(
+    candidate_id: str,
+    current_user=Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    actor_identity = await IdentityAuditService(session).ensure_member_record(
+        current_user,
+        admission_path="candidate_acceptance",
+    )
+    result = await _candidate_publication_service(session).accept(candidate_id, actor_identity=actor_identity)
+    return _ok(result)
+
+
+@router.get("/candidates/{candidate_id}/publication-eligibility")
+async def candidate_publication_eligibility(
+    candidate_id: str,
+    _: object = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    result = await _candidate_publication_service(session).publication_eligibility(candidate_id)
+    return _ok(result)
+
+
+@router.get("/candidates/{candidate_id}/publication")
+async def get_candidate_publication(
+    candidate_id: str,
+    _: object = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    result = await _candidate_publication_service(session).get_publication(candidate_id)
+    return _ok(result)
+
+
+@router.post("/publication-batches")
+async def publish_candidate_batch(
+    payload: object = Body(...),
+    current_user=Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    actor_identity = await IdentityAuditService(session).ensure_member_record(
+        current_user,
+        admission_path="candidate_publication",
+    )
+    result = await _candidate_publication_service(session).confirm_publication_batch(
+        payload,
+        actor_identity=actor_identity,
+    )
+    return _ok(result)
 
 
 @router.post("/jobs/{job_id}/dispatch")

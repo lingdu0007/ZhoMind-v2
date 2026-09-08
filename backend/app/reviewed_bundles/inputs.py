@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+from base64 import urlsafe_b64encode
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import NoReturn
@@ -225,6 +227,13 @@ def _structured_sha256(value: object) -> str:
 
 def frozen_candidate_build_input_sha256(payload: Mapping[str, object]) -> str:
     return canonical_json_sha256({field: payload[field] for field in _FROZEN_INPUT_HASH_FIELDS})
+
+
+def runtime_document_identity(candidate_document_identity: str) -> str:
+    if len(candidate_document_identity) <= 64:
+        return candidate_document_identity
+    digest = hashlib.sha256(candidate_document_identity.encode("utf-8")).digest()
+    return f"runtime-document:pkv-{urlsafe_b64encode(digest).decode('ascii').rstrip('=')}"
 
 
 def _raise_input_integrity() -> NoReturn:

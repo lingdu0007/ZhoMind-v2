@@ -12,6 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.canonical_json import canonical_json_sha256
 from app.common.exceptions import AppError
+from app.contracts.candidate_claim_evidence import (
+    CandidateClaimEvidenceContractError,
+    build_candidate_claim_evidence_contract,
+)
 from app.contracts.canonical import (
     AcceptanceStatus,
     CanonicalEventType,
@@ -39,6 +43,7 @@ from app.editorial_authority.schemas import (
 )
 from app.model.canonical import CanonicalEventModel, CanonicalRecordModel
 from app.model.user import User
+from app.rag.claim_evidence import ClaimEvidenceContractError, parse_claim_evidence_contract
 from app.service.identity_audit_service import IdentityAuditService
 
 
@@ -432,10 +437,13 @@ class EditorialAuthorityService:
         await self._ensure_source_records(payload.entry, actor_identity)
         to_state = current.to_state
         if payload.change_kind == EditorialRevisionChangeKind.MATERIAL.value:
-            if current.to_state == EntryLifecycleState.NEEDS_REVIEW.value:
+            if current.to_state in {
+                EntryLifecycleState.NEEDS_REVIEW.value,
+                EntryLifecycleState.PUBLISHED.value,
+            }:
                 to_state = validate_transition(
                     EntryLifecycleState,
-                    EntryLifecycleState.NEEDS_REVIEW,
+                    current.to_state,
                     EntryLifecycleState.EDITORIAL_REVIEW,
                 ).value
             elif current.to_state not in {
@@ -446,7 +454,7 @@ class EditorialAuthorityService:
                 raise AppError(
                     status_code=409,
                     code="EDITORIAL_LIFECYCLE_STATE_INVALID",
-                    message="T01 cannot revise Candidate Build or Published entry state",
+                    message="T01 cannot revise a Candidate Build entry state",
                     detail={"current_state": current.to_state},
                 )
         await self._append_entry_event(
@@ -552,18 +560,23 @@ class EditorialAuthorityService:
             admission_path="private_editorial_repository",
         )
         current = self._latest_event(events)
+        _draft, revision_identity = await self._current_draft(entry_payload, current)
+        revision_payload = self._payload(await self._revision(revision_identity))
+        is_published_wording_revision = (
+            current.to_state == EntryLifecycleState.PUBLISHED.value
+            and revision_payload.get("change_kind") == EditorialRevisionChangeKind.WORDING_ONLY.value
+        )
         if current.to_state not in {
             EntryLifecycleState.EVIDENCE_COLLECTED.value,
             EntryLifecycleState.EDITORIAL_REVIEW.value,
             EntryLifecycleState.NEEDS_REVIEW.value,
-        }:
+        } and not is_published_wording_revision:
             raise AppError(
                 status_code=409,
                 code="EDITORIAL_LIFECYCLE_STATE_INVALID",
-                message="maintainer responsibility may be accepted only after evidence collection",
+                message="maintainer responsibility may be accepted only after evidence collection or for a published wording revision",
                 detail={"current_state": current.to_state},
             )
-        _draft, revision_identity = await self._current_draft(entry_payload, current)
         roles = self._roles_for_revision(events, revision_identity)
         if actor_identity != roles.get("accountable_maintainer_identity"):
             raise AppError(
@@ -784,7 +797,15 @@ class EditorialAuthorityService:
         if not isinstance(draft_data, dict):
             raise RuntimeError("editorial revision draft is invalid")
         draft = CreateEditorialEntryRequest.model_validate(draft_data)
-        self._raise_for_incomplete_draft(draft, action="export")
+        legacy_claim_linked_contract = (
+            draft.assurance_level == "claim_linked"
+            and "claim_evidence_contract" not in draft_data
+        )
+        self._raise_for_incomplete_draft(
+            draft,
+            action="export",
+            allow_legacy_claim_linked_contract=legacy_claim_linked_contract,
+        )
         approval = self._approval_for_revision(events, revision.stable_id)
         if approval is None:
             raise AppError(
@@ -799,6 +820,19 @@ class EditorialAuthorityService:
             revision_identity=revision.stable_id,
             events=events,
         )
+        claim_evidence_snapshot = (
+            {}
+            if legacy_claim_linked_contract
+            else self._claim_evidence_contract_snapshot(
+                draft,
+                entry_identity=entry.stable_id,
+                revision_identity=revision.stable_id,
+            )
+        )
+        entry_payload = draft.model_dump(mode="json")
+        # New optional fields must not rewrite the byte-exact shape of older exports.
+        if entry_payload.get("claim_evidence_contract") is None:
+            entry_payload.pop("claim_evidence_contract", None)
         artifact = {
             "schema": "editorial_export/v1",
             "entry_identity": entry.stable_id,
@@ -808,10 +842,11 @@ class EditorialAuthorityService:
             "revision_sha256": self._sha256(revision_payload),
             "roles": authority_snapshot["roles"],
             "approval": authority_snapshot["approval"],
-            "entry": draft.model_dump(mode="json"),
+            "entry": entry_payload,
             "sources": authority_snapshot["sources"],
             "release_assurance_snapshot": authority_snapshot["release_assurance"],
             "editorial_audit": authority_snapshot["editorial_audit"],
+            **claim_evidence_snapshot,
         }
         export_findings = editorial_export_safety_findings(artifact)
         if export_findings:
@@ -895,6 +930,97 @@ class EditorialAuthorityService:
         await self._lock_canonical_records(self._candidate_finalization_authority_record_ids(artifact))
         yield await self.verify_approved_export(artifact, artifact_sha256)
 
+    async def record_candidate_publication(
+        self,
+        artifact: dict[str, Any],
+        *,
+        candidate_identity: str,
+        published_knowledge_version_identity: str,
+        actor_identity: str,
+    ) -> None:
+        """Append the authority lifecycle facts that make a verified Candidate retrievable."""
+
+        entry_id = artifact.get("entry_id")
+        entry_identity = artifact.get("entry_identity")
+        revision_identity = artifact.get("editorial_revision_identity")
+        if (
+            not isinstance(entry_id, str)
+            or not entry_id
+            or not isinstance(entry_identity, str)
+            or not entry_identity
+            or not isinstance(revision_identity, str)
+            or not revision_identity
+        ):
+            raise AppError(
+                status_code=409,
+                code="EDITORIAL_PUBLICATION_AUTHORITY_INVALID",
+                message="Candidate publication cannot identify its verified editorial authority",
+            )
+        entry, events = await self._entry_and_events(entry_id, for_update=True)
+        if entry.stable_id != entry_identity:
+            raise AppError(
+                status_code=409,
+                code="EDITORIAL_PUBLICATION_AUTHORITY_INVALID",
+                message="Candidate publication entry identity does not match editorial authority",
+            )
+        current = self._latest_event(events)
+        _draft, current_revision_identity = await self._current_draft(self._payload(entry), current)
+        if current_revision_identity != revision_identity:
+            raise AppError(
+                status_code=409,
+                code="EDITORIAL_PUBLICATION_AUTHORITY_INVALID",
+                message="Candidate publication revision is no longer current",
+            )
+        roles = self._roles_for_revision(events, revision_identity)
+        if current.to_state == EntryLifecycleState.EDITORIAL_REVIEW.value:
+            await self._append_entry_event(
+                entry,
+                events,
+                event_type=CanonicalEventType.STATE_CHANGED,
+                from_state=EntryLifecycleState.EDITORIAL_REVIEW.value,
+                to_state=validate_transition(
+                    EntryLifecycleState,
+                    EntryLifecycleState.EDITORIAL_REVIEW,
+                    EntryLifecycleState.CANDIDATE_BUILD,
+                ).value,
+                action="candidate_build_finalized",
+                revision_identity=revision_identity,
+                actor_identity=actor_identity,
+                roles=roles,
+                extra={"candidate_identity": candidate_identity},
+            )
+            await self.session.flush()
+            entry, events = await self._entry_and_events(entry_id, for_update=True)
+            current = self._latest_event(events)
+        if current.to_state == EntryLifecycleState.CANDIDATE_BUILD.value:
+            await self._append_entry_event(
+                entry,
+                events,
+                event_type=CanonicalEventType.PUBLISHED,
+                from_state=EntryLifecycleState.CANDIDATE_BUILD.value,
+                to_state=validate_transition(
+                    EntryLifecycleState,
+                    EntryLifecycleState.CANDIDATE_BUILD,
+                    EntryLifecycleState.PUBLISHED,
+                ).value,
+                action="candidate_published",
+                revision_identity=revision_identity,
+                actor_identity=actor_identity,
+                roles=roles,
+                extra={
+                    "candidate_identity": candidate_identity,
+                    "published_knowledge_version_identity": published_knowledge_version_identity,
+                },
+            )
+            return
+        if current.to_state != EntryLifecycleState.PUBLISHED.value:
+            raise AppError(
+                status_code=409,
+                code="EDITORIAL_PUBLICATION_AUTHORITY_INVALID",
+                message="Candidate publication cannot advance the current editorial lifecycle state",
+                detail={"current_state": current.to_state},
+            )
+
     async def get_projection(self, entry_id: str, *, now: datetime | None = None) -> dict[str, Any]:
         entry, events = await self._entry_and_events(entry_id)
         entry_payload = self._payload(entry)
@@ -913,7 +1039,8 @@ class EditorialAuthorityService:
             applicability_explicit=bool(draft.applicability_conditions),
             known_contradiction=self._revision_flag(events, revision_identity, "known_contradiction"),
             integrity_defect=self._revision_flag(events, revision_identity, "integrity_defect"),
-            decisive_source_loss=self._revision_flag(events, revision_identity, "decisive_source_loss"),
+            decisive_source_loss=self._revision_flag(events, revision_identity, "decisive_source_loss")
+            or self._published_revision_has_decisive_source_loss(events, draft),
             now=now,
         )
         return {
@@ -1047,6 +1174,156 @@ class EditorialAuthorityService:
                 "review_date": draft.review_date,
                 "applicable_versions": list(draft.applicable_versions or []),
                 "source_definitions": source_definitions,
+            }
+        )
+        return authority
+
+    async def get_retrieval_authority_for_revision(
+        self,
+        entry_id: str,
+        revision_identity: str,
+        *,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Revalidate current source facts for one immutable published revision."""
+
+        entry, events = await self._entry_and_events(entry_id)
+        revision = await self._revision(revision_identity)
+        revision_payload = self._payload(revision)
+        draft_data = revision_payload.get("draft")
+        if (
+            revision_payload.get("entry_identity") != entry.stable_id
+            or not isinstance(draft_data, dict)
+        ):
+            raise RuntimeError("published retrieval authority revision is invalid")
+        try:
+            draft = CreateEditorialEntryRequest.model_validate(draft_data)
+        except ValueError as exc:
+            raise RuntimeError("published retrieval authority draft is invalid") from exc
+        if draft.entry_id != entry_id:
+            raise RuntimeError("published retrieval authority entry identity is invalid")
+
+        sources = await self._verified_source_snapshot(draft, action="published-version retrieval")
+        approval = self._approval_for_revision(events, revision_identity)
+        revision_events = [
+            event
+            for event in events
+            if self._payload(event).get("revision_identity") == revision_identity
+        ]
+        if not revision_events:
+            raise RuntimeError("published retrieval authority revision has no lifecycle event")
+        historical_current = self._latest_event(revision_events)
+        eligibility = evaluate_answer_eligibility(
+            lifecycle_state=EntryLifecycleState.PUBLISHED.value,
+            approval_status=(approval or {}).get("status", "pending"),
+            source_availability=[source["availability"] for source in sources],
+            needs_review_at=self._needs_review_at(events, revision_identity, historical_current),
+            applicability_explicit=bool(draft.applicability_conditions),
+            known_contradiction=self._revision_flag(events, revision_identity, "known_contradiction"),
+            integrity_defect=self._revision_flag(events, revision_identity, "integrity_defect"),
+            decisive_source_loss=(
+                self._revision_flag(events, revision_identity, "decisive_source_loss")
+                or self._published_revision_has_decisive_source_loss(events, draft)
+            ),
+            now=now,
+        )
+        authority: dict[str, Any] = {
+            "entry_id": entry_id,
+            "entry_identity": entry.stable_id,
+            "editorial_revision_identity": revision_identity,
+            "lifecycle_state": EntryLifecycleState.PUBLISHED.value,
+            "answer_eligible": eligibility["answer_eligible"],
+            "eligibility_reasons": list(eligibility["reasons"]),
+        }
+        if eligibility["answer_eligible"] is not True:
+            return authority
+
+        release_assurance_snapshot = await self._release_assurance_snapshot(draft)
+        source_by_id: dict[str, dict[str, str]] = {}
+        source_definitions: list[dict[str, str]] = []
+        for source_snapshot in sources:
+            source_identity = source_snapshot.get("source_identity")
+            source_definition = source_snapshot.get("source")
+            if (
+                not isinstance(source_identity, str)
+                or not isinstance(source_definition, dict)
+                or not isinstance(source_definition.get("source_id"), str)
+                or source_definition.get("access_scope") not in {"public", "controlled_internal"}
+            ):
+                raise RuntimeError("published retrieval authority source snapshot is invalid")
+            access_scope = str(source_definition["access_scope"])
+            source_projection = {
+                "source_identity": source_identity,
+                "title": str(source_definition.get("title") or ""),
+                "authority": str(source_definition.get("authority") or ""),
+                "version": str(source_definition.get("version_or_date") or ""),
+                "access_scope": access_scope,
+            }
+            if not all(source_projection[key] for key in ("title", "authority", "version")):
+                raise RuntimeError("published retrieval authority source snapshot is invalid")
+            if access_scope == "public":
+                public_url = source_definition.get("public_url")
+                if not isinstance(public_url, str) or not public_url:
+                    raise RuntimeError("published retrieval authority public source locator is invalid")
+                source_projection["public_url"] = public_url
+            else:
+                controlled_locator = source_definition.get("controlled_locator")
+                if not isinstance(controlled_locator, str) or not controlled_locator:
+                    raise RuntimeError("published retrieval authority controlled source locator is invalid")
+                source_projection["controlled_locator"] = controlled_locator
+            source_by_id[source_definition["source_id"]] = {
+                "source_identity": source_identity,
+                "availability": str(source_snapshot["availability"]),
+                "access_scope": access_scope,
+            }
+            source_definitions.append(source_projection)
+
+        body = draft.body if isinstance(draft.body, dict) else {}
+        decision_query = body.get("decision_query")
+        if not isinstance(decision_query, str) or not decision_query.strip():
+            raise RuntimeError("published retrieval authority decision query is missing")
+        relationships = draft.section_source_relationships
+        if not isinstance(relationships, list):
+            raise RuntimeError("published retrieval authority section-source relationships are missing")
+        by_section: dict[str, list[dict[str, str]]] = {}
+        for relationship in relationships:
+            if not isinstance(relationship, dict):
+                raise RuntimeError("published retrieval authority section-source relationship is invalid")
+            section_id = relationship.get("section_id")
+            source_ids = relationship.get("source_ids")
+            if (
+                not isinstance(section_id, str)
+                or not section_id
+                or section_id in by_section
+                or not isinstance(source_ids, list)
+                or not source_ids
+            ):
+                raise RuntimeError("published retrieval authority section-source relationship is invalid")
+            section_sources: list[dict[str, str]] = []
+            seen_source_ids: set[str] = set()
+            for source_id in source_ids:
+                if not isinstance(source_id, str) or source_id in seen_source_ids or source_id not in source_by_id:
+                    raise RuntimeError("published retrieval authority section-source relationship is invalid")
+                seen_source_ids.add(source_id)
+                section_sources.append(dict(source_by_id[source_id]))
+            by_section[section_id] = sorted(section_sources, key=lambda item: item["source_identity"])
+        if set(by_section) != set(body):
+            raise RuntimeError("published retrieval authority section-source relationships do not cover the retained body")
+        authority.update(
+            {
+                "section_source_relationships": by_section,
+                "assurance_level": draft.assurance_level,
+                "applicability_conditions": list(draft.applicability_conditions or []),
+                "non_applicability_conditions": list(draft.non_applicability_conditions or []),
+                "freshness_triggers": list(draft.freshness_triggers or []),
+                "release_assurance_snapshot": release_assurance_snapshot,
+                "decision_query": decision_query.strip(),
+                "entry_title": draft.title,
+                "coverage_position": draft.coverage_position,
+                "review_date": draft.review_date,
+                "applicable_versions": list(draft.applicable_versions or []),
+                "source_definitions": source_definitions,
+                "source_revalidated_at": (now.isoformat() if now is not None else None),
             }
         )
         return authority
@@ -1498,6 +1775,45 @@ class EditorialAuthorityService:
     async def _raise_for_usable_sources(self, draft: CreateEditorialEntryRequest, *, action: str) -> None:
         await self._verified_source_snapshot(draft, action=action)
 
+    @staticmethod
+    def _claim_evidence_contract_snapshot(
+        draft: CreateEditorialEntryRequest,
+        *,
+        entry_identity: str,
+        revision_identity: str,
+    ) -> dict[str, str]:
+        if draft.assurance_level != "claim_linked":
+            return {}
+        if draft.claim_evidence_contract is None:
+            try:
+                contract = build_candidate_claim_evidence_contract(
+                    entry_identity=entry_identity,
+                    editorial_revision_identity=revision_identity,
+                    claims=draft.claims,
+                )
+            except CandidateClaimEvidenceContractError as exc:
+                raise AppError(
+                    status_code=422,
+                    code="EDITORIAL_ENTRY_INVALID",
+                    message="Claim-Linked editorial export has no valid reviewed Claim-Evidence Links",
+                ) from exc
+            return {
+                "claim_evidence_contract": contract.canonical_json,
+                "claim_evidence_contract_sha256": contract.sha256,
+            }
+        try:
+            contract = parse_claim_evidence_contract(draft.claim_evidence_contract)
+        except ClaimEvidenceContractError as exc:
+            raise AppError(
+                status_code=422,
+                code="EDITORIAL_ENTRY_INVALID",
+                message="Claim-Linked editorial export has no valid frozen Claim-Evidence contract",
+            ) from exc
+        return {
+            "claim_evidence_contract": contract.canonical_json,
+            "claim_evidence_contract_sha256": contract.sha256,
+        }
+
     async def _release_assurance_snapshot(self, draft: CreateEditorialEntryRequest) -> dict[str, Any] | None:
         if draft.assurance_level != "release_assured":
             return None
@@ -1783,6 +2099,7 @@ class EditorialAuthorityService:
                     EntryLifecycleState.EVIDENCE_COLLECTED.value,
                     EntryLifecycleState.EDITORIAL_REVIEW.value,
                     EntryLifecycleState.NEEDS_REVIEW.value,
+                    EntryLifecycleState.PUBLISHED.value,
                 }
             ):
                 continue
@@ -2004,6 +2321,7 @@ class EditorialAuthorityService:
                     EntryLifecycleState.EVIDENCE_COLLECTED.value,
                     EntryLifecycleState.EDITORIAL_REVIEW.value,
                     EntryLifecycleState.NEEDS_REVIEW.value,
+                    EntryLifecycleState.PUBLISHED.value,
                 }
                 and event.to_state
                 in {
@@ -2011,6 +2329,7 @@ class EditorialAuthorityService:
                     EntryLifecycleState.EVIDENCE_COLLECTED.value,
                     EntryLifecycleState.EDITORIAL_REVIEW.value,
                     EntryLifecycleState.NEEDS_REVIEW.value,
+                    EntryLifecycleState.PUBLISHED.value,
                 }
                 and EditorialAuthorityService._is_member_identity(event.recorded_by)
             )
@@ -2140,6 +2459,7 @@ class EditorialAuthorityService:
                     EntryLifecycleState.EVIDENCE_COLLECTED.value,
                     EntryLifecycleState.EDITORIAL_REVIEW.value,
                     EntryLifecycleState.NEEDS_REVIEW.value,
+                    EntryLifecycleState.PUBLISHED.value,
                 }
                 or not isinstance(event.recorded_by, str)
                 or roles.get("accountable_maintainer_identity") != event.recorded_by
@@ -2168,6 +2488,22 @@ class EditorialAuthorityService:
         return any(
             EditorialAuthorityService._payload(event).get("revision_identity") == revision_identity
             and EditorialAuthorityService._payload(event).get(flag) is True
+            for event in events
+        )
+
+    @staticmethod
+    def _published_revision_has_decisive_source_loss(
+        events: list[CanonicalEventModel],
+        draft: CreateEditorialEntryRequest,
+    ) -> bool:
+        source_identities = {
+            StableIdentity(StableIdentityKind.SOURCE, source["source_id"]).stable_id
+            for source in draft.sources or []
+            if isinstance(source, dict) and isinstance(source.get("source_id"), str)
+        }
+        return bool(source_identities) and any(
+            EditorialAuthorityService._payload(event).get("decisive_source_loss") is True
+            and EditorialAuthorityService._payload(event).get("source_identity") in source_identities
             for event in events
         )
 
@@ -2231,8 +2567,16 @@ class EditorialAuthorityService:
             )
 
     @staticmethod
-    def _raise_for_incomplete_draft(payload: CreateEditorialEntryRequest, *, action: str) -> None:
-        reasons = review_validation_reasons(payload)
+    def _raise_for_incomplete_draft(
+        payload: CreateEditorialEntryRequest,
+        *,
+        action: str,
+        allow_legacy_claim_linked_contract: bool = False,
+    ) -> None:
+        reasons = review_validation_reasons(
+            payload,
+            allow_legacy_claim_linked_contract=allow_legacy_claim_linked_contract,
+        )
         if reasons:
             raise AppError(
                 status_code=422,

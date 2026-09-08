@@ -185,7 +185,8 @@ def test_agent_entry_is_retrievable_through_authenticated_chat_only_after_publis
             assert all(item["metadata"]["entry_id"] == "pae-workflow-001" for item in chunk_items)
 
             publish = client.post(f"/api/v1/documents/{uploaded['document_id']}/publish", headers=admin_headers)
-            assert publish.status_code == 200
+            assert publish.status_code == 410
+            assert publish.json()["code"] == "LEGACY_PUBLICATION_BYPASS_REJECTED"
 
             uncalibrated_chat = client.post(
                 "/api/v1/chat",

@@ -10,6 +10,10 @@ from types import MappingProxyType
 from typing import Any
 
 from app.common.canonical_json import canonical_json_sha256
+from app.contracts.candidate_claim_evidence import (
+    CandidateClaimEvidenceContractError,
+    parse_candidate_claim_evidence_contract,
+)
 from app.contracts.canonical import KnowledgeSourceTier, StableIdentity, StableIdentityKind
 from app.rag.answer_evidence import AnswerEvidence
 from app.rag.claim_evidence import ClaimEvidenceContractError, parse_claim_evidence_contract
@@ -37,6 +41,19 @@ _MAX_CONDITION_VALUE_CHARS = 512
 _EXPLICIT_CONDITION = re.compile(r"\b([a-z][a-z0-9_.-]{0,79})\s*=\s*([a-z0-9_.:/-]{1,160})\b", re.IGNORECASE)
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SOURCE_TIERS = frozenset(item.value for item in KnowledgeSourceTier)
+_SOURCE_EVIDENCE_PROJECTION_FIELDS = frozenset(
+    {
+        "source_identity",
+        "source_id",
+        "source_tier",
+        "source_access_scope",
+        "source_title",
+        "source_authority",
+        "source_url",
+        "source_version",
+        "source_review_date",
+    }
+)
 _COVERAGE_TOKEN = re.compile(r"[a-z][a-z0-9_.-]{1,79}|[\u3400-\u9fff]{2,}", re.IGNORECASE)
 _COVERAGE_STOPWORDS = frozenset(
     {
@@ -533,6 +550,20 @@ def _candidate_item_binding(value: Mapping[str, object], evidence: AnswerEvidenc
         or content_length < len(evidence.excerpt)
     ):
         return None
+    source_evidence_identity = metadata.get("candidate_evidence_source_identity")
+    if source_evidence_identity is not None:
+        if not isinstance(source_evidence_identity, str):
+            return None
+        try:
+            source_identity = StableIdentity.from_stable_id(source_evidence_identity)
+        except ValueError:
+            return None
+        if (
+            source_identity.kind is not StableIdentityKind.SOURCE
+            or metadata.get("source_identity") != source_evidence_identity
+            or metadata.get("source_id") != source_identity.value
+        ):
+            return None
     required_chunk_fields = ("document_id", "generation", "chunk_index", "content_sha256")
     if set(chunk_identity) != set(required_chunk_fields):
         return None
@@ -548,7 +579,7 @@ def _candidate_item_binding(value: Mapping[str, object], evidence: AnswerEvidenc
         or chunk_identity.get("content_sha256") != content_sha256
     ):
         return None
-    return {
+    binding = {
         "entry_identity": entry_identity,
         "editorial_revision_identity": editorial_revision_identity,
         "publication_identity": publication_identity,
@@ -560,6 +591,9 @@ def _candidate_item_binding(value: Mapping[str, object], evidence: AnswerEvidenc
         "snapshot_id": evidence.snapshot_id,
         "source_content_length": content_length,
     }
+    if source_evidence_identity is not None:
+        binding["candidate_evidence_source_identity"] = source_evidence_identity
+    return binding
 
 
 def _has_authorized_shape(value: object) -> bool:
@@ -664,6 +698,86 @@ def _authorized_candidate(value: object, *, max_excerpt_chars: int) -> _Authoriz
     )
 
 
+def _authorized_candidate_variants(
+    value: object,
+    *,
+    max_excerpt_chars: int,
+) -> tuple[_AuthorizedCandidate, ...]:
+    base = _authorized_candidate(value, max_excerpt_chars=max_excerpt_chars)
+    if base is None:
+        return ()
+    if not isinstance(value, Mapping):
+        return ()
+    metadata = value.get("metadata")
+    if not isinstance(metadata, Mapping):
+        return ()
+    projections = metadata.get("source_evidence_projections")
+    if projections is None:
+        return (base,)
+    if base.assurance_level != "claim_linked" or not isinstance(projections, list):
+        return ()
+    raw_relationships = value.get("source_relationships")
+    if not isinstance(raw_relationships, list):
+        return ()
+    relationship_scopes: dict[str, str] = {}
+    for relationship in raw_relationships:
+        if not isinstance(relationship, Mapping):
+            return ()
+        source_identity = relationship.get("source_identity")
+        access_scope = relationship.get("access_scope")
+        if (
+            not _stable_identity_has_kind(source_identity, StableIdentityKind.SOURCE)
+            or access_scope not in {"public", "controlled_internal"}
+            or source_identity in relationship_scopes
+        ):
+            return ()
+        relationship_scopes[str(source_identity)] = str(access_scope)
+    chunk_id = value.get("chunk_id")
+    if not isinstance(chunk_id, str) or not chunk_id:
+        return ()
+    variants: list[_AuthorizedCandidate] = []
+    seen_source_identities: set[str] = set()
+    for projection in projections:
+        if not isinstance(projection, Mapping) or set(projection) != _SOURCE_EVIDENCE_PROJECTION_FIELDS:
+            return ()
+        source_identity = projection.get("source_identity")
+        source_id = projection.get("source_id")
+        if (
+            not _stable_identity_has_kind(source_identity, StableIdentityKind.SOURCE)
+            or not isinstance(source_id, str)
+            or not source_id.strip()
+            or source_identity != f"source:{source_id}"
+            or projection.get("source_tier") not in _SOURCE_TIERS
+            or projection.get("source_access_scope") != relationship_scopes.get(str(source_identity))
+            or any(
+                not isinstance(projection.get(field), str) or not str(projection[field]).strip()
+                for field in (
+                    "source_title",
+                    "source_authority",
+                    "source_url",
+                    "source_version",
+                    "source_review_date",
+                )
+            )
+            or str(source_identity) in seen_source_identities
+        ):
+            return ()
+        seen_source_identities.add(str(source_identity))
+        projected_metadata = dict(metadata)
+        projected_metadata.update(projection)
+        projected_metadata["candidate_evidence_source_identity"] = source_identity
+        projected_value = dict(value)
+        projected_value["chunk_id"] = f"{chunk_id}@{source_identity}"
+        projected_value["metadata"] = projected_metadata
+        variant = _authorized_candidate(projected_value, max_excerpt_chars=max_excerpt_chars)
+        if variant is None:
+            return ()
+        variants.append(variant)
+    if seen_source_identities != set(relationship_scopes):
+        return ()
+    return tuple(variants)
+
+
 def _claim_evidence_requirements(candidate: _AuthorizedCandidate) -> tuple[_EvidenceRequirement, ...] | str:
     raw_contract = candidate.metadata.get("claim_evidence_contract")
     raw_hash = candidate.metadata.get("claim_evidence_contract_sha256")
@@ -673,8 +787,42 @@ def _claim_evidence_requirements(candidate: _AuthorizedCandidate) -> tuple[_Evid
     if not isinstance(source_id, str) or not source_id:
         return "assurance_support_missing"
     try:
-        contract = parse_claim_evidence_contract(json.loads(raw_contract))
-    except (json.JSONDecodeError, ClaimEvidenceContractError):
+        raw_value = json.loads(raw_contract)
+        candidate_contract = parse_candidate_claim_evidence_contract(raw_value)
+    except (json.JSONDecodeError, CandidateClaimEvidenceContractError):
+        candidate_contract = None
+    if candidate_contract is not None:
+        if (
+            candidate_contract.sha256 != raw_hash
+            or candidate_contract.entry_identity != candidate.entry_identity
+            or candidate_contract.editorial_revision_identity
+            != candidate.metadata.get("editorial_revision_identity")
+        ):
+            return "assurance_support_missing"
+        matched_claims = [
+            claim
+            for claim in candidate_contract.claims
+            if claim.section_id == candidate.section_id and source_id in claim.source_ids
+        ]
+        if not matched_claims:
+            return "assurance_support_missing"
+        return tuple(
+            sorted(
+                {
+                    _EvidenceRequirement(
+                        entry_id=candidate.entry_id,
+                        section_id=claim.section_id,
+                        source_id=linked_source_id,
+                    )
+                    for claim in matched_claims
+                    for linked_source_id in claim.source_ids
+                },
+                key=_requirement_sort_key,
+            )
+        )
+    try:
+        contract = parse_claim_evidence_contract(raw_value)
+    except ClaimEvidenceContractError:
         return "assurance_support_missing"
     if contract.sha256 != raw_hash:
         return "assurance_support_missing"
@@ -961,7 +1109,7 @@ def decide_answer_evidence(
     authorized = [
         candidate
         for value in candidates
-        if (candidate := _authorized_candidate(value, max_excerpt_chars=effective_excerpt_cap)) is not None
+        for candidate in _authorized_candidate_variants(value, max_excerpt_chars=effective_excerpt_cap)
     ]
     if not authorized:
         return _insufficient(query_conditions, "no_eligible_published_evidence")

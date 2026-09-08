@@ -72,3 +72,59 @@ class CandidateBuildChunk(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
+
+
+class PublishedKnowledgeVersion(Base):
+    __tablename__ = "published_knowledge_versions"
+    __table_args__ = (
+        Index("ix_published_knowledge_versions_entry", "entry_identity", "published_at"),
+        UniqueConstraint("candidate_id", name="uq_published_knowledge_versions_candidate"),
+    )
+
+    id: Mapped[str] = mapped_column(String(192), primary_key=True)
+    candidate_id: Mapped[str] = mapped_column(String(192), nullable=False)
+    entry_identity: Mapped[str] = mapped_column(String(192), nullable=False)
+    document_identity: Mapped[str] = mapped_column(String(192), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    bundle_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    frozen_input_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    configuration_identity: Mapped[str] = mapped_column(String(192), nullable=False)
+    inspection_record_identity: Mapped[str] = mapped_column(String(192), nullable=False)
+    acceptance_record_identity: Mapped[str] = mapped_column(String(192), nullable=False)
+    supersedes_version_id: Mapped[str | None] = mapped_column(String(192), nullable=True)
+    published_by: Mapped[str] = mapped_column(String(192), nullable=False)
+    published_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+
+class PublishedKnowledgePointer(Base):
+    __tablename__ = "published_knowledge_pointers"
+
+    entry_identity: Mapped[str] = mapped_column(String(192), primary_key=True)
+    current_version_id: Mapped[str] = mapped_column(String(192), nullable=False, unique=True)
+    document_identity: Mapped[str] = mapped_column(String(192), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
+class CandidatePublicationConfirmation(Base):
+    __tablename__ = "candidate_publication_confirmations"
+
+    id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    selection_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    selected_items: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
+    actor_identity: Mapped[str] = mapped_column(String(192), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="processing")
+    results: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    lease_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

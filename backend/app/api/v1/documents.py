@@ -198,6 +198,20 @@ async def _get_document_or_404(session: AsyncSession, document_id: str) -> Docum
     return document
 
 
+def _reject_reviewed_bundle_runtime_mutation(document: Document) -> None:
+    if document.file_type != "reviewed_release_bundle":
+        return
+    raise AppError(
+        status_code=409,
+        code="REVIEWED_BUNDLE_RUNTIME_MUTATION_REJECTED",
+        message=(
+            "Reviewed Bundle runtime projections can change only through Candidate "
+            "inspection, acceptance, and explicit batch publication"
+        ),
+        detail={"document_id": document.id},
+    )
+
+
 async def _ensure_published_source_capacity(session: AsyncSession, *, document: Document) -> None:
     if document.published_generation > 0:
         return
@@ -764,46 +778,16 @@ async def publish_document(
     session: AsyncSession = Depends(get_db_session),
     redis: Redis = Depends(get_redis_client),
 ) -> dict:
-    await _ensure_document_mutations_allowed(redis)
-    document = await _get_document_or_404(session, document_id)
-    generation = document.candidate_generation
-    if generation is None:
-        raise AppError(
-            status_code=409,
-            code="DOC_CANDIDATE_BUILD_NOT_READY",
-            message="document has no candidate build ready for publication",
-            detail={"document_id": document_id},
-        )
-    await _ensure_published_source_capacity(session, document=document)
-    await _ensure_agent_candidate_publishable(session, document=document, generation=generation)
-
-    publish_result = await session.execute(
-        Document.__table__.update()
-        .where(
-            Document.id == document.id,
-            Document.deleted_at.is_(None),
-            Document.candidate_generation == generation,
-        )
-        .values(
-            published_generation=generation,
-            dense_ready_generation=Document.candidate_dense_ready_generation,
-            dense_ready_fingerprint=Document.candidate_dense_ready_fingerprint,
-            chunk_strategy=Document.candidate_chunk_strategy,
-            chunk_count=Document.candidate_chunk_count,
-            candidate_generation=None,
-            candidate_dense_ready_generation=0,
-            candidate_dense_ready_fingerprint=None,
-            candidate_chunk_strategy=None,
-            candidate_chunk_count=0,
-            status="ready",
-        )
+    del session, redis
+    raise AppError(
+        status_code=410,
+        code="LEGACY_PUBLICATION_BYPASS_REJECTED",
+        message=(
+            "Reviewed Bundle runtime projections must be published through "
+            "Candidate inspection, acceptance, and explicit batch confirmation"
+        ),
+        detail={"document_id": document_id},
     )
-    if publish_result.rowcount != 1:
-        await session.rollback()
-        raise AppError(status_code=409, code="DOC_CANDIDATE_BUILD_NOT_READY", message="candidate build changed before publication")
-    await session.commit()
-    await session.refresh(document)
-    return _ok(_serialize_document(document))
 
 
 @router.post("/{document_id}/build")
@@ -816,6 +800,7 @@ async def build_document(
 ) -> dict:
     await _ensure_document_mutations_allowed(redis)
     document = await _get_document_or_404(session, document_id)
+    _reject_reviewed_bundle_runtime_mutation(document)
     previous_status = document.status
     document.status = "pending"
     build_generation = document.next_generation
@@ -863,6 +848,7 @@ async def batch_build_documents(
     queued_jobs: list[tuple[str, str, str]] = []
     for document_id in document_ids:
         document = await _get_document_or_404(session, document_id)
+        _reject_reviewed_bundle_runtime_mutation(document)
         previous_status = document.status
         document.status = "pending"
         build_generation = document.next_generation

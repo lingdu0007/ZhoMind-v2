@@ -69,7 +69,7 @@ const loginOperator = async (api) => {
   return data.access_token;
 };
 
-const publishThroughCandidateBuild = async (api, adminToken) => {
+const buildCandidateAndRejectLegacyPublication = async (api, adminToken) => {
   const uploadBody = new FormData();
   uploadBody.set('chunk_strategy', 'agent');
   uploadBody.set('file', new Blob([syntheticAgentEntry], { type: 'text/markdown' }), `${ENTRY_ID}.md`);
@@ -103,10 +103,9 @@ const publishThroughCandidateBuild = async (api, adminToken) => {
     token: adminToken,
     method: 'POST'
   });
-  assert.equal(publication.response.status, 200);
-  assert.equal(publication.data.published_generation, candidate.data.generation);
-  assert.equal(publication.data.candidate_generation, null);
-  return publication.data;
+  assert.equal(publication.response.status, 410);
+  assert.equal(publication.data.code, 'LEGACY_PUBLICATION_BYPASS_REJECTED');
+  return candidate.data;
 };
 
 const parseSse = (text) => {
@@ -122,7 +121,7 @@ const parseSse = (text) => {
   return events;
 };
 
-test('published Agent evidence without Claim-Evidence Links closes as explicit insufficient evidence', { timeout: 90000 }, async (t) => {
+test('a Candidate without Claim-Evidence Links stays insufficient after legacy publication is rejected', { timeout: 90000 }, async (t) => {
   const { page, baseUrl, api } = await startWorkbench(t, {
     built: true,
     env: {
@@ -137,8 +136,8 @@ test('published Agent evidence without Claim-Evidence Links closes as explicit i
   assert.equal(beforePublication.response.status, 200);
   assert.equal(beforePublication.data.total_entries, 0);
 
-  const publication = await publishThroughCandidateBuild(api, adminToken);
-  assert.equal(publication.chunk_strategy, 'agent');
+  const candidate = await buildCandidateAndRejectLegacyPublication(api, adminToken);
+  assert.equal(candidate.generation_state, 'candidate');
   const afterPublication = await apiRequest(api, '/knowledge-map', { token: userToken });
   assert.equal(afterPublication.response.status, 200);
   assert.equal(afterPublication.data.total_entries, 0);

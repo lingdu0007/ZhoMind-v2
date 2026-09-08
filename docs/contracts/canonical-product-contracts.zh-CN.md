@@ -78,16 +78,23 @@ export。
 由服务器派生的 active、非 Administrator member identity 是 editorial role 的
 权威。Author、Approving Reviewer 与 Maintainer 被保留为独立的 role fact。Author
 或 material reviser 不能审批同一 material revision；Reviewer 可以编辑，但作为
-material reviewer-reviser 时必须指定不同的 reviewer。System Administrator 不能
-检查或修改 Private Editorial Repository，只能接收已批准的 export。被指定的
-Maintainer 必须为每个 revision 追加明确的责任接受 event，之后才能 review、approval
-或 export。
+material reviewer-reviser 时必须指定不同的 reviewer。System Administrator 不能检查
+或直接修改 Private Editorial Repository，并且只能为 editorial handling 接收已批准的
+export。Candidate publication 是狭窄的服务器端例外，而非 administrator editorial
+command：只有在 `CandidatePublicationService` 于 finalization fence 下重新验证一个精确
+frozen、已批准的 export，并原子写入精确 Candidate 与 Published Knowledge Version
+identity 后，`EditorialAuthorityService` 才能追加机器派生的 `candidate_build` 与
+`published` lifecycle event。该路径不暴露私有 editorial content，不接受管理员选择的
+editorial field，也不能修订私有 record。被指定的 Maintainer 必须为每个 revision 追加
+明确的责任接受 event，之后才能 review、approval 或 export。
 
 私有 lifecycle 写入 `draft`、`evidence_collected` 与 `editorial_review` event。
 evidence collection 和 review 都要求 revision 完整。material change 会创建新的
-不可变 revision 并要求 Editorial Review；wording-only change 要求有已批准的 base
-revision、独立的 lightweight acceptance，且只允许规范化 title 和 authored body 中的
-空白。任何标点、大小写、token、比较/运算符或结构化权威数据的变化都是 material。
+不可变 revision 并要求 Editorial Review，即使它从 `published` 开始；既有 Published
+Knowledge Version pointer 会保持 live，直到单独审核通过的后继 revision 完成 Candidate
+publication。wording-only change 可以保持 `published`，同时取得其独立的 Maintainer
+责任接受与 lightweight approval。它要求有已批准的 base revision，且只允许规范化 title
+和 authored body 中的空白。任何标点、大小写、token、比较/运算符或结构化权威数据的变化都是 material。
 T01 不记录 Reviewed Release Bundle、
 Candidate Build、publication、replacement 或 withdrawal action：这些由后续 ticket
 负责。对 `unavailable_for_new_evidence` 的 availability event 会记录 decisive
@@ -281,8 +288,84 @@ job，只有在再次匹配 frozen input 后才协调其 Candidate chunk 和 vec
 这些 asset 与可恢复 obligation，绝不在未验证 binding 下删除数据。intake、retry、
 recovery、cleanup、supersession 和 Candidate completion 都不会
 创建或改变 Published Knowledge Version、legacy published generation 或 runtime
-publication pointer。Candidate inspection、publication、replacement switching 和
-withdrawal 仍由后续职责处理。
+publication pointer。只有下面独立的 Candidate inspection 与显式发布 contract
+可以创建 runtime projection。
+
+## Candidate 检查与显式发布
+
+Candidate inspection 是对一个精确 immutable Candidate binding 的仅管理员读取：Candidate
+record、匹配的 `candidate_ready` job、frozen input、bundle/item hash、当前 generation、
+连续且 content-hashed 的 Candidate chunk，以及 effective embedding configuration。记录
+inspection 会创建 immutable `candidate_inspection/v1` evidence 和一条只追加的 Candidate
+event；它会重新验证已保留的 approved editorial export，并创建或验证 content-addressed 的
+immutable configuration record。Claim-Linked Candidate Build 必须把精确 frozen 的 Candidate
+Claim-Evidence contract 及其 canonical hash 复制到每个 Candidate chunk。该 contract 精确绑定
+其 material claim 及经过 review 的 section/source link；它不要求 resolver、calibration 或
+Release-Assured gate。缺失、畸形、hash 不匹配或 link 不匹配的 contract 会在 Candidate
+persistence 前使 build fail closed。approved export 会在 artifact 根层冻结该 canonical JSON
+和 hash。editorial revision 可以额外保留完整 Claim-Evidence contract 作为 compatibility projection，
+但其 resolver 和 calibration 要求仍属于 Release-Assured authority。replacement
+inspection 会在 immutable inspection evidence 中快照当前
+`replaces_published_knowledge_version_identity`，返回这个精确 Published Knowledge Version
+以及按 index 确定的 chunk `added`、`changed` 与 `removed` hash，并且即使 Candidate 后来已经
+stale，仍可为 administrator audit 重新加载。Candidate acceptance 会复制这个精确 replacement
+identity；pointer 改变会使 publication eligibility 和 confirmation fail closed。inspection 绝不使
+material 可被 retrieval，也不会改变 publication pointer。
+
+Candidate acceptance 是对 closed evidence contract 的仅管理员 adapter，不是 ordinary
+retrieval，也不会调用 provider。对于 Claim-Linked section，adapter 会为每条经过 review 的
+source link 创建一个临时的 Candidate-bound evidence projection，使 closed executor 必须选择
+全部所需 Claim-Evidence Link；这些临时 source identity 只保留在不可变 acceptance binding 中，
+绝不进入 ordinary retrieval。它记录一个 supported query，其 frozen Answer Evidence Set
+包含精确的 Candidate、build generation、governing entry 与
+`recommendation_or_reviewed_branches` section、content-hashed chunk、snapshot 及
+citation marker。acceptance query 可以保留 explicit QCS，它使用与 closed Answer Execution
+相同、完整的四字段 condition record；未提供时则由 frozen question 推导 QCS。supported query
+必须精确满足适用 condition。它还把一个 Boundary Query 记录为 closed
+`decision_not_covered` 或 `decisive_condition_missing` insufficiency reply，且 citation 与
+provider call 都为零。immutable `candidate_acceptance/v1` record 绑定精确的 inspection
+event、Candidate、bundle/item 与 input hash，以及 configuration。diagnostic preview、较早或
+stale 的 Candidate、不同 configuration 或不匹配的 frozen input 都不能满足此 acceptance。
+两个 acceptance query 都使用与 Answer Execution 相同的 closed Answer Evidence selector：
+它要求完整的 QCS parsing、精确的 Candidate-bound source/assurance/section binding、
+governing 与必需 complement selection、确定性的 budget check，以及正常的 evidence、
+snapshot 和 citation construction。它绝不会只评估第一个 chunk、通过截断 Candidate
+建立 support、容忍畸形 condition record，或手工拼装 evidence。
+
+administrator 可以在 Candidate 变 stale 或其 job 到达 `superseded` 后重新加载 historical
+inspection，但 eligibility 始终只接受 latest generation。仅管理员可用的 Candidate publication
+read projection 会返回该 Candidate 的不可变 Published Knowledge Version identity、精确
+inspection/acceptance/superseded-version identity，以及它是否仍为当前 entry pointer。
+eligible Candidate 仍必须证明 current approved editorial authority、latest Candidate
+generation、精确 inspection、精确 Candidate acceptance，以及相同的 bundle 和
+configuration identity。管理员提交严格的 selected batch，其中每项都包含 Candidate、
+`create` 或 `replace` effect，以及 current Published Knowledge Version identity（create
+时为 `null`），以及精确 immutable inspection 与 acceptance record identity。confirmation
+identity 仅在同一 actor 与 canonical selected payload 相同时具有幂等性；selection、
+inspection/acceptance identity 或 replacement pointer 改变都会 fail closed。
+
+每个 selected item 都是独立 transaction：先写入带 immutable
+`published_knowledge_version` identity 标记的 runtime `Document` 与
+`DocumentChunk` projection，再写入带有这些精确 inspection/acceptance identity 的 immutable
+Published Knowledge Version record 和其只追加 publication event，最后才创建或切换唯一的
+可变 entry pointer。最终 verification 会在这次 commit 期间保持 approved editorial authority
+fence，并在需要时把同一已验证 entry 从 `editorial_review` 经由 `candidate_build` 推进至
+`published`，因此 ordinary retrieval 解析 current publication pointer，而不是 Candidate
+preview。安全但尚未发布的后继 revision 不会取代该 pointer 所冻结的 Published Knowledge Version
+authority。任何失败都会在 pointer switching 前 rollback 该 item，并产生 retryable `failed`
+result；同 batch 的其他项独立继续。在分配新的 runtime source document 前，publication 会检查
+first-release 的 500 个 published source document 上限。`replace` 会复用既有的 published
+source allocation；达到上限时，新 entry 只会让该 selected item 以
+`PUBLISHED_SOURCE_LIMIT_REACHED` 失败。batch output 始终分离 `published`、`failed` 与 `skipped`，
+且只有所有项均未 failed 或 skipped 时 `batch_complete` 才为 true。duplicate confirmation 返回保留
+结果，不会写入第二个 version 或移动 pointer。保留的 `processing` confirmation 会从已持久化的
+item result 恢复；只有当已经提交但尚未记录 result 的 version 与精确 selected
+inspection/acceptance identity 匹配时，才会恢复为已发布。
+
+`POST /documents/{id}/publish` 会拒绝所有 identity，因为该 legacy compatibility route 可能绕过
+Candidate inspection、acceptance 与 explicit confirmation。Ticket 24 不实现 withdrawal、
+redaction 或 historical deletion：Ticket 25 将在保留 immutable Published Knowledge Version
+identity 和后续 withdrawal seam 的前提下添加这些 event。
 
 ## 检索回答策略与授权候选池
 
@@ -294,22 +377,29 @@ reranking、lexical-answer anchor、semantic near-duplicate removal、query expa
 和 online LLM sufficiency judging 为 disabled。每个 retrieval result 与 trace 都携带
 effective profile identity。
 
-在后续 ticket 以 canonical Published Knowledge Version 替换 legacy runtime projection
-之前，Pilot 的普通 pre-sufficiency Candidate Pool 只从当前 legacy published generation
-的 compatibility projection 构建。只有当 chunk 所属的 `Document` 未被 withdraw、
-其 generation 等于该 document 的当前 published generation 时，它才可能进入 pool。
-ranking 前，pool 会为 entry 解析当前 Private Editorial Repository authority：当前
-revision、lifecycle eligibility、准确的 section-level verified source relationship、
-assurance、applicability、freshness 与 team-shared access scope。compatibility metadata
-只用于将 chunk 绑定到这些当前事实；缺失、畸形或不匹配的 metadata 绝不授予
+Pilot 的普通 pre-sufficiency Candidate Pool 只从当前 published runtime projection 构建。
+Ticket 24 projection 携带精确 immutable `published_knowledge_version` identity；没有该 field
+的较早 document 保留显式标记的 `published_knowledge_version:legacy:*` compatibility
+mapping。畸形的 claimed Published Knowledge Version identity 会 fail closed。只有当 chunk
+所属 `Document` 未被 withdraw 且 generation 等于该 document 的当前 published generation
+时，chunk 才 eligible。ranking 前，pool 会为 entry 解析当前 Private Editorial Repository
+authority：当前 revision、lifecycle eligibility、准确的 section-level verified source
+relationship、assurance、applicability、freshness 与 team-shared access scope。projection
+metadata 只用于将 chunk 绑定到这些当前事实；缺失、畸形或不匹配的 metadata 绝不授予
 eligibility。其 lifecycle 必须为 `published`，或为仍处于七日 grace interval 内的
 `needs_re_review`；known contradiction、integrity defect、已过期的 grace、不可用
 source、不支持的 access scope 和不合格 assurance 都会 fail closed。该 pool 保留
 entry、revision、publication、section、source、assurance、applicability、freshness、
 access、chunk identity、经过 review 的 `decision_query` 以及 source 未截断的 content length。
-通过 authority 的 candidate 可以标记为可供后续 evidence
-selection 使用，但这个 pre-sufficiency boundary 不决定 sufficiency。在返回至多 20 个
-candidate 前，pool 会以确定性方式去重 exact content 和重复的 `(entry, section)` pair。
+通过 authority 的 candidate 可以标记为可供后续 evidence selection 使用，但这个
+pre-sufficiency boundary 不决定 sufficiency。在返回至多 20 个 candidate 前，pool 会以
+确定性方式去重 exact content 和重复的 `(entry, section)` pair。
+当 current authority 报告较晚但安全、尚未发布的 revision 时，pool 只有在重建真正被
+pointer 指向的 Published Knowledge Version 的精确 Candidate、frozen input 和保留
+revision，并重新验证当前 source 与 release-assurance record 后，才可以保留该 version。
+runtime projection metadata 只能绑定这次 reconstruction，不能提供 decision query、source
+relationship、assurance、condition、freshness 或 access authority。任何缺失、畸形、
+不匹配或新近不可用的保留事实都会排除该 pointed version。
 
 Candidate Build chunk 与 Candidate record 不是这个普通 pool 的成员。Candidate preview
 是一条显式的、仅 System Administrator 可用的隔离路径：
@@ -591,12 +681,12 @@ Ticket 14 的尾部 migration 将所有以前未 revoke、未 expired 的 legacy
 | --- | --- | --- | --- |
 | 14 | 用户、invitation 和 Redis session 的准入/授权路径 | member/invitation 标识和不含内容的身份审计事件 | 每条 pilot 身份路径都使用一次性 invitation、数据库派生的 role 检查和只追加身份审计 |
 | 16 | Markdown/front-matter 编写与运行时 document 副本 | Private Editorial Repository 的 entry、revision、source 与确定性 `editorial_export/v1` 权威 | T02 只消费经 review 的不可变 export，且 legacy/runtime 行上不再存在权威性的 editorial 写入 |
-| 17 | 上传和批量构建分发 | Reviewed Release Bundle、bundle item、build generation、可恢复 Candidate Build | Reviewed bundle 是唯一新增的 authority-bearing intake；Candidate work 没有 publication side effect，legacy publication path 仍仅为 compatibility |
-| 18 | 未经资格校验的 legacy retrieval 与 Candidate-derived chunk | 有版本的 Pilot Sparse BM25 与授权的当前 Published Candidate Pool | 普通 retrieval 只返回当前、已授权的 compatibility-published chunk；Candidate preview 保持仅管理员可用且仅用于 diagnostic |
+| 17 | 上传和批量构建分发 | Reviewed Release Bundle、bundle item、build generation、可恢复 Candidate Build | Reviewed bundle 是唯一新增的 authority-bearing intake；Candidate work 没有 publication side effect |
+| 18 | 未经资格校验的 legacy retrieval 与 Candidate-derived chunk | 有版本的 Pilot Sparse BM25 与授权的当前 Published Candidate Pool | 普通 retrieval 只返回当前、已授权的 Published projection；Candidate preview 保持仅管理员可用且仅用于 diagnostic |
 | 19 | first-three selection、non-empty context gate 与 candidate-derived citation | 确定性的 evidence sufficiency 与不可变 Answer Evidence Set | 活跃 Pilot 只使用 authorized pool、精确 QCS 和 assurance rule、一个冻结 selected set 及其绑定的 citation identity |
 | 20 | `ChatMessage.rag_trace`、transport-specific gate/generation、persistence、snapshot slicing 与 outcome inference | 带冻结 QCS 和 closed result 的私有只追加 Answer Execution | normal HTTP、SSE、关联 persistence、reload 和 private history 都投影同一保留 execution；legacy trace 只用于 diagnostic |
 | 21 | Chat UI view state 与后续 interaction adapter | 私有 Answer Execution projection | browser 和后续 UI path 展示保留的 execution state 与 completed result，而不增加第二个 semantic owner |
-| 24 | Candidate 检查与发布 | Candidate 和 Published Knowledge Version | 发布检查规范化代次、hash 和验收标识 |
+| 24 | Candidate 检查与发布 | immutable inspection/acceptance event、Published Knowledge Version 与可变 entry pointer | 发布检查精确 Candidate generation、bundle/input hash、configuration 和 acceptance identity；`runtime-document:*` legacy publication 会被拒绝 |
 | 25 | tombstone 与脱敏 | 撤回事件和保留的发布标识 | 所有撤回读写使用规范化发布标识 |
 | 27 | 反馈与 review work item | Maintenance item 和 Validated Finding | 原始反馈引用过期后仍保留规范化决策 |
 | 15 | 验收脚本和证据 | Delivery Acceptance Record 与状态事件 | 验收绑定精确规范化标识，不使用 branch 或 `latest` |

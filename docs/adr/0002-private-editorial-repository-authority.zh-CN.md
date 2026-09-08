@@ -4,7 +4,7 @@
 
 日期：2026-09-05
 
-更新：2026-09-06
+更新：2026-09-08
 
 ## 背景
 
@@ -43,7 +43,13 @@ boundary，并使后续 reconstruction 无法审计。
   Administrator 的 authority。Author、Reviewer 与 Maintainer 可以在各自的 entry
   boundary 内工作；Author 或 material reviser 不能批准其 material revision。
   被指定的 Maintainer 必须在 review、approval 或 export 之前为该 revision 追加责任
-  接受。Administrator 只能接收已批准的 export，不能检查或修改私有 editorial record。
+  接受。Administrator 只能接收已批准的 export，不能检查或直接修改私有 editorial
+  record。Candidate publication 是狭窄的服务器端例外，而非管理员的 editorial command：
+  只有在 `CandidatePublicationService` 于 finalization fence 下重新验证一个精确 frozen、
+  已批准的 export，并原子写入精确 Candidate 与 Published Knowledge Version identity 后，
+  `EditorialAuthorityService` 才能追加机器派生的 `candidate_build` 与 `published`
+  lifecycle event。该路径不暴露私有 editorial content，不接受管理员选择的 editorial
+  field，也不能修订私有 record。
 - 从第一个保留的 editorial revision 开始使用显式 entry `schema_version` 1。此前没有
   需要 migration 的 editorial schema；未来不兼容的版本必须先提供自己的 migration
   才能被接受。
@@ -155,6 +161,11 @@ identity 仍须解析为 active 的当前 System Administrator 及权威 identit
   pre-sufficiency pool 排序；它们既不授予 eligibility，也不建立 sufficiency。保留的
   `retrieval-answer-policy/lexical-heuristic-migration-v1` 路径明确是
   migration/diagnostic，绝不被表示为 Sparse BM25。
+- 当较晚的安全 revision 尚未发布时，普通 retrieval 只有在重建被 pointer 指向的精确
+  frozen Candidate 与保留 revision，并重新验证当前 source record 后，才可以继续使用已有
+  Published Knowledge Version。runtime metadata 只绑定 projection，绝不能提供 source、
+  decision、assurance 或 applicability authority；缺失或不可用的保留 source 会排除该
+  pointed version。
 
 ## 后果
 

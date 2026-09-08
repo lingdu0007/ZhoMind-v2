@@ -25,6 +25,7 @@ from app.contracts.canonical import (
 from app.documents.dense_index_service import DenseIndexService
 from app.model.canonical import CanonicalEventModel, CanonicalRecordModel
 from app.model.document import DocumentChunk
+from app.reviewed_bundles.candidate_metadata import candidate_build_chunk_metadata
 from app.reviewed_bundles.dispatch_authority import has_current_dispatch_authorization
 from app.reviewed_bundles.events import candidate_job_event_payload
 from app.reviewed_bundles.inputs import FrozenCandidateBuildInput, load_frozen_candidate_build_input
@@ -465,7 +466,14 @@ class CandidateBuildService:
         chunks: list[DocumentChunk],
         embedding_fingerprint: str | None,
     ) -> Any:
-        heartbeat_task = asyncio.create_task(self._maintain_lease(job_id=job.id, attempt=job.attempt))
+        heartbeat_renewed = asyncio.Event()
+        heartbeat_task = asyncio.create_task(
+            self._maintain_lease(
+                job_id=job.id,
+                attempt=job.attempt,
+                renewed=heartbeat_renewed,
+            )
+        )
         index_task = asyncio.create_task(
             self._dense_index_service.index_candidate_generation(
                 document_id=document_id,
@@ -481,7 +489,19 @@ class CandidateBuildService:
             )
             if heartbeat_task in done:
                 await heartbeat_task
-            return await index_task
+            result = await index_task
+            if heartbeat_renewed.is_set() and not heartbeat_task.done():
+                heartbeat_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await heartbeat_task
+                if not await self._renew_lease(job_id=job.id, attempt=job.attempt):
+                    raise AppError(
+                        status_code=409,
+                        code="CANDIDATE_WORKER_LEASE_LOST",
+                        message="Candidate Build worker lease could not be renewed after indexing",
+                        detail={"job_id": job.id, "attempt": job.attempt},
+                    )
+            return result
         finally:
             for task in (index_task, heartbeat_task):
                 if not task.done():
@@ -490,7 +510,13 @@ class CandidateBuildService:
                 with suppress(asyncio.CancelledError, Exception):
                     await task
 
-    async def _maintain_lease(self, *, job_id: str, attempt: int) -> None:
+    async def _maintain_lease(
+        self,
+        *,
+        job_id: str,
+        attempt: int,
+        renewed: asyncio.Event,
+    ) -> None:
         while True:
             await asyncio.sleep(_LEASE_HEARTBEAT_INTERVAL_SECONDS)
             if not await self._renew_lease(job_id=job_id, attempt=attempt):
@@ -500,6 +526,7 @@ class CandidateBuildService:
                     message="Candidate Build worker lease could not be renewed while indexing",
                     detail={"job_id": job_id, "attempt": attempt},
                 )
+            renewed.set()
 
     async def _renew_lease(self, *, job_id: str, attempt: int) -> bool:
         bind = self.session.bind
@@ -962,6 +989,23 @@ class CandidateBuildService:
                 )
             heading = section_id.replace("_", " ").strip().title()
             section_text = f"## {heading}\n\n{value.strip()}"
+            try:
+                metadata = candidate_build_chunk_metadata(
+                    artifact=frozen_input.artifact,
+                    entry=entry,
+                    entry_identity=frozen_input.entry_identity,
+                    editorial_revision_identity=parsed_artifact["editorial_revision_identity"],
+                    chunk_strategy=frozen_input.chunk_strategy,
+                    section_id=section_id,
+                    source_relationships=source_relationships,
+                )
+            except ValueError as exc:
+                raise AppError(
+                    status_code=422,
+                    code="CANDIDATE_ASSURANCE_SUPPORT_INVALID",
+                    message="Candidate Build cannot project the frozen Candidate metadata",
+                    detail={"entry_identity": frozen_input.entry_identity},
+                ) from exc
             for piece in self._split_section(section_text, maximum=maximum, overlap=overlap):
                 content_sha256 = self._sha256(piece)
                 chunks.append(
@@ -969,25 +1013,7 @@ class CandidateBuildService:
                         "chunk_index": len(chunks),
                         "content": piece,
                         "content_sha256": content_sha256,
-                        "metadata": {
-                            "entry_id": entry.get("entry_id"),
-                            "domain": entry.get("coverage_position"),
-                            "entry_identity": frozen_input.entry_identity,
-                            "editorial_revision_identity": parsed_artifact["editorial_revision_identity"],
-                            "section_id": section_id,
-                            "section_title": heading,
-                            "chunk_strategy_id": frozen_input.chunk_strategy.get("strategy_id"),
-                            "source_identities": [
-                                relationship["source_identity"] for relationship in source_relationships
-                            ],
-                            "source_relationships": source_relationships,
-                            "assurance_level": parsed_artifact["assurance_level"],
-                            "applicability_conditions": parsed_artifact["applicability_conditions"],
-                            "non_applicability_conditions": parsed_artifact["non_applicability_conditions"],
-                            "freshness_triggers": parsed_artifact["freshness_triggers"],
-                            "lifecycle_state": "candidate_build",
-                            "candidate_build": True,
-                        },
+                        "metadata": metadata,
                     }
                 )
         return chunks

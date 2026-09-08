@@ -176,7 +176,7 @@ def test_answer_execution_tail_migration_adds_private_append_only_persistence(
         "answer_executions_immutable_update",
     }
     assert "knowledge_feedback_signals" not in tables
-    assert revision == ("20260907_0020",)
+    assert revision == ("20260908_t24_candidate_pub",)
 
 
 def test_answer_execution_migration_defines_postgresql_immutable_update_guards() -> None:

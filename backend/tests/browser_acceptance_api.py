@@ -10,9 +10,10 @@ from datetime import UTC, datetime
 import uvicorn
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.canonical_json import canonical_json_sha256
 from app.contracts.canonical import CanonicalEventType
 from app.documents import parsers
-from app.editorial_authority.schemas import CreateEditorialEntryRequest
+from app.editorial_authority.schemas import CreateEditorialEntryRequest, ReviseEditorialEntryRequest
 from app.editorial_authority.service import EditorialAuthorityService
 from app.extensions.registry import get_extension_registry
 from app.infra.db import SessionLocal, engine
@@ -24,12 +25,21 @@ from app.model.document import Document, DocumentChunk, DocumentJob
 from app.model.system_settings import SystemSettingsState
 from app.model.user import User
 from app.rag.claim_evidence import ClaimEvidenceContract, ClaimResolution, ResolvedClaim, parse_claim_evidence_contract
+from app.reviewed_bundles.build_service import CandidateBuildService
+from app.reviewed_bundles.publication import CandidatePublicationService
+from app.reviewed_bundles.service import ReviewedReleaseBundleService
+from app.reviewed_bundles.verifier import CanonicalEditorialExportVerifier
+from app.service.identity_audit_service import IdentityAuditService
 from app.settings import runtime as settings_runtime
 from app.settings.runtime import SystemSettingsRuntime
 from app.settings.service import SystemSettingsDraftService
 
 _BROWSER_AGENT_ENTRY_ID = "synthetic-workflow-001"
 _BROWSER_AGENT_SOURCE_ID = "source-workflow"
+_BROWSER_TICKET24_ENTRY_ID = "ticket24-browser-entry-001"
+_BROWSER_TICKET24_INDEPENDENT_ENTRY_ID = "ticket24-browser-entry-002"
+_BROWSER_TICKET24_REPLACEMENT_BUNDLE = "ticket24-browser-replacement"
+_BROWSER_TICKET24_FAILURE_BUNDLE = "ticket24-browser-failure"
 _BROWSER_CLAIM_CONTRACT = parse_claim_evidence_contract(
     {
         "schema_version": 1,
@@ -352,8 +362,274 @@ def _browser_editorial_entry() -> CreateEditorialEntryRequest:
                 "scope": "team_shared",
             }
         ],
+        claim_evidence_contract=_BROWSER_CLAIM_CONTRACT.to_record(),
         relationship={},
     )
+
+
+def _browser_ticket24_entry(entry_id: str) -> CreateEditorialEntryRequest:
+    payload = _browser_editorial_entry().model_dump(mode="json")
+    payload.pop("claim_evidence_contract", None)
+    source_id = f"source-{entry_id}"
+    payload.update(
+        {
+            "entry_id": entry_id,
+            "title": "Ticket 24 candidate publication authority",
+            "coverage_position": "rag_source_admission_and_chunking",
+            "assurance_level": "source_grounded",
+            "approving_reviewer_username": "ticket24-browser-reviewer",
+            "accountable_maintainer_username": "ticket24-browser-maintainer",
+            "review_date": "2026-09-08",
+            "applicability_conditions": [
+                {
+                    "condition_id": "ticket24-production",
+                    "field": "deployment",
+                    "operator": "equals",
+                    "value": "production",
+                }
+            ],
+            "non_applicability_conditions": [
+                {
+                    "condition_id": "ticket24-staging",
+                    "field": "deployment",
+                    "operator": "equals",
+                    "value": "staging",
+                }
+            ],
+            "freshness_triggers": [
+                {
+                    "trigger_id": "ticket24-source-review",
+                    "trigger_type": "source_release",
+                    "review_within_days": 7,
+                }
+            ],
+            "sources": [
+                {
+                    "source_id": source_id,
+                    "source_tier": "primary_evidence_source",
+                    "title": "Ticket 24 publication authority",
+                    "authority": "ZhoMind architecture group",
+                    "version_or_date": "2026-09-08",
+                    "availability": "verified_usable",
+                    "access_scope": "public",
+                    "public_url": "https://example.com/ticket24-browser",
+                    "independent_public_verifiability": True,
+                }
+            ],
+            "acceptance_material": {
+                "supported_queries": [
+                    {
+                        "query_id": "ticket24-supported",
+                        "query": "Which Candidate publication contract applies? deployment=production",
+                        "expected_outcome": "supported",
+                        "query_conditions": [
+                            {
+                                "condition_id": "ticket24-production",
+                                "field": "deployment",
+                                "operator": "equals",
+                                "value": "production",
+                            }
+                        ],
+                    }
+                ],
+                "boundary_queries": [
+                    {
+                        "query_id": "ticket24-boundary",
+                        "query": "Can an unreviewed Candidate bypass explicit confirmation?",
+                        "expected_outcome": "insufficient_evidence",
+                    }
+                ],
+            },
+            "body": {
+                **payload["body"],
+                "decision_query": "Which Candidate publication contract applies to reviewed bundle entries?",
+                "recommendation_or_reviewed_branches": (
+                    "Only an inspected Candidate with Candidate-bound acceptance and explicit "
+                    "administrator confirmation may become a Published Knowledge Version."
+                ),
+            },
+            "section_source_relationships": [
+                {"section_id": section_id, "source_ids": [source_id]}
+                for section_id in payload["body"]
+            ],
+            "claims": [
+                {
+                    **claim,
+                    "source_ids": [source_id],
+                }
+                for claim in payload["claims"]
+            ],
+        }
+    )
+    return CreateEditorialEntryRequest.model_validate(payload)
+
+
+def _ticket24_manifest(*, bundle_id: str, artifact: dict, operation: str) -> dict:
+    bundle_item_id = f"{bundle_id}-item-001"
+    artifact_sha256 = canonical_json_sha256(artifact)
+    item = {
+        "bundle_item_id": bundle_item_id,
+        "operation": operation,
+        "artifact_sha256": artifact_sha256,
+        "artifact": artifact,
+    }
+    item["bundle_item_sha256"] = canonical_json_sha256(item)
+    manifest = {
+        "schema": "reviewed_release_bundle/v1",
+        "schema_version": 1,
+        "bundle_id": bundle_id,
+        "editorial_source_revision": artifact["revision_sha256"],
+        "exported_at": "2026-09-08T12:00:00Z",
+        "items": [item],
+    }
+    manifest["bundle_sha256"] = canonical_json_sha256(manifest)
+    return manifest
+
+
+async def _build_ticket24_candidate(
+    session: AsyncSession,
+    *,
+    artifact: dict,
+    bundle_id: str,
+    operation: str,
+    actor_identity: str,
+) -> str:
+    bundles = ReviewedReleaseBundleService(
+        session,
+        editorial_export_verifier=CanonicalEditorialExportVerifier(session),
+    )
+    imported = await bundles.import_bundle(
+        _ticket24_manifest(bundle_id=bundle_id, artifact=artifact, operation=operation),
+        actor_identity=actor_identity,
+    )
+    bundle = await bundles.get_bundle(imported["bundle_id"])
+    job_id = bundle["items"][0]["job_id"]
+    if not isinstance(job_id, str):
+        raise RuntimeError("Ticket 24 browser fixture has no Candidate Build job")
+    builder = CandidateBuildService(
+        session,
+        editorial_export_verifier=CanonicalEditorialExportVerifier(session),
+        lease_owner=f"browser-ticket24-builder:{bundle_id}",
+    )
+    await builder.dispatch_job(job_id, actor_identity=actor_identity)
+    result = await builder.process_job(job_id)
+    candidate_id = result.get("candidate_id")
+    if result.get("status") != "candidate_ready" or not isinstance(candidate_id, str):
+        raise RuntimeError(f"Ticket 24 browser Candidate Build failed: {result}")
+    return candidate_id
+
+
+async def _seed_ticket24_publication_fixture(session: AsyncSession) -> None:
+    author = User(username="ticket24-browser-author", password_hash="browser-acceptance", role="user", is_active=True)
+    reviewer = User(username="ticket24-browser-reviewer", password_hash="browser-acceptance", role="user", is_active=True)
+    maintainer = User(
+        username="ticket24-browser-maintainer",
+        password_hash="browser-acceptance",
+        role="user",
+        is_active=True,
+    )
+    publisher = User(username="ticket24-browser-publisher", password_hash="browser-acceptance", role="admin", is_active=True)
+    session.add_all([author, reviewer, maintainer, publisher])
+    await session.flush()
+    actor_identity = await IdentityAuditService(session).ensure_member_record(
+        publisher,
+        admission_path="ticket24_browser_fixture",
+    )
+
+    authority = EditorialAuthorityService(session)
+    primary = _browser_ticket24_entry(_BROWSER_TICKET24_ENTRY_ID)
+    primary_draft = await authority.create_draft(primary, author)
+    await authority.collect_evidence(primary_draft["entry_id"], author)
+    await authority.accept_maintainer_responsibility(primary_draft["entry_id"], maintainer)
+    await authority.record_source_availability(
+        primary_draft["entry_id"],
+        primary.sources[0]["source_id"],
+        "verified_usable",
+        maintainer,
+    )
+    await authority.request_editorial_review(primary_draft["entry_id"], author)
+    await authority.approve_current_revision(primary_draft["entry_id"], reviewer)
+    primary_export = await authority.export_approved_revision(primary_draft["entry_id"], publisher)
+    original_candidate = await _build_ticket24_candidate(
+        session,
+        artifact=primary_export["artifact"],
+        bundle_id="ticket24-browser-original",
+        operation="create",
+        actor_identity=actor_identity,
+    )
+    publication = CandidatePublicationService(
+        session,
+        editorial_export_verifier=CanonicalEditorialExportVerifier(session),
+    )
+    inspection = await publication.inspect(original_candidate, actor_identity=actor_identity)
+    await publication.accept(original_candidate, actor_identity=actor_identity)
+    eligibility = await publication.publication_eligibility(original_candidate)
+    await publication.confirm_publication_batch(
+        {
+            "confirmation_id": "ticket24-browser-original-publication",
+            "selected_items": [
+                {
+                    "candidate_id": original_candidate,
+                    "effect": eligibility["effect"],
+                    "current_published_knowledge_version": None,
+                    "inspection_record_identity": inspection["inspection"]["record_identity"],
+                    "acceptance_record_identity": eligibility["acceptance_record_identity"],
+                }
+            ],
+        },
+        actor_identity=actor_identity,
+    )
+    replacement_entry = primary.model_copy(deep=True)
+    replacement_entry.body["recommendation_or_reviewed_branches"] = (
+        "Only an inspected Candidate with Candidate-bound acceptance and explicit administrator "
+        "confirmation may become a Published Knowledge Version. A material revision must be "
+        "separately reviewed before it can replace the current pointer."
+    )
+    await authority.revise_entry(
+        primary_draft["entry_id"],
+        ReviseEditorialEntryRequest(entry=replacement_entry, change_kind="material"),
+        author,
+    )
+    await authority.accept_maintainer_responsibility(primary_draft["entry_id"], maintainer)
+    await authority.approve_current_revision(primary_draft["entry_id"], reviewer)
+    replacement_export = await authority.export_approved_revision(primary_draft["entry_id"], publisher)
+    await _build_ticket24_candidate(
+        session,
+        artifact=replacement_export["artifact"],
+        bundle_id=_BROWSER_TICKET24_REPLACEMENT_BUNDLE,
+        operation="replace",
+        actor_identity=actor_identity,
+    )
+
+    independent = _browser_ticket24_entry(_BROWSER_TICKET24_INDEPENDENT_ENTRY_ID)
+    independent_draft = await authority.create_draft(independent, author)
+    await authority.collect_evidence(independent_draft["entry_id"], author)
+    await authority.accept_maintainer_responsibility(independent_draft["entry_id"], maintainer)
+    await authority.record_source_availability(
+        independent_draft["entry_id"],
+        independent.sources[0]["source_id"],
+        "verified_usable",
+        maintainer,
+    )
+    await authority.request_editorial_review(independent_draft["entry_id"], author)
+    await authority.approve_current_revision(independent_draft["entry_id"], reviewer)
+    independent_export = await authority.export_approved_revision(independent_draft["entry_id"], publisher)
+    failing_candidate = await _build_ticket24_candidate(
+        session,
+        artifact=independent_export["artifact"],
+        bundle_id=_BROWSER_TICKET24_FAILURE_BUNDLE,
+        operation="create",
+        actor_identity=actor_identity,
+    )
+
+    original_before_pointer_switch = CandidatePublicationService._before_pointer_switch
+
+    async def fail_only_fixture_candidate(service, binding):
+        if binding.candidate.stable_id == failing_candidate:
+            raise OSError("browser fixture forces one isolated publication failure")
+        await original_before_pointer_switch(service, binding)
+
+    CandidatePublicationService._before_pointer_switch = fail_only_fixture_candidate
 
 
 async def _seed_browser_editorial_authority(
@@ -665,6 +941,8 @@ async def _seed_test_data() -> None:
             )
 
             await _seed_chat_history(session)
+        if os.getenv("BROWSER_ACCEPTANCE_TICKET24") == "1":
+            await _seed_ticket24_publication_fixture(session)
         await session.commit()
 
         await SystemSettingsDraftService(session).save(
