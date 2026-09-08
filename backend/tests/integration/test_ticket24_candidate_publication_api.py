@@ -5,6 +5,7 @@ import hashlib
 import json
 from collections.abc import Generator
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -31,6 +32,7 @@ from app.reviewed_bundles.models import (
     CandidateBuildChunk,
     CandidateBuildJob,
     CandidatePublicationConfirmation,
+    PublishedKnowledgePointer,
     PublishedKnowledgeVersion,
 )
 from app.reviewed_bundles.publication import CandidatePublicationService
@@ -787,6 +789,28 @@ def test_inspection_is_durable_and_exactly_bound(client: TestClient, monkeypatch
     assert payload["replacement"]["effect"] == "create"
 
 
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("GET", "/candidates/candidate:private/inspection"),
+        ("POST", "/candidates/candidate:private/inspection"),
+        ("POST", "/candidates/candidate:private/acceptance"),
+        ("GET", "/candidates/candidate:private/publication-eligibility"),
+        ("GET", "/candidates/candidate:private/publication"),
+        ("POST", "/publication-batches"),
+    ],
+)
+def test_candidate_publication_surface_rejects_anonymous_and_knowledge_users(
+    client: TestClient, method: str, path: str,
+) -> None:
+    headers = asyncio.run(_headers(client, username="ticket24-private-reader", role="user"))
+    url = f"/api/v1/reviewed-release-bundles{path}"
+    assert client.request(method, url, json={}).status_code == 401
+    denied = client.request(method, url, headers=headers, json={})
+    assert denied.status_code == 403
+    assert "candidate:private" not in denied.text
+
+
 def test_inspection_rejects_chunk_content_or_index_tampering(client: TestClient, monkeypatch) -> None:
     from app.api.v1 import reviewed_bundles as reviewed_bundles_api
 
@@ -1449,6 +1473,72 @@ def test_candidate_acceptance_requires_exact_supported_and_boundary_records(clie
     assert payload["boundary"]["query_condition_set_identity"]
     assert payload["boundary"]["citation_markers"] == []
     assert payload["boundary"]["provider_call_count"] == 0
+    reloaded = _data(client.get(inspection_url, headers=admin_headers))
+    assert reloaded["acceptance"]["record_identity"] == payload["record_identity"]
+    assert reloaded["acceptance"]["supported"] == payload["supported"]
+    assert reloaded["acceptance"]["boundary"] == payload["boundary"]
+    assert reloaded["acceptance"]["accepted_by"] == reloaded["inspection"]["inspected_by"]
+    assert reloaded["inspection"]["generation"] == 1
+    assert reloaded["candidate"]["metadata"]["title"] == "Ticket 24 Candidate publication contract"
+    assert "body" not in reloaded["candidate"]["metadata"]
+
+
+@pytest.mark.parametrize(
+    "record_kind,field_path,replacement",
+    [
+        ("inspection", ("entry_identity",), "entry:foreign-entry"),
+        ("inspection", ("document_identity",), "runtime-document:foreign-document"),
+        ("inspection", ("bundle_id",), "bundle:foreign-bundle"),
+        ("inspection", ("bundle_item_id",), "bundle_item:foreign-item"),
+        ("inspection", ("editorial_source_revision",), "0" * 64),
+        ("acceptance", ("entry_identity",), "entry:foreign-entry"),
+        ("acceptance", ("result", "candidate_id"), "candidate:foreign-candidate"),
+        ("acceptance", ("result", "supported", "answer_evidence_set", "identity"), "forged-evidence"),
+        ("acceptance", ("result", "supported", "citation_markers"), ["S99"]),
+        ("acceptance", ("result", "boundary", "query_condition_set_identity"), "forged-conditions"),
+        ("acceptance", ("result", "boundary", "provider_call_count"), False),
+    ],
+)
+def test_publication_rejects_corrupted_retained_inspection_or_acceptance(
+    client: TestClient, monkeypatch, record_kind: str, field_path: tuple[str, ...], replacement: object,
+) -> None:
+    from app.api.v1 import reviewed_bundles as reviewed_bundles_api
+
+    monkeypatch.setattr(reviewed_bundles_api, "CanonicalEditorialExportVerifier", lambda _session: _ApprovedExportVerifier())
+    candidate_id = asyncio.run(_seed_ready_candidate(client))
+    headers = asyncio.run(_headers(client, username="ticket24-retained-record-admin", role="admin"))
+    _inspect_and_accept(client, candidate_id=candidate_id, headers=headers)
+    inspection_url, _, eligibility_url = _candidate_urls(candidate_id)
+    eligibility = _data(client.get(eligibility_url, headers=headers))
+    selected = _publish_selection(candidate_id, eligibility)
+    record_identity = eligibility[f"{record_kind}_record_identity"]
+
+    async def corrupt_retained_record() -> None:
+        async with client.app.state.test_auth_session_factory() as session:
+            record = await session.get(CanonicalRecordModel, record_identity)
+            payload = deepcopy(record.payload)
+            target = payload
+            for field in field_path[:-1]:
+                target = target[field]
+            target[field_path[-1]] = replacement
+            # Simulate storage corruption below the immutable ORM write boundary.
+            table = CanonicalRecordModel.__table__
+            await session.execute(table.update().where(table.c.stable_id == record_identity).values(payload=payload))
+            await session.commit()
+
+    asyncio.run(corrupt_retained_record())
+    refreshed = _data(client.get(eligibility_url, headers=headers))
+    assert refreshed["eligible"] is False
+    assert f"CANDIDATE_{record_kind.upper()}_REQUIRED" in refreshed["reasons"]
+    if record_kind == "inspection":
+        assert _data(client.get(inspection_url, headers=headers))["inspection"] is None
+    rejected = client.post(
+        "/api/v1/reviewed-release-bundles/publication-batches",
+        headers=headers,
+        json={"confirmation_id": "ticket24-corrupted-record", "selected_items": [selected]},
+    )
+    assert rejected.status_code == 409
+    assert _publication_state(client, candidate_id=candidate_id, headers=headers)["published_knowledge_version"] is None
 
 
 def test_candidate_acceptance_binds_explicit_conditions_for_supported_and_boundary_queries(
@@ -1886,6 +1976,73 @@ def test_replacement_failure_is_isolated_and_preserves_the_existing_pointer(clie
     )
     assert repeated.status_code == 200
     assert _data(repeated) == result
+
+    monkeypatch.setattr(CandidatePublicationService, "_before_pointer_switch", original_before_pointer_switch)
+    retry = client.post(
+        "/api/v1/reviewed-release-bundles/publication-batches",
+        headers=admin_headers,
+        json={
+            "confirmation_id": "ticket24-replacement-retry",
+            "selected_items": [_publish_selection(replacement_candidate, replacement_eligibility)],
+        },
+    )
+    assert retry.status_code == 200
+    retried = _data(retry)
+    assert retried["batch_complete"] is True
+    assert retried["failed"] == []
+    assert retried["skipped"] == []
+    replacement_state = _publication_state(client, candidate_id=replacement_candidate, headers=admin_headers)
+    assert replacement_state["is_current_for_entry"] is True
+    assert replacement_state["published_knowledge_version"]["supersedes_published_knowledge_version_identity"] == original_version
+    assert _publication_state(client, candidate_id=independent_candidate, headers=admin_headers) == independent_entry
+
+
+@pytest.mark.parametrize(
+    "target,field,value",
+    [
+        ("pointer", "generation", 999),
+        ("pointer", "document_identity", "runtime-document:foreign"),
+        ("version", "bundle_sha256", "0" * 64),
+        ("version", "frozen_input_sha256", "0" * 64),
+        ("version", "configuration_identity", "configuration:foreign"),
+        ("version", "inspection_record_identity", "event:foreign"),
+    ],
+)
+def test_replacement_inspection_rejects_corrupted_publication_projection(
+    client: TestClient, monkeypatch, target: str, field: str, value: object,
+) -> None:
+    from app.api.v1 import reviewed_bundles as reviewed_bundles_api
+
+    monkeypatch.setattr(reviewed_bundles_api, "CanonicalEditorialExportVerifier", lambda _session: _ApprovedExportVerifier())
+    headers = asyncio.run(_headers(client, username="ticket24-pointer-integrity-admin", role="admin"))
+    original = asyncio.run(_seed_ready_candidate(client))
+    _inspect_and_accept(client, candidate_id=original, headers=headers)
+    _, _, eligibility_url = _candidate_urls(original)
+    published = _data(client.post(
+        "/api/v1/reviewed-release-bundles/publication-batches",
+        headers=headers,
+        json={
+            "confirmation_id": "ticket24-pointer-integrity",
+            "selected_items": [_publish_selection(original, _data(client.get(eligibility_url, headers=headers)))],
+        },
+    ))
+    version_id = published["published"][0]["publication_identity"]
+    replacement = asyncio.run(_seed_ready_candidate(client, seed="replacement", generation=2))
+
+    async def corrupt_projection() -> None:
+        async with client.app.state.test_auth_session_factory() as session:
+            if target == "pointer":
+                row = await session.get(PublishedKnowledgePointer, "entry:ticket24-entry-001")
+            else:
+                row = await session.get(PublishedKnowledgeVersion, version_id)
+            setattr(row, field, value)
+            await session.commit()
+
+    asyncio.run(corrupt_projection())
+    inspection_url, _, _ = _candidate_urls(replacement)
+    for response in (client.get(inspection_url, headers=headers), client.post(inspection_url, headers=headers, json={})):
+        assert response.status_code == 409
+        assert response.json()["code"] == "PUBLISHED_KNOWLEDGE_POINTER_INTEGRITY_FAILED"
 
 
 def test_processing_confirmation_recovers_a_persisted_item_before_its_result_is_recorded(

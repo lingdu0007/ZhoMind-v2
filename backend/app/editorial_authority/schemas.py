@@ -17,6 +17,7 @@ from app.contracts.canonical import (
     StableIdentity,
     StableIdentityKind,
 )
+from app.contracts.claim_materiality import content_indicates_high_impact, is_high_impact_claim, is_material_claim
 from app.rag.claim_evidence import ClaimEvidenceContractError, parse_claim_evidence_contract
 from app.rag.evidence_sufficiency import QueryConditionSet
 
@@ -25,21 +26,6 @@ _ASSURANCE_LEVELS = frozenset(level.value for level in KnowledgeAssuranceLevel)
 _SOURCE_TIERS = frozenset(tier.value for tier in KnowledgeSourceTier)
 _ACCESS_SCOPES = frozenset(scope.value for scope in SourceAccessScope)
 _ENTRY_ID = r"^[a-z0-9][a-z0-9._:-]{2,159}$"
-_HIGH_IMPACT_CLAIM_KINDS = frozenset({"prescriptive", "numeric", "version", "security", "privacy", "high_impact"})
-_HIGH_IMPACT_TEXT = re.compile(
-    r"""
-    \b(?:must|shall|require|requires|never|only)\b
-    |\b(?:security|privacy|authentication|authorization|permissions?|prompt[- ]?injection)\b
-    |\b(?:version|v\d+(?:\.\d+)+)\b
-    |(?:<=|>=|==|!=|&&|\|\|)
-    |\b\d+(?:\.\d+)?\s*(?:%|ms|seconds?|minutes?|hours?|days?)\b
-    |(?:必须|应当|需要|不得|禁止|仅能|仅可)
-    |(?:安全|隐私|认证|授权|权限|提示注入)
-    |(?:版本|发布|生产环境|复核)
-    |\d+(?:\.\d+)?\s*(?:%|毫秒|秒|分钟|小时|天)
-    """,
-    re.IGNORECASE | re.VERBOSE,
-)
 _BODY_SECTIONS = (
     "decision_query",
     "recommendation_or_reviewed_branches",
@@ -717,8 +703,8 @@ def _validate_claims(
         source_ids = claim.get("source_ids")
         if not isinstance(source_ids, list):
             source_ids = []
-        is_high_impact = kind in _HIGH_IMPACT_CLAIM_KINDS or _content_indicates_high_impact(statement)
-        is_material = claim.get("material") is True or is_high_impact
+        is_high_impact = is_high_impact_claim(claim)
+        is_material = is_material_claim(claim)
         material_claim_seen = material_claim_seen or is_material
         requires_link = is_high_impact or (assurance_level in {"claim_linked", "release_assured"} and is_material)
         if requires_link and not source_ids:
@@ -774,7 +760,7 @@ def _validate_claims(
     if isinstance(body, dict):
         for section_id in _BODY_SECTIONS:
             if (
-                _content_indicates_high_impact(body.get(section_id))
+                content_indicates_high_impact(body.get(section_id))
                 and section_id not in linked_high_impact_claim_sections
             ):
                 reasons.append(
@@ -826,8 +812,7 @@ def _validate_claim_evidence_contract(payload: CreateEditorialEntryRequest) -> l
         if not isinstance(claim, dict):
             continue
         claim_id = claim.get("claim_id")
-        is_material = claim.get("material") is True or claim.get("claim_kind") in _HIGH_IMPACT_CLAIM_KINDS
-        is_material = is_material or _content_indicates_high_impact(claim.get("statement"))
+        is_material = is_material_claim(claim)
         if isinstance(claim_id, str) and is_material:
             material_claims[claim_id] = claim
 
@@ -1007,10 +992,6 @@ def _controlled_locator(value: object) -> bool:
 
 def _same_lightweight_text(before: str, after: str) -> bool:
     return re.sub(r"\s+", " ", before).strip() == re.sub(r"\s+", " ", after).strip()
-
-
-def _content_indicates_high_impact(value: object) -> bool:
-    return isinstance(value, str) and bool(_HIGH_IMPACT_TEXT.search(value))
 
 
 def _normalized_field_name(value: str | None) -> str:

@@ -697,6 +697,85 @@ def test_claim_linked_evidence_accepts_a_matching_reviewed_contract() -> None:
     assert decision.evidence_set is not None
 
 
+def test_candidate_claim_linked_evidence_requires_every_material_claim_link_in_the_same_section() -> None:
+    question = "What is the reviewed default for environment=production?"
+    first = _candidate(
+        entry_id="decision-candidate-contract-001",
+        section_id="recommendation_or_reviewed_branches",
+        chunk_id="candidate-claim-source-a",
+        content="The governing recommendation requires independent reviewed support.",
+        score=2.0,
+        assurance_level="claim_linked",
+        source_id="source-claim-a",
+    )
+    second = _candidate(
+        entry_id="decision-candidate-contract-001",
+        section_id="recommendation_or_reviewed_branches",
+        chunk_id="candidate-claim-source-b",
+        content="The governing recommendation requires independent reviewed support.",
+        score=1.0,
+        assurance_level="claim_linked",
+        source_id="source-claim-b",
+    )
+    contract = {
+        "schema": "candidate_claim_evidence_contract/v1",
+        "entry_identity": first["entry_identity"],
+        "editorial_revision_identity": first["editorial_revision_identity"],
+        "claims": [
+            {
+                "claim_id": "claim-source-a",
+                "section_id": "recommendation_or_reviewed_branches",
+                "source_ids": ["source-claim-a"],
+            },
+            {
+                "claim_id": "claim-source-b",
+                "section_id": "recommendation_or_reviewed_branches",
+                "source_ids": ["source-claim-b"],
+            },
+        ],
+    }
+    canonical = json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    for candidate in (first, second):
+        candidate["metadata"]["claim_evidence_contract"] = canonical
+        candidate["metadata"]["claim_evidence_contract_sha256"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    decision = decide_answer_evidence(
+        normalized_question=question,
+        query_conditions=QueryConditionSet.from_question(question),
+        candidates=[first, second],
+    )
+
+    assert decision.is_sufficient is True
+    assert decision.evidence_set is not None
+    assert {
+        dict(item.metadata_items)["source_id"]
+        for item in decision.evidence_set.items
+    } == {"source-claim-a", "source-claim-b"}
+
+
+def test_claim_linked_evidence_rejects_malformed_contract_json_as_insufficient_support() -> None:
+    question = "What is the reviewed default for environment=production?"
+    candidate = _candidate(
+        entry_id="decision-malformed-claim-contract-001",
+        section_id="recommendation_or_reviewed_branches",
+        chunk_id="malformed-claim-contract",
+        content="A malformed Claim-Evidence contract must fail closed.",
+        score=1.0,
+        assurance_level="claim_linked",
+    )
+    candidate["metadata"]["claim_evidence_contract"] = "{not-json"
+    candidate["metadata"]["claim_evidence_contract_sha256"] = "a" * 64
+
+    decision = decide_answer_evidence(
+        normalized_question=question,
+        query_conditions=QueryConditionSet.from_question(question),
+        candidates=[candidate],
+    )
+
+    assert decision.is_sufficient is False
+    assert decision.reason == "assurance_support_missing"
+
+
 def test_sufficiency_refuses_a_governing_section_when_its_decision_query_does_not_cover_the_question() -> None:
     question = "Which vector database governs production deployment for environment=production?"
     candidate = _candidate(

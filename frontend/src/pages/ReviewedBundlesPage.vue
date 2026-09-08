@@ -37,7 +37,12 @@
         <span>{{ listError }}</span>
         <button type="button" @click="loadBundles">重新加载</button>
       </p>
-      <p v-if="actionMessage" class="reviewed-bundles__success" role="status">{{ actionMessage }}</p>
+      <p
+        v-if="actionMessage"
+        class="reviewed-bundles__success"
+        :class="{ 'reviewed-bundles__partial': publicationResults && !publicationResults.batch_complete }"
+        role="status"
+      >{{ actionMessage }}</p>
       <p v-if="actionError" class="reviewed-bundles__error" role="alert">{{ actionError }}</p>
 
       <div class="reviewed-bundles__workspace" :aria-busy="loading">
@@ -245,7 +250,6 @@
                     />
                   </button>
                   <button
-                    v-if="!selectedCandidateDetail.inspection"
                     type="button"
                     :disabled="Boolean(candidateLoading[selectedCandidateDetail.candidate.candidate_id])"
                     :aria-label="`记录 Candidate inspection ${selectedCandidateDetail.candidate.candidate_id}`"
@@ -268,6 +272,10 @@
               </header>
 
               <dl class="reviewed-bundles__facts reviewed-bundles__candidate-facts">
+                <div v-for="[field, label] in candidateIdentityFields" :key="field">
+                  <dt>{{ label }}</dt>
+                  <dd class="reviewed-bundles__identifier">{{ selectedCandidateDetail.candidate[field] || '-' }}</dd>
+                </div>
                 <div>
                   <dt>Candidate generation</dt>
                   <dd>{{ selectedCandidateDetail.candidate.generation }}</dd>
@@ -290,6 +298,53 @@
                 </div>
               </dl>
 
+              <details v-if="selectedCandidateDetail.candidate.metadata" class="reviewed-bundles__record-detail">
+                <summary>Entry metadata</summary>
+                <pre>{{ formatStructured(selectedCandidateDetail.candidate.metadata) }}</pre>
+              </details>
+              <details v-if="selectedCandidateDetail.inspection" class="reviewed-bundles__record-detail">
+                <summary>Inspection 绑定</summary>
+                <pre>{{ formatStructured(selectedCandidateDetail.inspection) }}</pre>
+              </details>
+
+              <section
+                v-if="selectedCandidateDetail.acceptance"
+                class="reviewed-bundles__acceptance"
+                aria-label="Candidate 验收记录"
+              >
+                <p class="reviewed-bundles__detail-eyebrow">Candidate 验收记录</p>
+                <p class="reviewed-bundles__identifier">{{ selectedCandidateDetail.acceptance.record_identity }}</p>
+                <dl class="reviewed-bundles__facts">
+                  <div><dt>Supported outcome</dt><dd>{{ selectedCandidateDetail.acceptance.supported.outcome }}</dd></div>
+                  <div><dt>Boundary outcome</dt><dd>{{ selectedCandidateDetail.acceptance.boundary.outcome }}</dd></div>
+                  <div>
+                    <dt>Governing entry</dt>
+                    <dd>{{ selectedCandidateDetail.acceptance.supported.expected_governing_entry_identity }}</dd>
+                  </div>
+                  <div>
+                    <dt>Governing section</dt>
+                    <dd>{{ selectedCandidateDetail.acceptance.supported.expected_governing_section_id }}</dd>
+                  </div>
+                  <div>
+                    <dt>Answer Evidence Set</dt>
+                    <dd>{{ selectedCandidateDetail.acceptance.supported.answer_evidence_set.identity }}</dd>
+                  </div>
+                  <div>
+                    <dt>Citation markers</dt>
+                    <dd>{{ selectedCandidateDetail.acceptance.supported.citation_markers.join(', ') }}</dd>
+                  </div>
+                  <div><dt>Boundary reason</dt><dd>{{ selectedCandidateDetail.acceptance.boundary.reason }}</dd></div>
+                  <div>
+                    <dt>Boundary provider calls / citations</dt>
+                    <dd>{{ selectedCandidateDetail.acceptance.boundary.provider_call_count }} / {{ selectedCandidateDetail.acceptance.boundary.citation_markers.length }}</dd>
+                  </div>
+                </dl>
+                <details class="reviewed-bundles__record-detail">
+                  <summary>Evidence snapshots 与精确验收绑定</summary>
+                  <pre>{{ formatStructured(selectedCandidateDetail.acceptance) }}</pre>
+                </details>
+              </section>
+
               <div class="reviewed-bundles__replacement">
                 <div>
                   <p class="reviewed-bundles__detail-eyebrow">Replacement</p>
@@ -299,6 +354,10 @@
                   <p v-if="selectedCandidateDetail.replacement.current_published_knowledge_version" class="reviewed-bundles__identifier">
                     {{ selectedCandidateDetail.replacement.current_published_knowledge_version.identity }}
                   </p>
+                  <details v-if="selectedCandidateDetail.replacement.current_published_knowledge_version" class="reviewed-bundles__record-detail">
+                    <summary>Published version 绑定</summary>
+                    <pre>{{ formatStructured(selectedCandidateDetail.replacement.current_published_knowledge_version) }}</pre>
+                  </details>
                 </div>
                 <dl class="reviewed-bundles__diff">
                   <div>
@@ -314,6 +373,12 @@
                     <dd>{{ selectedCandidateDetail.replacement.diff.removed.length }}</dd>
                   </div>
                 </dl>
+                <div v-if="selectedCandidateDetail.replacement.diff.added.length" class="reviewed-bundles__replacement-content">
+                  <div v-for="item in selectedCandidateDetail.replacement.diff.added" :key="`added-${item.chunk_index}`">
+                    <p>Chunk {{ item.chunk_index }}：新增 Candidate 内容</p>
+                    <pre>{{ item.candidate_content || selectedCandidateDetail.candidate.chunks.find((chunk) => chunk.chunk_index === item.chunk_index)?.content }}</pre>
+                  </div>
+                </div>
                 <div v-if="selectedCandidateDetail.replacement.diff.changed.length" class="reviewed-bundles__replacement-content">
                   <div v-for="item in selectedCandidateDetail.replacement.diff.changed" :key="`changed-${item.chunk_index}`">
                     <p>Chunk {{ item.chunk_index }}：当前已发布内容</p>
@@ -453,13 +518,22 @@
             <code>{{ item.candidate_id }}</code>
             <span>{{ item.effect === 'replace' ? '替换' : '创建' }}</span>
             <code v-if="item.current_published_knowledge_version">{{ item.current_published_knowledge_version }}</code>
+            <dl class="reviewed-bundles__confirmation-bindings">
+              <div><dt>Inspection</dt><dd>{{ item.inspection_record_identity }}</dd></div>
+              <div><dt>Acceptance</dt><dd>{{ item.acceptance_record_identity }}</dd></div>
+            </dl>
           </li>
         </ul>
         <label class="reviewed-bundles__publication-choice">
           <input v-model="publicationConfirmationAcknowledged" type="checkbox" />
           <span>我确认发布以上精确选择项。</span>
         </label>
-        <p v-if="publicationResults" class="reviewed-bundles__publication-outcome" role="status">
+        <p
+          v-if="publicationResults"
+          class="reviewed-bundles__publication-outcome"
+          :class="{ 'reviewed-bundles__partial': !publicationResults.batch_complete }"
+          role="status"
+        >
           已发布 {{ publicationResults.published.length }} 项，失败 {{ publicationResults.failed.length }} 项，跳过 {{ publicationResults.skipped.length }} 项。
         </p>
         <ul v-if="publicationResults" class="reviewed-bundles__publication-result-list">
@@ -482,7 +556,7 @@
         <button
           type="button"
           class="reviewed-bundles__dialog-button reviewed-bundles__dialog-button--primary"
-          :disabled="publicationLoading || !publicationConfirmationAcknowledged"
+          :disabled="publicationLoading || !publicationConfirmationAcknowledged || !publicationConfirmationSelections.length"
           @click="confirmPublication"
         >
           <Send v-if="!publicationLoading" :size="16" aria-hidden="true" />
@@ -512,6 +586,17 @@ import {
 import { apiAdapter } from '../api/adapters';
 
 const POLL_DELAY_MS = 1000;
+const candidateIdentityFields = [
+  ['entry_identity', 'Entry'],
+  ['document_identity', 'Document'],
+  ['bundle_id', 'Candidate bundle'],
+  ['bundle_item_id', 'Candidate bundle item'],
+  ['editorial_source_revision', 'Candidate source revision'],
+  ['bundle_sha256', 'Candidate bundle SHA-256'],
+  ['bundle_item_sha256', 'Candidate item SHA-256'],
+  ['input_sha256', 'Input SHA-256'],
+  ['frozen_input_sha256', 'Frozen input SHA-256']
+];
 
 const bundles = ref([]);
 const selectedBundleId = ref('');
@@ -998,9 +1083,14 @@ const confirmPublication = async () => {
     );
     activePublicationConfirmationId.value = null;
     activePublicationConfirmationSelections.value = null;
-    actionMessage.value = `批次发布完成：${result.published.length} 项已发布，${result.failed.length} 项失败，${result.skipped.length} 项跳过。`;
     if (selectedCandidateDetail.value) await viewCandidate(selectedCandidateDetail.value.candidate.candidate_id);
-    await loadSelectedJobs();
+    try {
+      await loadSelectedJobs();
+    } catch (error) {
+      actionError.value = friendlyError(error, '发布结果已保存，任务状态刷新失败。');
+    }
+    const batchState = result.batch_complete ? '批次发布完成' : '批次未全部发布';
+    actionMessage.value = `${batchState}：${result.published.length} 项已发布，${result.failed.length} 项失败，${result.skipped.length} 项跳过。`;
   } catch (error) {
     if (shouldReplacePublicationConfirmation(error)) {
       activePublicationConfirmationId.value = null;
@@ -1087,6 +1177,15 @@ onBeforeUnmount(() => {
 .reviewed-bundles__actions button { width: 30px; min-width: 30px; padding: 0; }
 .reviewed-bundles__actions .reviewed-bundles__cancel { border-color: var(--color-danger); color: var(--color-danger); }
 .reviewed-bundles__candidate-panel { margin-top: var(--space-5); padding-top: var(--space-4); border-top: 1px solid var(--color-rule); }
+.reviewed-bundles__candidate-panel .reviewed-bundles__section-header > div:first-child { min-width: 0; overflow-wrap: anywhere; }
+.reviewed-bundles__candidate-actions { flex-shrink: 0; }
+.reviewed-bundles__record-detail { min-width: 0; margin: var(--space-3) 0; font-size: 12px; }
+.reviewed-bundles__record-detail summary { cursor: pointer; color: var(--color-ink-soft); }
+.reviewed-bundles__record-detail pre, .reviewed-bundles__replacement-content pre { max-height: 300px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 11px; line-height: 1.6; }
+.reviewed-bundles__acceptance { padding: var(--space-4) 0; border-top: 1px solid var(--color-rule); }
+.reviewed-bundles__replacement-content { grid-column: 1 / -1; min-width: 0; font-size: 12px; }
+.reviewed-bundles__confirmation-bindings { grid-column: 1 / -1; min-width: 0; margin: 0; }
+.reviewed-bundles__confirmation-bindings dd { margin: 4px 0 var(--space-2); overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 11px; }
 .reviewed-bundles__candidate-actions { display: flex; align-items: center; gap: var(--space-2); }
 .reviewed-bundles__candidate-actions button { display: inline-flex; width: 30px; min-width: 30px; min-height: 30px; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--color-rule); border-radius: var(--radius-control); background: var(--color-paper-raised); color: var(--color-ink); cursor: pointer; }
 .reviewed-bundles__candidate-actions button:disabled { cursor: wait; opacity: 0.65; }
@@ -1120,6 +1219,7 @@ onBeforeUnmount(() => {
 .reviewed-bundles__publication-confirmation li code { min-width: 0; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 11px; }
 .reviewed-bundles__publication-confirmation li code:last-child { grid-column: 1 / -1; }
 .reviewed-bundles__publication-outcome { margin: 0; padding: var(--space-3); border-left: 3px solid var(--color-moss); background: var(--color-moss-soft); color: var(--color-moss); font-size: 13px; }
+.reviewed-bundles__partial { border-left-color: var(--color-warning); background: var(--color-warning-soft); color: var(--color-warning); }
 .reviewed-bundles__detail-empty, .reviewed-bundles__state { color: var(--color-ink-soft); font-size: 13px; text-align: center; }
 .reviewed-bundles__detail-empty { margin: 150px 0; }
 .reviewed-bundles__state { height: 180px; }

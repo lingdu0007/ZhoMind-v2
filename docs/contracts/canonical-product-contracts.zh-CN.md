@@ -332,6 +332,13 @@ governing 与必需 complement selection、确定性的 budget check，以及正
 snapshot 和 citation construction。它绝不会只评估第一个 chunk、通过截断 Candidate
 建立 support、容忍畸形 condition record，或手工拼装 evidence。
 
+重新加载与 publication eligibility 会验证 inspection 完整的 entry、document、bundle/item、
+revision、generation、hash 与 configuration binding。它们把完整的确定性 acceptance result
+与精确 frozen Candidate 核对，包括 QCS、evidence item、snapshot、citation marker 及 JSON
+scalar type；形状相似或损坏的 record 不能授予 eligibility。此验证不调用 provider，不写入新
+acceptance record，也不修改历史结果。管理员重新加载 inspection 时可以查看保留的 acceptance
+及其精确绑定。管理员界面保留这些记录的可检查性，并明确区分部分发布与完整批次成功。
+
 administrator 可以在 Candidate 变 stale 或其 job 到达 `superseded` 后重新加载 historical
 inspection，但 eligibility 始终只接受 latest generation。仅管理员可用的 Candidate publication
 read projection 会返回该 Candidate 的不可变 Published Knowledge Version identity、精确
@@ -361,6 +368,12 @@ source allocation；达到上限时，新 entry 只会让该 selected item 以
 结果，不会写入第二个 version 或移动 pointer。保留的 `processing` confirmation 会从已持久化的
 item result 恢复；只有当已经提交但尚未记录 result 的 version 与精确 selected
 inspection/acceptance identity 匹配时，才会恢复为已发布。
+
+publication read 会把每个 version projection 与其不可变 canonical publication record、
+frozen Candidate 核对，并把 entry pointer 的 document 和 generation 与该 version 核对。
+缺失或不一致的 pointed version 不能成为 replacement inspection。终态失败 confirmation
+的含义保持不变：重复其 identifier 会重放同一组 per-item result。重试失败项需要新的显式
+confirmation，且只能包含仍 eligible 的 selected item；已经发布的兄弟项及其 pointer 不变。
 
 `POST /documents/{id}/publish` 会拒绝所有 identity，因为该 legacy compatibility route 可能绕过
 Candidate inspection、acceptance 与 explicit confirmation。Ticket 24 不实现 withdrawal、

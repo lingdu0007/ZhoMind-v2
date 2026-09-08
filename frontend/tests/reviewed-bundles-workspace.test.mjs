@@ -1,6 +1,6 @@
 // Reviewed Release Bundle workspace acceptance over a disposable real API.
-// The UI can intake only immutable approved exports; it exposes no publication
-// action and remains hidden from Knowledge Users.
+// Intake, inspection, acceptance and explicit publication remain separate
+// administrator actions and stay hidden from Knowledge Users.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
@@ -746,6 +746,17 @@ test('System Administrator completes Ticket 24 inspection and isolated publicati
   await replacementPanel.getByRole('button', { name: `记录 Candidate inspection ${replacementCandidate}` }).click();
   await replacementPanel.getByRole('button', { name: `执行 Candidate 验收 ${replacementCandidate}` }).click();
   await replacementPanel.getByText('可发布', { exact: true }).waitFor();
+  const acceptance = replacementPanel.getByRole('region', { name: 'Candidate 验收记录' });
+  await acceptance.waitFor();
+  await acceptance.getByText('evidence_gated_answer', { exact: true }).waitFor();
+  await acceptance.getByText('insufficient_evidence_reply', { exact: true }).waitFor();
+  assert.equal(await acceptance.getByText('recommendation_or_reviewed_branches', { exact: true }).isVisible(), true);
+  assert.equal(await acceptance.getByText('S1', { exact: true }).isVisible(), true);
+  await replacementPanel.getByText('Frozen input SHA-256', { exact: true }).waitFor();
+  const retainedAcceptance = await acceptance.innerText();
+  await replacementPanel.getByRole('button', { name: `刷新 Candidate ${replacementCandidate}` }).click();
+  await acceptance.waitFor();
+  assert.equal(await acceptance.innerText(), retainedAcceptance);
   await replacementPanel.locator('input[type="checkbox"]').check();
 
   await page.getByRole('button', { name: failureBundle.bundle_id }).click();
@@ -766,6 +777,8 @@ test('System Administrator completes Ticket 24 inspection and isolated publicati
     await page.getByText('PUBLICATION_ITEM_RETRYABLE_FAILURE', { exact: true }).isVisible(),
     true
   );
+  assert.equal(await page.getByText(/批次发布完成/).count(), 0);
+  await page.getByText('批次未全部发布：1 项已发布，1 项失败，0 项跳过。', { exact: true }).waitFor();
 
   const legacyBypass = await page.evaluate(async () => {
     const response = await fetch('/api/documents/runtime-document:ticket24-browser-entry-001/publish', {

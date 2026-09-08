@@ -490,11 +490,52 @@ async def test_claim_linked_entry_without_a_release_assured_contract_freezes_its
         entry_id="claim-linked-links-only-001",
         assurance_level="claim_linked",
     )
+    entry.sources.append(
+        {
+            "source_id": "source-rag-admission-002",
+            "source_tier": "primary_evidence_source",
+            "title": "Chinese security review authority",
+            "authority": "ZhoMind architecture group",
+            "version_or_date": "2026-09-08",
+            "availability": "verified_usable",
+            "access_scope": "public",
+            "public_url": "https://example.com/rag/security-review",
+            "independent_public_verifiability": True,
+        }
+    )
+    for relationship in entry.section_source_relationships:
+        if relationship["section_id"] == "recommendation_or_reviewed_branches":
+            relationship["source_ids"].append("source-rag-admission-002")
+    entry.claims.append(
+        {
+            "claim_id": "claim-z-chinese-security-review",
+            "claim_kind": "ordinary",
+            "statement": "安全策略必须在七天内复核生产环境的授权变更。",
+            "section_id": "recommendation_or_reviewed_branches",
+            "source_ids": ["source-rag-admission-002"],
+            "material": False,
+            "scope": "team_shared",
+        }
+    )
     entry.approving_reviewer_username = reviewer.username
     entry.accountable_maintainer_username = maintainer.username
     authority = EditorialAuthorityService(db_session)
     draft = await authority.create_draft(entry, author)
-    await _prepare_editorial_review(authority, draft["entry_id"], author, maintainer)
+    await authority.collect_evidence(draft["entry_id"], author)
+    await authority.accept_maintainer_responsibility(draft["entry_id"], maintainer)
+    await authority.record_source_availability(
+        draft["entry_id"],
+        "source-rag-admission-001",
+        "verified_usable",
+        maintainer,
+    )
+    await authority.record_source_availability(
+        draft["entry_id"],
+        "source-rag-admission-002",
+        "verified_usable",
+        maintainer,
+    )
+    await authority.request_editorial_review(draft["entry_id"], author)
     approved = await authority.approve_current_revision(draft["entry_id"], reviewer)
 
     exported = await authority.export_approved_revision(draft["entry_id"], administrator)
@@ -510,7 +551,12 @@ async def test_claim_linked_entry_without_a_release_assured_contract_freezes_its
                 "claim_id": "claim-source-admission-policy",
                 "section_id": "recommendation_or_reviewed_branches",
                 "source_ids": ["source-rag-admission-001"],
-            }
+            },
+            {
+                "claim_id": "claim-z-chinese-security-review",
+                "section_id": "recommendation_or_reviewed_branches",
+                "source_ids": ["source-rag-admission-002"],
+            },
         ],
     }
     assert "resolver" not in frozen_contract
@@ -871,15 +917,25 @@ async def test_published_revision_authority_retains_a_later_source_loss_across_s
     )
     assert third_revision["revision_identity"] != second_revision["revision_identity"]
     await authority.accept_maintainer_responsibility(draft["entry_id"], maintainer)
-    await authority.approve_current_revision(draft["entry_id"], reviewer)
+    third_approval = await authority.approve_current_revision(draft["entry_id"], reviewer)
+    third_export = await authority.reconstruct_export(draft["entry_id"], third_approval["revision_identity"])
+    await authority.record_candidate_publication(
+        third_export["artifact"],
+        candidate_identity="candidate:successor-source-loss-r3",
+        published_knowledge_version_identity="published_knowledge_version:successor-source-loss-r3",
+        actor_identity="member:ticket24-publication",
+    )
 
     historical = await authority.get_retrieval_authority_for_revision(
         draft["entry_id"],
         first_approval["revision_identity"],
     )
+    current = await authority.get_retrieval_authority(draft["entry_id"])
 
     assert historical["answer_eligible"] is False
     assert "decisive_source_loss" in historical["eligibility_reasons"]
+    assert current["editorial_revision_identity"] == third_approval["revision_identity"]
+    assert current["answer_eligible"] is True
 
 
 async def test_non_ascii_approved_export_imports_as_an_immutable_reviewed_bundle(db_session) -> None:

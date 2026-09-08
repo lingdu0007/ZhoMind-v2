@@ -1039,8 +1039,10 @@ class EditorialAuthorityService:
             applicability_explicit=bool(draft.applicability_conditions),
             known_contradiction=self._revision_flag(events, revision_identity, "known_contradiction"),
             integrity_defect=self._revision_flag(events, revision_identity, "integrity_defect"),
-            decisive_source_loss=self._revision_flag(events, revision_identity, "decisive_source_loss")
-            or self._published_revision_has_decisive_source_loss(events, draft),
+            decisive_source_loss=(
+                self._revision_flag(events, revision_identity, "decisive_source_loss")
+                or self._published_revision_has_decisive_source_loss(events, draft, revision_identity)
+            ),
             now=now,
         )
         return {
@@ -1223,7 +1225,7 @@ class EditorialAuthorityService:
             integrity_defect=self._revision_flag(events, revision_identity, "integrity_defect"),
             decisive_source_loss=(
                 self._revision_flag(events, revision_identity, "decisive_source_loss")
-                or self._published_revision_has_decisive_source_loss(events, draft)
+                or self._published_revision_has_decisive_source_loss(events, draft, revision_identity)
             ),
             now=now,
         )
@@ -2495,14 +2497,33 @@ class EditorialAuthorityService:
     def _published_revision_has_decisive_source_loss(
         events: list[CanonicalEventModel],
         draft: CreateEditorialEntryRequest,
+        revision_identity: str,
     ) -> bool:
+        approval = EditorialAuthorityService._approval_for_revision(events, revision_identity)
+        approval_sequence = approval.get("sequence") if approval is not None else None
+        if not isinstance(approval_sequence, int):
+            return False
         source_identities = {
             StableIdentity(StableIdentityKind.SOURCE, source["source_id"]).stable_id
             for source in draft.sources or []
             if isinstance(source, dict) and isinstance(source.get("source_id"), str)
         }
+        next_material_approval_sequence = min(
+            (
+                EditorialAuthorityService._event_sequence([event])
+                for event in events
+                if EditorialAuthorityService._event_sequence([event]) > approval_sequence
+                and EditorialAuthorityService._payload(event).get("action") == "revision_approved"
+            ),
+            default=None,
+        )
         return bool(source_identities) and any(
-            EditorialAuthorityService._payload(event).get("decisive_source_loss") is True
+            EditorialAuthorityService._event_sequence([event]) > approval_sequence
+            and (
+                next_material_approval_sequence is None
+                or EditorialAuthorityService._event_sequence([event]) < next_material_approval_sequence
+            )
+            and EditorialAuthorityService._payload(event).get("decisive_source_loss") is True
             and EditorialAuthorityService._payload(event).get("source_identity") in source_identities
             for event in events
         )

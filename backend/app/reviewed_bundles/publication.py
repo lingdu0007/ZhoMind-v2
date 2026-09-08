@@ -928,7 +928,9 @@ class CandidatePublicationService:
             if not isinstance(record.payload, dict) or record.payload.get("schema") != "candidate_acceptance/v1":
                 continue
             if (
-                record.payload.get("acceptance_record_identity") == record.stable_id
+                record.record_class == CanonicalRecordClass.IMMUTABLE.value
+                and record.state == "passed"
+                and record.payload.get("acceptance_record_identity") == record.stable_id
                 and self._acceptance_matches(record.payload, binding)
             ):
                 return dict(record.payload)
@@ -949,6 +951,8 @@ class CandidatePublicationService:
         if (
             record is None
             or record.identity_kind != StableIdentityKind.EVENT.value
+            or record.record_class != CanonicalRecordClass.IMMUTABLE.value
+            or record.state != "recorded"
             or not isinstance(record.payload, dict)
             or record.payload.get("schema") != "candidate_inspection/v1"
             or record.payload.get("inspection_record_identity") != record.stable_id
@@ -974,6 +978,8 @@ class CandidatePublicationService:
         if (
             record is None
             or record.identity_kind != StableIdentityKind.EVENT.value
+            or record.record_class != CanonicalRecordClass.IMMUTABLE.value
+            or record.state != "passed"
             or not isinstance(record.payload, dict)
             or record.payload.get("schema") != "candidate_acceptance/v1"
             or record.payload.get("acceptance_record_identity") != record.stable_id
@@ -985,11 +991,11 @@ class CandidatePublicationService:
 
     def _acceptance_matches(self, payload: dict[str, Any], binding: CandidatePublicationBinding) -> bool:
         result = payload.get("result")
-        supported = result.get("supported") if isinstance(result, dict) else None
         boundary = result.get("boundary") if isinstance(result, dict) else None
-        return (
+        binding_matches = (
             payload.get("candidate_id") == binding.candidate.stable_id
             and payload.get("build_generation_id") == f"build_generation:{binding.job.id}"
+            and payload.get("entry_identity") == binding.frozen_input.entry_identity
             and payload.get("bundle_sha256") == binding.frozen_input.bundle_sha256
             and payload.get("bundle_item_sha256") == binding.frozen_input.bundle_item_sha256
             and payload.get("input_sha256") == binding.frozen_input.input_sha256
@@ -1001,28 +1007,28 @@ class CandidatePublicationService:
                 payload.get("replaces_published_knowledge_version_identity") is None
                 or isinstance(payload.get("replaces_published_knowledge_version_identity"), str)
             )
-            and isinstance(supported, dict)
-            and supported.get("outcome") == "evidence_gated_answer"
-            and supported.get("expected_governing_entry_identity") == binding.frozen_input.entry_identity
-            and supported.get("expected_governing_section_id") == _GOVERNING_SECTION
-            and isinstance(supported.get("answer_evidence_set"), dict)
-            and isinstance(supported["answer_evidence_set"].get("identity"), str)
-            and bool(supported.get("citation_markers"))
-            and supported.get("provider_call_count") == 0
             and isinstance(boundary, dict)
-            and boundary.get("outcome") == "insufficient_evidence_reply"
             and boundary.get("reason") in {"decision_not_covered", "decisive_condition_missing"}
-            and boundary.get("citation_markers") == []
-            and boundary.get("provider_call_count") == 0
         )
+        if not binding_matches:
+            return False
+        try:
+            expected = CandidateAcceptanceExecutionAdapter(binding).run()
+            # Compare the whole deterministic result, including JSON scalar types.
+            return canonical_json_sha256(result) == canonical_json_sha256(expected)
+        except (AppError, TypeError, ValueError):
+            return False
 
     async def _published_version_for_candidate(
         self,
         candidate_id: str,
     ) -> PublishedKnowledgeVersion | None:
-        return await self.session.scalar(
+        version = await self.session.scalar(
             select(PublishedKnowledgeVersion).where(PublishedKnowledgeVersion.candidate_id == candidate_id)
         )
+        if version is not None:
+            await self._assert_version_integrity(version)
+        return version
 
     async def _current_pointer(
         self,
@@ -1045,14 +1051,71 @@ class CandidatePublicationService:
         if pointer is None:
             return None
         version = await self.session.get(PublishedKnowledgeVersion, pointer.current_version_id)
-        if version is None or version.entry_identity != pointer.entry_identity:
+        if (
+            version is None
+            or version.entry_identity != pointer.entry_identity
+            or version.document_identity != pointer.document_identity
+            or version.generation != pointer.generation
+        ):
             raise AppError(
                 status_code=409,
                 code="PUBLISHED_KNOWLEDGE_POINTER_INTEGRITY_FAILED",
                 message="published Knowledge Version pointer does not resolve",
                 detail={"entry_identity": pointer.entry_identity},
             )
+        await self._assert_version_integrity(version)
         return version
+
+    async def _assert_version_integrity(self, version: PublishedKnowledgeVersion) -> None:
+        failure = AppError(
+            status_code=409,
+            code="PUBLISHED_KNOWLEDGE_POINTER_INTEGRITY_FAILED",
+            message="published Knowledge Version does not match its immutable authority",
+            detail={"entry_identity": version.entry_identity},
+        )
+        record = await self.session.get(CanonicalRecordModel, version.id)
+        if (
+            record is None
+            or record.identity_kind != StableIdentityKind.PUBLISHED_KNOWLEDGE_VERSION.value
+            or record.record_class != CanonicalRecordClass.IMMUTABLE.value
+            or record.state != "published"
+            or not isinstance(record.payload, dict)
+            or record.payload.get("schema") != "published_knowledge_version/v1"
+        ):
+            raise failure
+        try:
+            binding = await self._load_binding(version.candidate_id, require_latest_generation=False)
+        except AppError as exc:
+            raise failure from exc
+        frozen = binding.frozen_input
+        expected_projection = {
+            "candidate_id": binding.candidate.stable_id,
+            "entry_identity": frozen.entry_identity,
+            "document_identity": runtime_document_identity(frozen.document_identity),
+            "generation": frozen.requested_generation,
+            "bundle_sha256": frozen.bundle_sha256,
+            "frozen_input_sha256": frozen.frozen_input_sha256,
+            "configuration_identity": binding.configuration_identity,
+            "inspection_record_identity": version.inspection_record_identity,
+            "acceptance_record_identity": version.acceptance_record_identity,
+            "supersedes_version_id": version.supersedes_version_id,
+        }
+        expected_record = {
+            **expected_projection,
+            "schema": "published_knowledge_version/v1",
+            "bundle_id": frozen.bundle_id,
+            "bundle_item_id": frozen.bundle_item_id,
+            "bundle_item_sha256": frozen.bundle_item_sha256,
+            "input_sha256": frozen.input_sha256,
+            "editorial_revision_identity": frozen.artifact["editorial_revision_identity"],
+            "replaces_published_knowledge_version_identity": version.supersedes_version_id,
+        }
+        if (
+            version.id != self._published_version_identity(binding).stable_id
+            or any(getattr(version, key) != value for key, value in expected_projection.items())
+            or canonical_json_sha256(record.payload) != canonical_json_sha256(expected_record)
+        ):
+            raise failure
 
     @staticmethod
     def _version_projection(version: PublishedKnowledgeVersion) -> dict[str, Any]:
@@ -1789,7 +1852,9 @@ class CandidatePublicationService:
             if not isinstance(record.payload, dict) or record.payload.get("schema") != "candidate_inspection/v1":
                 continue
             if (
-                record.payload.get("inspection_record_identity") == record.stable_id
+                record.record_class == CanonicalRecordClass.IMMUTABLE.value
+                and record.state == "recorded"
+                and record.payload.get("inspection_record_identity") == record.stable_id
                 and self._inspection_matches(record.payload, binding)
             ):
                 return dict(record.payload)
@@ -1803,6 +1868,11 @@ class CandidatePublicationService:
         return (
             payload.get("candidate_id") == binding.candidate.stable_id
             and payload.get("build_generation_id") == f"build_generation:{binding.job.id}"
+            and payload.get("entry_identity") == binding.frozen_input.entry_identity
+            and payload.get("document_identity") == binding.frozen_input.document_identity
+            and payload.get("bundle_id") == binding.frozen_input.bundle_id
+            and payload.get("bundle_item_id") == binding.frozen_input.bundle_item_id
+            and payload.get("editorial_source_revision") == binding.frozen_input.editorial_source_revision
             and payload.get("bundle_sha256") == binding.frozen_input.bundle_sha256
             and payload.get("bundle_item_sha256") == binding.frozen_input.bundle_item_sha256
             and payload.get("input_sha256") == binding.frozen_input.input_sha256
@@ -1853,6 +1923,11 @@ class CandidatePublicationService:
         binding: CandidatePublicationBinding,
         inspection: dict[str, Any] | None,
     ) -> dict[str, Any]:
+        acceptance = await self._latest_valid_acceptance(binding)
+        if acceptance is not None and await self._exact_inspection_payload(
+            binding, acceptance["inspection_record_identity"],
+        ) is None:
+            acceptance = None
         return {
             "candidate": {
                 "candidate_id": binding.candidate.stable_id,
@@ -1868,6 +1943,11 @@ class CandidatePublicationService:
                 "generation": binding.frozen_input.requested_generation,
                 "configuration_identity": binding.configuration_identity,
                 "configuration": binding.frozen_input.embedding_configuration,
+                "metadata": {
+                    key: value
+                    for key, value in binding.frozen_input.artifact["entry"].items()
+                    if key not in {"body", "acceptance_material"}
+                },
                 "chunks": [
                     {
                         "chunk_id": chunk.id,
@@ -1883,6 +1963,7 @@ class CandidatePublicationService:
                 {
                     "record_identity": inspection["inspection_record_identity"],
                     "candidate_id": inspection["candidate_id"],
+                    "generation": inspection["requested_generation"],
                     "frozen_input_sha256": inspection["frozen_input_sha256"],
                     "configuration_identity": inspection["configuration_identity"],
                     "inspected_by": inspection["inspected_by"],
@@ -1891,6 +1972,18 @@ class CandidatePublicationService:
                     ],
                 }
                 if inspection is not None
+                else None
+            ),
+            "acceptance": (
+                {
+                    "record_identity": acceptance["acceptance_record_identity"],
+                    "inspection_record_identity": acceptance["inspection_record_identity"],
+                    "accepted_by": acceptance["accepted_by"],
+                    "frozen_input_sha256": acceptance["frozen_input_sha256"],
+                    "configuration_identity": acceptance["configuration_identity"],
+                    **acceptance["result"],
+                }
+                if acceptance is not None
                 else None
             ),
             "replacement": await self._replacement_projection(
@@ -1917,8 +2010,10 @@ class CandidatePublicationService:
                 if replacement_version_identity is not None
                 else None
             )
-            if current is not None and current.entry_identity != binding.frozen_input.entry_identity:
-                raise self._candidate_integrity_error(binding.candidate.stable_id)
+            if replacement_version_identity is not None:
+                if current is None or current.entry_identity != binding.frozen_input.entry_identity:
+                    raise self._candidate_integrity_error(binding.candidate.stable_id)
+                await self._assert_version_integrity(current)
         else:
             pointer = await self._current_pointer(binding.frozen_input.entry_identity)
             current = await self._current_version(pointer)

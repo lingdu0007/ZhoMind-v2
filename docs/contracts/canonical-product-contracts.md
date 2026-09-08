@@ -368,7 +368,7 @@ input, bundle/item hashes, current generation, contiguous content-hashed
 Candidate chunks, and effective embedding configuration. Recording inspection
 creates immutable `candidate_inspection/v1` evidence plus an append-only
 Candidate event. It re-verifies the retained approved editorial export and
-creates or verifies the content-addressed immutable configuration record. A
+creates or verifies the content-addressed immutable configuration record.
 A Claim-Linked Candidate Build must copy its exact frozen Candidate
 Claim-Evidence contract and canonical hash into each Candidate chunk. That
 contract binds exactly its material claims and their reviewed section/source
@@ -414,6 +414,17 @@ construction. It never evaluates only a first chunk, truncates a Candidate to
 establish support, tolerates malformed condition records, or hand-assembles
 evidence.
 
+Reload and publication eligibility verify the retained inspection's complete
+entry, document, bundle/item, revision, generation, hash and configuration
+binding. They validate the whole deterministic acceptance result against the
+exact frozen Candidate, including QCS, evidence items, snapshots, citation
+markers and JSON scalar types; a shape-compatible or corrupted record cannot
+grant eligibility. This verification calls no provider, writes no new
+acceptance record, and does not revise the historical result. Administrator
+inspection reload exposes the retained acceptance and its exact bindings.
+The administrator view keeps those records inspectable and distinguishes
+partial publication from complete batch success.
+
 An administrator may reload a historical inspection after a Candidate becomes
 stale or its job reaches `superseded`, but eligibility remains latest-generation
 only. The administrator-only Candidate publication read projection reports that
@@ -452,6 +463,15 @@ confirmation returns its retained outcome without writing a second version or
 moving a pointer. A retained `processing` confirmation resumes from its
 persisted item results; a version committed before its result was recorded is
 recovered only when its exact selected inspection/acceptance identities match.
+
+Publication reads verify each version projection against its immutable
+canonical publication record and frozen Candidate, and verify the entry
+pointer's document and generation against that version. A missing or
+inconsistent pointed version cannot become a replacement inspection.
+A terminal failed confirmation remains immutable in meaning: repeating its
+identifier replays the same per-item results. Retrying failed items requires a
+new explicit confirmation containing only the still-eligible selected items;
+already-published siblings and their pointers remain unchanged.
 
 `POST /documents/{id}/publish` rejects every identity because that legacy
 compatibility route could bypass Candidate inspection, acceptance, and explicit

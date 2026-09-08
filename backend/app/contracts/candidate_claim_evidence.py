@@ -4,13 +4,12 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import Any
 
 from app.contracts.canonical import StableIdentity, StableIdentityKind
+from app.contracts.claim_materiality import is_material_claim
 
 _SCHEMA = "candidate_claim_evidence_contract/v1"
 _SAFE_ID = re.compile(r"[a-z0-9][a-z0-9._-]{2,159}")
-_HIGH_IMPACT_CLAIM_KINDS = frozenset({"prescriptive", "numeric", "version", "security", "privacy", "high_impact"})
 
 
 class CandidateClaimEvidenceContractError(ValueError):
@@ -72,7 +71,7 @@ def build_candidate_claim_evidence_contract(
     definitions: list[CandidateClaimEvidenceDefinition] = []
     seen_claim_ids: set[str] = set()
     for raw_claim in claims:
-        if not isinstance(raw_claim, dict) or not _is_material_claim(raw_claim):
+        if not isinstance(raw_claim, dict) or not is_material_claim(raw_claim):
             continue
         claim_id = _safe_id(raw_claim.get("claim_id"), "claim_id")
         if claim_id in seen_claim_ids:
@@ -166,7 +165,3 @@ def _safe_id(value: object, field: str) -> str:
     if not isinstance(value, str) or _SAFE_ID.fullmatch(value.strip()) is None:
         raise CandidateClaimEvidenceContractError(f"{field} must be a stable identifier")
     return value.strip()
-
-
-def _is_material_claim(value: dict[str, Any]) -> bool:
-    return value.get("material") is True or value.get("claim_kind") in _HIGH_IMPACT_CLAIM_KINDS

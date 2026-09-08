@@ -788,8 +788,11 @@ def _claim_evidence_requirements(candidate: _AuthorizedCandidate) -> tuple[_Evid
         return "assurance_support_missing"
     try:
         raw_value = json.loads(raw_contract)
+    except json.JSONDecodeError:
+        return "assurance_support_missing"
+    try:
         candidate_contract = parse_candidate_claim_evidence_contract(raw_value)
-    except (json.JSONDecodeError, CandidateClaimEvidenceContractError):
+    except CandidateClaimEvidenceContractError:
         candidate_contract = None
     if candidate_contract is not None:
         if (
@@ -799,12 +802,16 @@ def _claim_evidence_requirements(candidate: _AuthorizedCandidate) -> tuple[_Evid
             != candidate.metadata.get("editorial_revision_identity")
         ):
             return "assurance_support_missing"
-        matched_claims = [
+        section_claims = [
             claim
             for claim in candidate_contract.claims
-            if claim.section_id == candidate.section_id and source_id in claim.source_ids
+            if claim.section_id == candidate.section_id
         ]
-        if not matched_claims:
+        if not section_claims or source_id not in {
+            linked_source_id
+            for claim in section_claims
+            for linked_source_id in claim.source_ids
+        }:
             return "assurance_support_missing"
         return tuple(
             sorted(
@@ -814,7 +821,7 @@ def _claim_evidence_requirements(candidate: _AuthorizedCandidate) -> tuple[_Evid
                         section_id=claim.section_id,
                         source_id=linked_source_id,
                     )
-                    for claim in matched_claims
+                    for claim in section_claims
                     for linked_source_id in claim.source_ids
                 },
                 key=_requirement_sort_key,
@@ -828,12 +835,16 @@ def _claim_evidence_requirements(candidate: _AuthorizedCandidate) -> tuple[_Evid
         return "assurance_support_missing"
     if contract.conflict_state == "unresolved" or contract.unknown_state != "none":
         return "material_evidence_conflict"
-    matched_claims = [
+    section_claims = [
         claim
         for claim in contract.claims
-        if any(link.section_id == candidate.section_id and link.source_id == source_id for link in claim.evidence)
+        if any(link.section_id == candidate.section_id for link in claim.evidence)
     ]
-    if not matched_claims:
+    if not section_claims or not any(
+        link.section_id == candidate.section_id and link.source_id == source_id
+        for claim in section_claims
+        for link in claim.evidence
+    ):
         return "assurance_support_missing"
     return tuple(
         sorted(
@@ -843,7 +854,7 @@ def _claim_evidence_requirements(candidate: _AuthorizedCandidate) -> tuple[_Evid
                     section_id=link.section_id,
                     source_id=link.source_id,
                 )
-                for claim in matched_claims
+                for claim in section_claims
                 for link in claim.evidence
             },
             key=_requirement_sort_key,
