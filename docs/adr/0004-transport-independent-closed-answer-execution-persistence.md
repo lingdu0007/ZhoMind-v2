@@ -4,6 +4,8 @@ Status: Accepted
 
 Partially superseded by ADR 0005 for normalized approved-route failure and
 exhaustion only; input/envelope integrity and transport rules remain in force.
+ADR 0006 supersedes the completion-time tombstone rule: withdrawal before
+completion now fails the new answer instead of completing a redacted one.
 
 Date: 2026-09-06
 

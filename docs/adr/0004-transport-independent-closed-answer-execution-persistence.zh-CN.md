@@ -11,6 +11,9 @@
 transport-specific answer gate、generation/persistence 语义、snapshot slicing、
 outcome inference 与 source-count heuristic。
 
+ADR 0006 替代 completion 时的 tombstone 规则：完成前发生撤回会使新回答失败，
+而不是完成一个已脱敏的回答。
+
 ## 背景
 
 ADR 0003 使 evidence sufficiency 成为确定性规则，并在 provider 可以 generation 之前

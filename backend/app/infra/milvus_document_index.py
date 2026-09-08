@@ -9,6 +9,10 @@ from pymilvus import MilvusClient
 from app.infra.milvus import get_milvus_client
 
 
+class MilvusUpsertCancelledAfterDrain(asyncio.CancelledError):
+    """The synchronous upsert has exited before cancellation reaches its caller."""
+
+
 class MilvusDocumentIndex:
     def __init__(self, client: MilvusClient | None = None) -> None:
         self._client = client or get_milvus_client()
@@ -43,7 +47,23 @@ class MilvusDocumentIndex:
         payload = [self._normalize_row(row) for row in rows]
         if not payload:
             return
-        await asyncio.to_thread(self._client.upsert, collection_name, payload)
+        write = asyncio.create_task(asyncio.to_thread(self._client.upsert, collection_name, payload))
+        try:
+            await asyncio.shield(write)
+        except asyncio.CancelledError:
+            # Canceling to_thread's awaiter cannot stop an already-running SDK
+            # call. Keep its caller's write fence until that call actually exits.
+            while not write.done():
+                try:
+                    await asyncio.shield(write)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if write.cancelled():
+                raise
+            write.exception()
+            raise MilvusUpsertCancelledAfterDrain() from None
 
     async def delete_generation(self, *, collection_name: str, document_id: str, generation: int) -> None:
         exists = await asyncio.to_thread(self._client.has_collection, collection_name)

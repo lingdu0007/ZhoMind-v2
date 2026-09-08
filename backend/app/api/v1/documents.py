@@ -33,6 +33,7 @@ from app.model.document import Document, DocumentChunk, DocumentJob
 from app.operations.limits import MAX_PUBLISHED_SOURCES, MAX_UPLOAD_BYTES
 from app.rag.answer_evidence import evidence_snapshot_id
 from app.repository.chat_repository import ChatRepository
+from app.reviewed_bundles.models import PublishedKnowledgePointer
 from app.service.answer_execution_store import AnswerExecutionStore
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -495,11 +496,21 @@ def _redact_nested_frozen_answer_evidence(value: object, *, document_id: str) ->
 
 
 async def _tombstone_document(session: AsyncSession, *, document: Document) -> None:
+    await ChatRepository(session).acquire_private_conversation_write_fence()
     await session.execute(
-        select(Document.id)
+        select(Document)
         .where(Document.id == document.id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
+    pointer = await session.scalar(select(PublishedKnowledgePointer).where(
+        PublishedKnowledgePointer.document_identity == document.id,
+    ))
+    if document.published_generation > 0 or pointer is not None:
+        raise AppError(
+            status_code=409, code="EXPLICIT_WITHDRAWAL_REQUIRED",
+            message="published knowledge requires an exact publication withdrawal with actor and reason",
+        )
     document.deleted_at = datetime.now(UTC)
     document.status = "pending"
     document.latest_requested_generation = document.published_generation

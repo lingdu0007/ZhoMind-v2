@@ -725,11 +725,8 @@ async def _seed_test_data() -> None:
     ready_documents = [
         ("browser-evidence", "browser-evidence.md", "部署前需要完成变更审批。"),
         ("browser-inspection", "browser-inspection.md", "已发布分块可用于检查部署审批记录。"),
-        ("browser-single-delete", "browser-single-delete.md", "单个删除验收文档。"),
         ("browser-batch-first", "browser-batch-first.md", "第一份批量构建文档。"),
         ("browser-batch-second", "browser-batch-second.md", "第二份批量构建文档。"),
-        ("browser-batch-partial-first", "browser-batch-partial-first.md", "批量删除部分失败的并发文档。"),
-        ("browser-batch-partial-second", "browser-batch-partial-second.md", "批量删除成功文档。"),
     ]
     async with SessionLocal() as session:
         if os.getenv("BROWSER_ACCEPTANCE_SEED") != "minimal":
@@ -771,6 +768,28 @@ async def _seed_test_data() -> None:
                         stage="completed",
                         progress=100,
                         message="document build completed",
+                    )
+                )
+
+            # Legacy deletion acceptance operates on unpublished drafts only.
+            for document_id in (
+                "browser-single-delete",
+                "browser-batch-partial-first",
+                "browser-batch-partial-second",
+            ):
+                session.add(
+                    Document(
+                        id=document_id,
+                        filename=f"{document_id}.md",
+                        file_type="md",
+                        file_size=0,
+                        source_content=b"",
+                        status="pending",
+                        chunk_strategy="general",
+                        chunk_count=0,
+                        published_generation=0,
+                        next_generation=1,
+                        latest_requested_generation=0,
                     )
                 )
 

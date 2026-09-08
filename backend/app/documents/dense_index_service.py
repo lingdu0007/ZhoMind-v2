@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -45,6 +46,10 @@ class DenseIndexResult:
     fingerprint: str | None
 
 
+class DenseIndexCancelledBeforeWrite(asyncio.CancelledError):
+    """Index preparation stopped before any vector upsert was invoked."""
+
+
 class DenseIndexService:
     def __init__(
         self,
@@ -74,9 +79,11 @@ class DenseIndexService:
 
         fingerprint = embedding_fingerprint or build_embedding_contract_fingerprint(self._settings)
         collection_name = build_milvus_collection_name(fingerprint)
-        await document_index.ensure_collection(collection_name=collection_name, dimension=contract.dimension)
-
-        vectors = await embedding_provider.embed([chunk.content for chunk in chunks])
+        try:
+            await document_index.ensure_collection(collection_name=collection_name, dimension=contract.dimension)
+            vectors = await embedding_provider.embed([chunk.content for chunk in chunks])
+        except asyncio.CancelledError:
+            raise DenseIndexCancelledBeforeWrite() from None
         if len(vectors) != len(chunks):
             raise ValueError("embedding provider returned mismatched vector count")
         for vector in vectors:

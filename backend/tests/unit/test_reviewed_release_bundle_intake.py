@@ -1369,7 +1369,10 @@ async def test_queued_item_builds_a_hidden_candidate_from_frozen_inputs_without_
 
     event_result = await db_session.execute(
         select(CanonicalEventModel)
-        .where(CanonicalEventModel.aggregate_id == f"build_generation:{job_id}")
+        .where(
+            CanonicalEventModel.aggregate_id == f"build_generation:{job_id}",
+            CanonicalEventModel.payload["schema"].as_string() == "candidate_build_job_event/v1",
+        )
         .order_by(CanonicalEventModel.occurred_at.asc(), CanonicalEventModel.id.asc())
     )
     assert {event.to_state for event in event_result.scalars().all()} == {

@@ -1,7 +1,10 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from app.api.v1.documents import _tombstone_document
+from app.common.exceptions import AppError
 from app.rag.answer_evidence import AnswerEvidence
 from app.rag.evidence_sufficiency import AnswerEvidenceSet, QueryConditionSet
 
@@ -34,6 +37,9 @@ class _TombstoneSession:
 
     async def scalars(self, _statement: object) -> _ScalarRows:
         return _ScalarRows([])
+
+    async def scalar(self, _statement: object) -> None:
+        return None
 
 
 def _frozen_trace(document_id: str) -> dict:
@@ -68,7 +74,7 @@ def _frozen_trace(document_id: str) -> dict:
     }
 
 
-def test_tombstone_redacts_frozen_answer_evidence_excerpts_alongside_legacy_trace_evidence() -> None:
+def test_legacy_tombstone_cannot_withdraw_a_published_generation_without_authority() -> None:
     document_id = "withdrawn-document"
     trace = _frozen_trace(document_id)
     message = SimpleNamespace(rag_trace=trace)
@@ -85,10 +91,9 @@ def test_tombstone_redacts_frozen_answer_evidence_excerpts_alongside_legacy_trac
     job = SimpleNamespace(status="running", stage="build", progress=100, message="building")
     session = _TombstoneSession(jobs=[job], messages=[message])
 
-    asyncio.run(_tombstone_document(session, document=document))
-
-    frozen_item = message.rag_trace["answer_evidence_set"]["items"][0]
-    assert frozen_item["withdrawn"] is True
-    assert frozen_item["evidence"]["withdrawn"] is True
-    assert "content_preview" not in frozen_item["evidence"]
-    assert "This frozen excerpt" not in str(message.rag_trace)
+    with pytest.raises(AppError) as failure:
+        asyncio.run(_tombstone_document(session, document=document))
+    assert failure.value.code == "EXPLICIT_WITHDRAWAL_REQUIRED"
+    assert document.deleted_at is None
+    assert job.status == "running"
+    assert message.rag_trace == trace

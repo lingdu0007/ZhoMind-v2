@@ -384,6 +384,36 @@ Candidate inspection、acceptance 与 explicit confirmation。Ticket 24 不实�
 redaction 或 historical deletion：Ticket 25 将在保留 immutable Published Knowledge Version
 identity 和后续 withdrawal seam 的前提下添加这些 event。
 
+## 显式撤回与清理
+
+管理员撤回命令指定精确当前 Published Knowledge Version 以及有限原因和触发类型，
+而不是文件名或 `latest`。命令校验条目、不可变发布记录、当前指针、generation 和
+configuration，再追加 `publication_withdrawal/v1`，保留原始审计标识、操作者、
+时间、条目版本范围与前代谱系。重复请求保留原记录；修改原因返回冲突。
+已审稿的后续修订不能阻止隔离当前发布版本。
+
+隔离先提交检索排除、未发布后续 Candidate 失效和受影响 Delivery Acceptance 暂停，
+然后才清理派生数据。清理使用只追加的 `withdrawal_reconciliation/v1` 事件、精确冻结的
+generation 与 configuration；失败后显式重试。独立条目及历史已发布 Candidate 不在
+该清理范围内。已暂停验收的投影继续累积已撤回绑定范围；清理不恢复验收或回答资格。
+运行时 dense backfill 副本按已存的精确 document/generation/fingerprint 清理。
+backfill 在文档写入栅栏内重新校验撤回权威事实。撤回投影拒绝畸形审计事实，
+也拒绝与不可变发布绑定矛盾的事实。
+每次运行时外部 backfill 写入前，先提交绑定版本的 `runtime_dense_cleanup/v1`
+地址义务；后续写入在文档栅栏内重新检查撤回。撤回清理覆盖所有已记录地址，包括
+响应或 readiness 提交丢失的写入，并与清理结果原子追加目标完成证明。
+地址必须先有已验证的写入退出事件，删除后才能完成清理。未知在途写入继续保持
+pending，包括进程丢失后的情况；取消等待协程不等于 SDK 已经终止。
+后续 Candidate 清理同样要求所有已进入 indexing 的 attempt 都有精确的写入退出证明，
+并绑定冻结输入、文档和 generation。
+对于旧版成功构建的 Candidate，精确的只追加完成事件及不可变 Candidate 绑定可共同
+证明该 attempt 已从 indexing 返回；可变状态及失败或取消的 attempt 不能充当证明，
+也不补造 worker-exit 事件。已知的运行时写前失败保留经验证的未写入退出；目标登记
+回滚时不产生孤立证明。
+
+旧单项和批量文档删除以 `EXPLICIT_WITHDRAWAL_REQUIRED` 拒绝已发布版本。
+未发布草稿删除不等于撤回。ADR 0006 定义权限、失败和历史边界。
+
 ## 检索回答策略与授权候选池
 
 `retrieval-answer-policy/pilot-v1` 是活跃的普通用户检索 profile。它是实际的
@@ -665,14 +695,15 @@ non-completed execution 及冻结 QCS（若 persistence 产生 assistant binding
 completion，而不会留下 partial completed result；若 assistant message 仍无法持久化，既有的
 user binding 只保留显式的 failed persistence terminal。
 
-一个经单独授权的后续 document tombstone 可以追加私有 evidence-redaction event。它会
+一个经单独授权的 publication withdrawal 可以追加私有 evidence-redaction event。它会
 在 execution projection 中脱敏历史 excerpt、将 retained item 标记为 withdrawn，同时保留
 其 Evidence Set、item、snapshot 与 knowledge-version identity。它绝不会改写原始
 completed terminal result 以制造新的 semantic answer。
-completion 会在追加 terminal event 前锁定冻结 evidence 对应的 document，tombstone 会在
-标记 withdrawn 前锁定同一批 document。若 completion 获取锁时某个冻结 document 已
-withdrawn，它会在同一 transaction 中追加 redaction event，并立即使用 redacted
-projection；它绝不会重新选择 evidence 或删除保留的 identity。
+completion 会在追加 terminal event 前锁定冻结 evidence 对应的 document，撤回会在
+标记 withdrawn 前锁定同一批 document。若 evidence 在 completion 获取最终锁前已撤回，
+新执行失败，不产生 completed outcome、citation 或生成回答。已完成历史和待发送流
+投影即使遇到私有脱敏写入失败，也关联精确的规范化撤回事实。它们保留原因、操作者
+和时间，不暴露 excerpt 或可作为当前证据打开的来源；前代版本保留其自己的历史投影。
 
 ## Pilot 身份权威与审计
 

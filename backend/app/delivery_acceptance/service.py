@@ -30,6 +30,7 @@ from app.delivery_acceptance.schemas import (
 )
 from app.model.canonical import CanonicalEventModel, CanonicalRecordModel
 from app.model.user import User
+from app.reviewed_bundles.withdrawal_facts import read_publication_withdrawals
 from app.service.identity_audit_service import IdentityAuditService
 
 
@@ -90,6 +91,8 @@ class DeliveryAcceptanceService:
         payload = self._record_payload(record)
         checks = self._validated_persisted_checks(payload)
         blockers = self._current_blockers(events, checks)
+        withdrawal_blockers = await self._withdrawal_blockers(payload)
+        blockers.extend(withdrawal_blockers)
         return {
             "record_id": record.stable_id,
             "stage": payload["stage"],
@@ -114,10 +117,72 @@ class DeliveryAcceptanceService:
             "evidence_links": payload["evidence_links"],
             "reacceptance_triggers": payload["reacceptance_triggers"],
             "blockers": blockers,
-            "current_status": events[-1].to_state,
+            "current_status": (
+                AcceptanceStatus.SUSPENDED.value
+                if withdrawal_blockers and events[-1].to_state != AcceptanceStatus.SUPERSEDED.value
+                else events[-1].to_state
+            ),
             "status_history": [self._status_projection(event) for event in events],
             "created_at": self._utc_timestamp(record.created_at),
         }
+
+    async def suspend_withdrawn_publication(
+        self, *, publication_identity: str, entry_identity: str, actor_identity: str,
+        locked_records: list[CanonicalRecordModel],
+    ) -> None:
+        """Append containment in the caller's withdrawal transaction."""
+        for record in locked_records:
+            payload = self._record_payload(record)
+            if not await self._binds_withdrawal(payload, publication_identity, entry_identity):
+                continue
+            events = await self._status_events(record.stable_id)
+            if not events or events[-1].to_state not in {
+                AcceptanceStatus.ACTIVE.value, AcceptanceStatus.AT_RISK.value,
+            }:
+                continue
+            await self._append_status(
+                record_identity=record.stable_id, event_type=CanonicalEventType.STATUS_CHANGED,
+                from_status=AcceptanceStatus(events[-1].to_state), to_status=AcceptanceStatus.SUSPENDED,
+                reason_code=AcceptanceStatusReason.INTEGRITY_FAILURE, actor_identity=actor_identity,
+            )
+
+    async def _binds_withdrawal(self, payload: dict, publication: str, entry: str) -> bool:
+        identities = set(payload.get("content_identities", []))
+        identities.update(payload.get("affected_scope", {}).get("entry_identities", []))
+        versions = {identity for identity in identities if identity.startswith("published_knowledge_version:")}
+        if publication in versions:
+            return True
+        if entry not in identities:
+            return False
+        records = (await self.session.scalars(select(CanonicalRecordModel).where(
+            CanonicalRecordModel.stable_id.in_(versions),
+            CanonicalRecordModel.identity_kind == StableIdentityKind.PUBLISHED_KNOWLEDGE_VERSION.value,
+        ))).all()
+        # Only an exact version binding for this entry narrows its entry-wide scope.
+        return not any(
+            record.payload.get("schema") == "published_knowledge_version/v1"
+            and record.payload.get("entry_identity") == entry for record in records
+        )
+
+    async def _withdrawal_blockers(self, payload: dict) -> list[dict]:
+        events = await read_publication_withdrawals(self.session)
+        blockers = []
+        for event in events:
+            withdrawal = event.payload
+            entry = withdrawal.get("entry_identity")
+            if not isinstance(entry, str) or not await self._binds_withdrawal(payload, event.aggregate_id, entry):
+                continue
+            scoped = payload.get("affected_scope", {}).get("entry_identities", [])
+            for identity in (entry, event.aggregate_id):
+                if identity not in scoped:
+                    continue
+                blockers.append({
+                    "check_id": "check:publication-withdrawal", "result": "failed",
+                    "reason": "publication_withdrawn", "failure_kind": "entry_specific",
+                    "blocking_scope": {"scope": "entry_version", "identity": identity},
+                    "withdrawal_event_identity": f"event:{event.id}",
+                })
+        return blockers
 
     async def update_status(
         self,

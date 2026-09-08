@@ -183,7 +183,7 @@ test('System Administrator can rebuild with every supported strategy while the p
   // "pending"), which removes its rebuild button, so exercise every supported
   // strategy against a distinct ready seed document instead of rebuilding the
   // same one repeatedly.
-  const rebuildTargets = ['browser-evidence', 'browser-inspection', 'browser-single-delete'];
+  const rebuildTargets = ['browser-evidence', 'browser-inspection', 'browser-batch-first'];
   const seenRebuildJobIds = new Set();
   for (const [index, strategy] of ['general', 'paper', 'qa'].entries()) {
     const target = rebuildTargets[index];
@@ -220,15 +220,37 @@ test('System Administrator can rebuild with every supported strategy while the p
   await page.getByRole('heading', { name: '构建任务' }).waitFor();
 });
 
-test('System Administrator confirms document deletion and the inventory updates from the server', { timeout: 60000 }, async (t) => {
+test('System Administrator confirms unpublished draft deletion and the inventory updates from the server', { timeout: 60000 }, async (t) => {
   const { page, baseUrl } = await startWorkbench(t, {});
   await loginAdmin(page, baseUrl);
   await openLibrary(page, baseUrl);
 
+  const draftRow = page.getByRole('row').filter({ has: page.getByRole('cell', { name: 'browser-single-delete.md' }) });
+  assert.equal(await draftRow.getByText('待处理 (pending)').isVisible(), true);
   await page.getByRole('button', { name: '删除文档 browser-single-delete' }).click();
   await page.getByRole('dialog').getByRole('button', { name: '删除', exact: true }).click();
   await page.getByText('文档 browser-single-delete.md 已由服务端确认删除。').waitFor();
   assert.equal(await page.getByRole('cell', { name: 'browser-single-delete.md' }).count(), 0);
+});
+
+test('published document deletion is rejected and preserves the inventory record', { timeout: 30000 }, async (t) => {
+  const { page, baseUrl } = await startWorkbench(t, {});
+  await loginAdmin(page, baseUrl);
+  await openLibrary(page, baseUrl);
+
+  await page.getByRole('button', { name: '删除文档 browser-evidence' }).click();
+  const rejected = page.waitForResponse((response) =>
+    response.request().method() === 'DELETE' && response.url().endsWith('/documents/browser-evidence.md')
+  );
+  await page.getByRole('dialog').getByRole('button', { name: '删除', exact: true }).click();
+  const response = await rejected;
+  assert.equal(response.status(), 409);
+  assert.match(await response.text(), /EXPLICIT_WITHDRAWAL_REQUIRED/);
+  await page.getByRole('alert').waitFor();
+  assert.equal(await page.getByRole('cell', { name: 'browser-evidence.md' }).isVisible(), true);
+  await page.getByRole('button', { name: '刷新' }).click();
+  await openLibrary(page, baseUrl);
+  assert.equal(await page.getByRole('cell', { name: 'browser-evidence.md' }).isVisible(), true);
 });
 
 test('batch deletion confirms the selected count and reports partial failures from the server', { timeout: 60000 }, async (t) => {

@@ -585,6 +585,9 @@ def _sources_from_frozen_answer_evidence_set(value: Mapping[str, object]) -> lis
             source["source_access_scope"] = "controlled_internal"
         if withdrawn:
             source["withdrawal_notice"] = "This source has been withdrawn."
+            source.pop("source_url", None)
+            if isinstance(item.get("withdrawal"), Mapping):
+                source["withdrawal"] = dict(item["withdrawal"])
         else:
             source["excerpt"] = excerpt
         sources.append(source)

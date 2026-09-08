@@ -14,6 +14,7 @@ from app.reviewed_bundles.dispatch_authority import has_current_dispatch_authori
 from app.reviewed_bundles.events import candidate_job_event_payload
 from app.reviewed_bundles.inputs import FrozenCandidateBuildInput, load_frozen_candidate_build_input
 from app.reviewed_bundles.models import CandidateBuildChunk, CandidateBuildJob
+from app.reviewed_bundles.writer_exit import require_candidate_writers_settled
 
 
 class DenseRecoveryIndexer(Protocol):
@@ -330,6 +331,17 @@ class CandidateBuildRecoveryService:
             job.derived_cleanup_pending = True
             return "immutable Candidate inputs require manual reconciliation"
 
+        withdrawn = await self.session.scalar(select(CanonicalEventModel.id).where(
+            CanonicalEventModel.aggregate_id == frozen_input.entry_identity,
+            CanonicalEventModel.aggregate_kind == "entry",
+            CanonicalEventModel.event_type == "withdrawn",
+        ).limit(1))
+        if withdrawn is not None:
+            try:
+                await require_candidate_writers_settled(self.session, job, frozen_input)
+            except (AppError, ValueError):
+                job.derived_cleanup_pending = True
+                return "withdrawn Candidate writer termination remains unverified"
         await self.session.execute(delete(CandidateBuildChunk).where(CandidateBuildChunk.job_id == job.id))
         try:
             await self._dense_index_service.delete_candidate_generation(

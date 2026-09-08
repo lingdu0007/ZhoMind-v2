@@ -484,6 +484,47 @@ confirmation. Ticket 24 does not implement withdrawal, redaction, or historical
 deletion: Ticket 25 will add those events while preserving the immutable
 Published Knowledge Version identity and the later withdrawal seam.
 
+## Explicit Withdrawal And Reconciliation
+
+The administrator withdrawal command names an exact current Published
+Knowledge Version and bounded reason/trigger, never a filename or `latest`.
+It verifies entry, immutable publication, current pointer, generation and
+configuration, then appends `publication_withdrawal/v1` with original audit
+identity, actor, time, entry-version scope and predecessor lineage.
+Repetition preserves that record; changed reasons conflict. A reviewed
+successor does not prevent containment of the current publication.
+
+Containment commits retrieval exclusion, unpublished successor invalidation
+and affected Delivery Acceptance suspension before derived cleanup. Cleanup
+uses append-only `withdrawal_reconciliation/v1` events, exact frozen generation
+and configuration, and explicit retry after failure. Independent entries and
+historically published Candidates remain outside that cleanup.
+Already-suspended acceptance projections accumulate withdrawn bound scopes;
+cleanup never restores acceptance or answer eligibility.
+Runtime dense backfill copies are reconciled by their exact stored
+document/generation/fingerprint. Backfill revalidates withdrawal authority
+under the document write fence. Withdrawal projections reject malformed
+audit facts or facts that contradict the immutable publication binding.
+Each external runtime backfill write first commits a version-bound
+`runtime_dense_cleanup/v1` address obligation. Its subsequent write rechecks
+withdrawal under the document fence. Withdrawal reconciliation clears every
+recorded address, including writes with a lost response or readiness commit,
+and appends target-completion proofs atomically with reconciliation.
+An address must have a verified writer-exit event before its deletion can
+complete reconciliation. Unknown in-flight writers remain pending, including
+after process loss; cancellation of an awaiter is not proof of SDK termination.
+Successor Candidate cleanup likewise requires exact writer-exit proofs for
+all indexed attempts, bound to their frozen input, document and generation.
+For an older successful Candidate, the exact append-only completion event
+and immutable Candidate binding can jointly prove its attempt returned from
+indexing; mutable status or a failed/canceled attempt cannot. No synthetic
+worker-exit event is created. Known runtime prewrite failures retain verified
+no-write exits, without orphan proofs when intent registration rolled back.
+
+Legacy single and batch document deletion reject published versions with
+`EXPLICIT_WITHDRAWAL_REQUIRED`. Unpublished draft deletion is not withdrawal.
+ADR 0006 defines the authority, failure and history boundaries.
+
 ## Retrieval Answer Policy And Authorized Candidate Pool
 
 `retrieval-answer-policy/pilot-v1` is the active ordinary-user retrieval
@@ -839,17 +880,19 @@ persistence failure rolls back uncommitted completion rather than leaving a
 partial completed result; if an assistant message still cannot be persisted,
 the existing user binding retains only the explicit failed persistence terminal.
 
-A separately authorized later document tombstone may append a private
+A separately authorized publication withdrawal may append a private
 evidence-redaction event. It redacts the historical excerpt in the execution
 projection and marks the retained item as withdrawn while preserving its
 Evidence Set, item, snapshot, and knowledge-version identities. It never
 rewrites the original completed terminal result to make a new semantic answer.
 Completion locks the frozen evidence documents before it appends its terminal
-event, and tombstoning locks those same documents before it marks them
-withdrawn. If a frozen document is already withdrawn when completion obtains
-the lock, completion appends the redaction event in that same transaction and
-uses the redacted projection immediately; it never reselects evidence or
-removes its retained identities.
+event, and withdrawal locks those same documents before marking them withdrawn.
+If evidence has been withdrawn before completion obtains its final fence, the
+new execution fails without a completed outcome, citation or generated answer.
+Already completed history and pending-stream projections join exact canonical
+withdrawal facts even if the private redaction write failed. They retain
+reason, actor and time without exposing the excerpt or an openable current
+source; predecessor versions retain their own historical projection.
 
 ## Pilot Identity Authority And Audit
 

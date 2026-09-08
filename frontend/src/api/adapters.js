@@ -209,6 +209,22 @@ export const apiAdapter = {
     const { data } = await http.post('/reviewed-release-bundles/publication-batches', payload);
     return unwrapData(data);
   },
+  async getPublicationWithdrawal(identity) {
+    const { data } = await http.get(`/reviewed-release-bundles/publications/${encodeURIComponent(identity)}/withdrawal`);
+    return unwrapData(data);
+  },
+  async withdrawPublication(identity, payload) {
+    const { data } = await http.post(`/reviewed-release-bundles/publications/${encodeURIComponent(identity)}/withdrawal`, payload);
+    return unwrapData(data);
+  },
+  async getPublicationReconciliation(identity) {
+    const { data } = await http.get(`/reviewed-release-bundles/publications/${encodeURIComponent(identity)}/withdrawal/reconciliation`);
+    return unwrapData(data);
+  },
+  async reconcilePublicationWithdrawal(identity) {
+    const { data } = await http.post(`/reviewed-release-bundles/publications/${encodeURIComponent(identity)}/withdrawal/reconciliation`);
+    return unwrapData(data);
+  },
 
   // System Settings (admin, application-gated)
   async getGenerationRoute() {

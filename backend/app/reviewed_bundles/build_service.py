@@ -22,7 +22,8 @@ from app.contracts.canonical import (
     StableIdentityKind,
     validate_transition,
 )
-from app.documents.dense_index_service import DenseIndexService
+from app.documents.dense_index_service import DenseIndexCancelledBeforeWrite, DenseIndexService
+from app.infra.milvus_document_index import MilvusUpsertCancelledAfterDrain
 from app.model.canonical import CanonicalEventModel, CanonicalRecordModel
 from app.model.document import DocumentChunk
 from app.reviewed_bundles.candidate_metadata import candidate_build_chunk_metadata
@@ -32,6 +33,7 @@ from app.reviewed_bundles.inputs import FrozenCandidateBuildInput, load_frozen_c
 from app.reviewed_bundles.lifecycle import complete_bundle_when_candidate_work_is_finished
 from app.reviewed_bundles.models import CandidateBuildChunk, CandidateBuildJob
 from app.reviewed_bundles.service import EditorialExportVerifier, candidate_embedding_configuration
+from app.reviewed_bundles.writer_exit import CandidateWriterExit, record_candidate_writer_exit
 
 _LEASE_DURATION = timedelta(seconds=30)
 _LEASE_HEARTBEAT_INTERVAL_SECONDS = _LEASE_DURATION.total_seconds() / 3
@@ -112,10 +114,13 @@ class CandidateBuildService:
                 detail={"job_id": job.id, "status": job.status},
             )
 
+        writer_proof = None
+        writer_invoked = False
         try:
             if not await self._start(job):
                 return self._job_projection(job)
             frozen_input = await self._load_frozen_input(job)
+            writer_proof = CandidateWriterExit.for_attempt(job.id, job.attempt, frozen_input)
             artifact = frozen_input.artifact
             await self._revalidate_editorial_authority(job, frozen_input)
             self._assert_embedding_configuration(frozen_input)
@@ -171,12 +176,14 @@ class CandidateBuildService:
             if not await self._owns_running_job(job):
                 return self._job_projection(job)
             await self.session.commit()
+            writer_invoked = True
             dense_result = await self._index_candidate_generation_with_lease_heartbeat(
                 job=job,
                 document_id=frozen_input.document_identity,
                 generation=frozen_input.requested_generation,
                 chunks=dense_chunks,
                 embedding_fingerprint=frozen_input.embedding_fingerprint,
+                writer_proof=writer_proof,
             )
             await self._revalidate_editorial_authority(job, frozen_input)
             if not await self._complete(
@@ -206,6 +213,10 @@ class CandidateBuildService:
                 message="candidate build failed unexpectedly",
             )
             return self._job_projection(job)
+        finally:
+            if writer_proof is not None and not writer_invoked:
+                await self.session.rollback()
+                await self._persist_writer_exit(writer_proof)
 
     async def cancel_job(self, job_id: str) -> dict[str, object]:
         job = await self._get_job(job_id)
@@ -465,7 +476,9 @@ class CandidateBuildService:
         generation: int,
         chunks: list[DocumentChunk],
         embedding_fingerprint: str | None,
+        writer_proof: CandidateWriterExit,
     ) -> Any:
+        writer_settled = False
         heartbeat_renewed = asyncio.Event()
         heartbeat_task = asyncio.create_task(
             self._maintain_lease(
@@ -490,6 +503,7 @@ class CandidateBuildService:
             if heartbeat_task in done:
                 await heartbeat_task
             result = await index_task
+            writer_settled = True
             if heartbeat_renewed.is_set() and not heartbeat_task.done():
                 heartbeat_task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -502,13 +516,32 @@ class CandidateBuildService:
                         detail={"job_id": job.id, "attempt": job.attempt},
                     )
             return result
+        except (MilvusUpsertCancelledAfterDrain, DenseIndexCancelledBeforeWrite):
+            writer_settled = True
+            raise
         finally:
             for task in (index_task, heartbeat_task):
                 if not task.done():
                     task.cancel()
-            for task in (index_task, heartbeat_task):
-                with suppress(asyncio.CancelledError, Exception):
-                    await task
+            try:
+                await index_task
+                writer_settled = True
+            except (MilvusUpsertCancelledAfterDrain, DenseIndexCancelledBeforeWrite):
+                writer_settled = True
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                writer_settled = True
+            with suppress(asyncio.CancelledError, Exception):
+                await heartbeat_task
+            if writer_settled:
+                await self._persist_writer_exit(writer_proof)
+
+    async def _persist_writer_exit(self, proof: CandidateWriterExit) -> None:
+        factory = async_sessionmaker(bind=self.session.bind, class_=AsyncSession, expire_on_commit=False)
+        async with factory() as proof_session:
+            await record_candidate_writer_exit(proof_session, proof)
+            await proof_session.commit()
 
     async def _maintain_lease(
         self,
@@ -595,12 +628,13 @@ class CandidateBuildService:
         chunk_specs: list[CandidateChunkSpec],
         dense_result: Any,
     ) -> bool:
-        if not await self._owns_running_job(job):
-            return False
-        frozen_input = await self._current_frozen_input(job, expected=frozen_input)
+        # Authority precedes the job lock, matching publication and withdrawal.
+        await self.session.commit()
         async with self._candidate_finalization_authority_guard(job, frozen_input):
             if not await self._owns_running_job(job):
+                await self.session.commit()
                 return False
+            frozen_input = await self._current_frozen_input(job, expected=frozen_input)
             from_stage = job.stage
             candidate_record = CanonicalRecordModel(
                 stable_id=candidate_identity.stable_id,

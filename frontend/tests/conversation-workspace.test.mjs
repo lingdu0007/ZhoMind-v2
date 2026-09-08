@@ -1261,6 +1261,13 @@ test('a terminal execution with streamed content fails closed instead of discard
 test('historical withdrawal retains frozen identities while withholding excerpts and the original-source link', { timeout: 30000 }, async (t) => {
   const { page, baseUrl } = await startAsKnowledgeUser(t, {});
   const history = completedSupportedHistory({ withdrawn: true });
+  history.assistant.evidence_summary.sources[0].withdrawal = {
+    publication_identity: 'published_knowledge_version:withdrawn-history-001',
+    event_identity: 'event:withdrawn-history-001',
+    reason_code: 'privacy_defect',
+    actor_identity: 'member:withdrawal-administrator',
+    occurred_at: '2026-09-08T12:00:00Z'
+  };
   await page.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
     await route.fulfill({
       contentType: 'application/json',
@@ -1307,6 +1314,9 @@ test('historical withdrawal retains frozen identities while withholding excerpts
   assert.equal(await entry.getByText('recommendation_or_reviewed_branches', { exact: true }).isVisible(), true);
   assert.match(await entry.getByText(/^[9]{64}$/).first().innerText(), /^9{64}$/);
   assert.equal(await entry.getByRole('link', { name: '打开公开来源' }).count(), 0);
+  assert.equal(await entry.getByText('privacy_defect', { exact: true }).isVisible(), true);
+  assert.equal(await entry.getByText('member:withdrawal-administrator', { exact: true }).isVisible(), true);
+  assert.equal(await entry.getByText('2026-09-08T12:00:00Z', { exact: true }).isVisible(), true);
   assert.equal(await entry.getByText('Known execution paths should use deterministic workflows.').count(), 0);
   const record = answer.locator('details.frozen-answer-record');
   await record.locator('summary').click();

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 from sqlalchemy import func, or_, select
@@ -7,9 +8,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.config import Settings, get_settings
 from app.common.exceptions import AppError
-from app.documents.dense_index_service import DenseIndexService
+from app.documents.dense_index_service import DenseIndexCancelledBeforeWrite, DenseIndexService
+from app.documents.runtime_dense_obligations import register_runtime_dense_target, settle_runtime_dense_target
+from app.infra.milvus_document_index import MilvusUpsertCancelledAfterDrain
+from app.model.canonical import CanonicalRecordModel
 from app.model.document import Document, DocumentChunk
 from app.rag.dense_contract import build_embedding_contract_fingerprint, dense_mode_active
+from app.repository.chat_repository import ChatRepository
+from app.reviewed_bundles.models import PublishedKnowledgePointer, PublishedKnowledgeVersion
+from app.reviewed_bundles.publication import CandidatePublicationService
+from app.reviewed_bundles.verifier import CanonicalEditorialExportVerifier
+from app.reviewed_bundles.withdrawal_facts import read_publication_withdrawals
 
 
 @dataclass(frozen=True)
@@ -103,9 +112,6 @@ class DenseMaintenanceService:
             select(
                 Document.id,
                 Document.published_generation,
-                Document.active_build_generation,
-                Document.dense_ready_generation,
-                Document.dense_ready_fingerprint,
             )
             .where(
                 *self._published_live_predicates(),
@@ -123,57 +129,89 @@ class DenseMaintenanceService:
         skipped_documents = 0
         failed_documents = 0
 
-        for document_id, published_generation, active_build_generation, dense_ready_generation, dense_ready_fingerprint in (
-            result_rows.all()
-        ):
-            if active_build_generation is not None:
-                documents.append(
-                    DenseMaintenanceDocumentResult(
-                        document_id=document_id,
-                        outcome="skipped",
-                        reason="active_build_in_progress",
-                    )
-                )
-                skipped_documents += 1
-                continue
-
-            if dense_ready_fingerprint == fingerprint and dense_ready_generation != published_generation:
-                documents.append(
-                    DenseMaintenanceDocumentResult(
-                        document_id=document_id,
-                        outcome="skipped",
-                        reason="stale_current_fingerprint",
-                    )
-                )
-                skipped_documents += 1
-                continue
-
-            chunks_result = await session.execute(
-                select(DocumentChunk)
-                .where(
-                    DocumentChunk.document_id == document_id,
-                    DocumentChunk.generation == published_generation,
-                )
-                .order_by(DocumentChunk.chunk_index.asc(), DocumentChunk.id.asc())
+        for document_id, published_generation in result_rows.all():
+            target = None
+            writer_invoked = False
+            document, versions, skip_reason = await self._lock_backfill_snapshot(
+                session, document_id, published_generation, fingerprint,
             )
-            chunks = list(chunks_result.scalars().all())
-
+            if skip_reason:
+                documents.append(DenseMaintenanceDocumentResult(
+                    document_id=document_id, outcome="skipped", reason=skip_reason,
+                ))
+                skipped_documents += 1
+                await session.commit()
+                continue
             try:
+                if versions:
+                    registered_versions = versions
+                    target = register_runtime_dense_target(
+                        session, publication_identity=versions[0], document_identity=document_id,
+                        generation=published_generation, embedding_fingerprint=fingerprint,
+                    )
+                    # Preserve the address before any external write can take effect.
+                    await session.commit()
+                    document, versions, skip_reason = await self._lock_backfill_snapshot(
+                        session, document_id, published_generation, fingerprint,
+                    )
+                    if versions != registered_versions and skip_reason is None:
+                        skip_reason = "publication_changed"
+                    if skip_reason:
+                        documents.append(DenseMaintenanceDocumentResult(
+                            document_id=document_id, outcome="skipped", reason=skip_reason,
+                        ))
+                        skipped_documents += 1
+                        await settle_runtime_dense_target(session, target)
+                        await session.commit()
+                        continue
+                assert document is not None
+                dense_ready_generation = document.dense_ready_generation
+                dense_ready_fingerprint = document.dense_ready_fingerprint
+                chunks_result = await session.execute(
+                    select(DocumentChunk)
+                    .where(
+                        DocumentChunk.document_id == document_id,
+                        DocumentChunk.generation == published_generation,
+                    )
+                    .order_by(DocumentChunk.chunk_index.asc(), DocumentChunk.id.asc())
+                )
+                chunks = list(chunks_result.scalars().all())
+                if dense_ready_fingerprint is not None and dense_ready_fingerprint != fingerprint:
+                    await self._dense_index_service.delete_candidate_generation(
+                        document_id=document_id, generation=dense_ready_generation,
+                        embedding_fingerprint=dense_ready_fingerprint,
+                    )
+                writer_invoked = True
                 index_result = await self._dense_index_service.index_candidate_generation(
                     document_id=document_id,
                     generation=published_generation,
                     chunks=chunks,
+                    **({"embedding_fingerprint": fingerprint} if versions else {}),
                 )
-                document = await session.get(Document, document_id)
-                if document is None:
-                    raise RuntimeError("document disappeared during dense backfill")
+                if target is not None:
+                    await settle_runtime_dense_target(session, target)
                 document.dense_ready_generation = published_generation
                 document.dense_ready_fingerprint = index_result.fingerprint
                 await session.commit()
                 documents.append(DenseMaintenanceDocumentResult(document_id=document_id, outcome="indexed"))
                 indexed_documents += 1
+            except (MilvusUpsertCancelledAfterDrain, DenseIndexCancelledBeforeWrite):
+                await session.rollback()
+                if target is not None:
+                    await settle_runtime_dense_target(session, target)
+                    await session.commit()
+                raise
+            except asyncio.CancelledError:
+                await session.rollback()
+                if target is not None and not writer_invoked:
+                    await settle_runtime_dense_target(session, target, write_never_started=True)
+                    await session.commit()
+                raise
             except Exception as exc:
                 await session.rollback()
+                if target is not None:
+                    await settle_runtime_dense_target(session, target, write_never_started=not writer_invoked)
+                    await session.commit()
                 documents.append(
                     DenseMaintenanceDocumentResult(
                         document_id=document_id,
@@ -192,6 +230,51 @@ class DenseMaintenanceService:
             failed_documents=failed_documents,
             documents=documents,
         )
+
+    async def _lock_backfill_snapshot(
+        self, session: AsyncSession, document_id: str, generation: int, fingerprint: str,
+    ) -> tuple[Document | None, list[str], str | None]:
+        await ChatRepository(session).acquire_private_conversation_write_fence()
+        document = await session.scalar(select(Document).where(
+            Document.id == document_id,
+        ).with_for_update().execution_options(populate_existing=True))
+        if document is None or document.deleted_at is not None or document.published_generation != generation:
+            return document, [], "publication_changed"
+        versions = list((await session.scalars(select(PublishedKnowledgeVersion.id).where(
+            PublishedKnowledgeVersion.document_identity == document_id,
+            PublishedKnowledgeVersion.generation == generation,
+        ))).all())
+        canonical_versions = list((await session.scalars(select(CanonicalRecordModel.stable_id).where(
+            CanonicalRecordModel.identity_kind == "published_knowledge_version",
+            CanonicalRecordModel.payload["document_identity"].as_string() == document_id,
+            CanonicalRecordModel.payload["generation"].as_integer() == generation,
+        ))).all())
+        pointers = (await session.scalars(select(PublishedKnowledgePointer).where(
+            PublishedKnowledgePointer.document_identity == document_id,
+        ))).all()
+        claimed_versions = set(versions) | set(canonical_versions) | {pointer.current_version_id for pointer in pointers}
+        if await read_publication_withdrawals(session, list(claimed_versions)):
+            return document, list(claimed_versions), "publication_withdrawn"
+        if claimed_versions and (
+            len(versions) != 1 or versions != canonical_versions or len(pointers) != 1
+            or pointers[0].current_version_id != versions[0] or pointers[0].generation != generation
+        ):
+            raise AppError(
+                status_code=409, code="DENSE_PUBLICATION_BINDING_INVALID",
+                message="dense backfill publication binding cannot be verified",
+            )
+        if versions:
+            version = await session.get(PublishedKnowledgeVersion, versions[0])
+            assert version is not None
+            await CandidatePublicationService(
+                session, editorial_export_verifier=CanonicalEditorialExportVerifier(session),
+            ).get_publication(version.candidate_id)
+        if document.active_build_generation is not None:
+            return document, versions, "active_build_in_progress"
+        if document.dense_ready_fingerprint == fingerprint:
+            reason = "already_dense_ready" if document.dense_ready_generation == generation else "stale_current_fingerprint"
+            return document, versions, reason
+        return document, versions, None
 
     async def reconcile_current_fingerprint_documents(
         self,

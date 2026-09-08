@@ -17,7 +17,6 @@ from app.main import app
 from app.model.base import Base
 from app.model.chat import ChatMessage, ChatSession
 from app.model.document import Document, DocumentChunk, DocumentJob
-from app.rag.answer_evidence import evidence_snapshot_id
 from app.retrieval.policy import LEXICAL_HEURISTIC_MIGRATION_PROFILE_ID
 from tests.support.auth import create_authenticated_test_token
 
@@ -536,7 +535,7 @@ def test_replacement_candidate_cannot_bypass_ticket24_publication() -> None:
         os.remove(db_path)
 
 
-def test_withdrawal_removes_future_source_and_redacts_historical_excerpt() -> None:
+def test_legacy_published_delete_is_not_a_withdrawal_event() -> None:
     db_fd, db_path = tempfile.mkstemp(prefix="documents-withdrawal-", suffix=".db")
     os.close(db_fd)
     db_engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
@@ -619,7 +618,8 @@ def test_withdrawal_removes_future_source_and_redacts_historical_excerpt() -> No
             )
 
             withdrawal = client.delete("/api/v1/documents/withdrawn.md", headers=admin_headers)
-            assert withdrawal.status_code == 200
+            assert withdrawal.status_code == 409
+            assert withdrawal.json()["code"] == "EXPLICIT_WITHDRAWAL_REQUIRED"
 
             history = client.get(
                 "/api/v1/sessions/withdrawal-history",
@@ -627,36 +627,10 @@ def test_withdrawal_removes_future_source_and_redacts_historical_excerpt() -> No
             )
             assert history.status_code == 200
             source = _extract_data(history.json())["messages"][0]["evidence_summary"]["sources"][0]
-            assert source == {
-                "citation_id": "S1",
-                "entry_id": "pae-withdrawn-001",
-                "entry_title": "Withdrawn entry",
-                "domain": "workflow-vs-agent",
-                "section_id": "stable-principle",
-                "source_title": "Public source",
-                "source_authority": "Example authority",
-                "source_url": "https://example.com/withdrawn",
-                "source_version": "v1",
-                "review_date": "2026-08-12",
-                "publication_version": "v1",
-                "withdrawal_notice": "This source has been withdrawn.",
-                "snapshot_id": evidence_snapshot_id(
-                    title="withdrawn.md",
-                    publication_version="v1",
-                    excerpt="This excerpt must not remain visible.",
-                    citation_metadata={
-                        "entry_id": "pae-withdrawn-001",
-                        "entry_title": "Withdrawn entry",
-                        "domain": "workflow-vs-agent",
-                        "section_id": "stable-principle",
-                        "source_title": "Public source",
-                        "source_authority": "Example authority",
-                        "source_url": "https://example.com/withdrawn",
-                        "source_version": "v1",
-                        "review_date": "2026-08-12",
-                    },
-                ),
-            }
+            assert "withdrawal_notice" not in source
+            assert source["entry_id"] == "pae-withdrawn-001"
+            document = asyncio.run(_load_document_record(session_factory, document_id="withdrawn-document"))
+            assert document is not None and document.deleted_at is None
     finally:
         app.dependency_overrides.clear()
         asyncio.run(db_engine.dispose())

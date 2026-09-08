@@ -20,6 +20,7 @@ from app.reviewed_bundles.publication import CandidatePublicationService
 from app.reviewed_bundles.runtime import candidate_build_runtime
 from app.reviewed_bundles.service import ReviewedReleaseBundleService
 from app.reviewed_bundles.verifier import CanonicalEditorialExportVerifier
+from app.reviewed_bundles.withdrawal import PublicationWithdrawalService, WithdrawalRequest
 from app.service.identity_audit_service import IdentityAuditService
 from app.settings.runtime import get_runtime_settings
 
@@ -264,6 +265,43 @@ async def dispatch_candidate_build_job(
     await service.dispatch_job(job_id, actor_identity=actor_identity)
     await _enqueue_or_record_failure(session, job_id)
     return _ok(await _serialize_job(session, await _get_job(session, job_id)))
+
+
+@router.post("/publications/{publication_identity}/withdrawal")
+async def withdraw_publication(
+    publication_identity: str,
+    payload: WithdrawalRequest,
+    current_user=Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    return _ok(await PublicationWithdrawalService(session).withdraw(publication_identity, payload, current_user))
+
+
+@router.get("/publications/{publication_identity}/withdrawal")
+async def get_publication_withdrawal(
+    publication_identity: str,
+    _: object = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    return _ok(await PublicationWithdrawalService(session).get(publication_identity))
+
+
+@router.get("/publications/{publication_identity}/withdrawal/reconciliation")
+async def get_withdrawal_reconciliation(
+    publication_identity: str,
+    _: object = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    return _ok(await PublicationWithdrawalService(session).reconciliation(publication_identity))
+
+
+@router.post("/publications/{publication_identity}/withdrawal/reconciliation")
+async def reconcile_withdrawal(
+    publication_identity: str,
+    _: object = Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    return _ok(await PublicationWithdrawalService(session).reconcile(publication_identity))
 
 
 @router.post("/jobs/{job_id}/retry")

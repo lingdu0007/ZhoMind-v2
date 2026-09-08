@@ -213,7 +213,9 @@ async def chat(
         inherit_conditions=payload.inherit_conditions,
     )
     _record_operational_context(request, result)
-    return _ok(service.project_chat_result(result, current_user.role))
+    return _ok(await service.project_current_chat_result(
+        result, user_id=current_user.username, role=current_user.role,
+    ))
 
 
 @router.post("/stream")

@@ -9,6 +9,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.exceptions import AppError
 from app.contracts.canonical import AnswerExecutionState, AnswerOutcome
 from app.extensions.provider_router import ProviderRouter
 from app.extensions.registry import get_extension_registry
@@ -456,6 +457,27 @@ class ChatService:
             projection["retrieval_diagnostics"] = message["retrieval_diagnostics"]
         return projection
 
+    async def project_current_chat_result(self, result: dict, *, user_id: str, role: str) -> dict:
+        message = result["message"]
+        loaded = await self.answer_execution_store.load_for_message(
+            user_id=user_id,
+            session_id=result["session_id"],
+            message_id=message["id"],
+            message_type="assistant",
+            indexed_execution_id=message.get("answer_execution_id"),
+        )
+        if loaded is None:
+            raise ValueError("completed chat message has no frozen execution binding")
+        refreshed = {
+            **result,
+            "message": {
+                **message,
+                "answer_execution": loaded.projection,
+                "answer_execution_result": loaded.result,
+            },
+        }
+        return self.project_chat_result(refreshed, role)
+
     async def ensure_session_id(self, session_id: str | None) -> str:
         if session_id and session_id.strip():
             return session_id.strip()
@@ -812,6 +834,12 @@ class ChatService:
             )
             session.updated_at = datetime.now(UTC)
             await self.session.commit()
+            if _loaded_execution.projection["state"] != AnswerExecutionState.COMPLETED.value:
+                raise AppError(
+                    status_code=409,
+                    code="ANSWER_EVIDENCE_WITHDRAWN",
+                    message="answer evidence became ineligible before completion",
+                )
         except asyncio.CancelledError:
             await self._persist_noncompleted_terminal(
                 execution=execution,

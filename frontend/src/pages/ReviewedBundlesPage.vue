@@ -412,6 +412,11 @@
                 <span>选择或撤销此 Candidate 的显式批量发布</span>
               </label>
 
+              <PublicationWithdrawal
+                :key="selectedCandidateDetail.candidate.candidate_id"
+                :candidate-id="selectedCandidateDetail.candidate.candidate_id"
+              />
+
               <div class="reviewed-bundles__candidate-chunks">
                 <p class="reviewed-bundles__detail-eyebrow">Candidate chunks</p>
                 <article
@@ -584,6 +589,7 @@ import {
   XCircle
 } from 'lucide-vue-next';
 import { apiAdapter } from '../api/adapters';
+import PublicationWithdrawal from '../components/PublicationWithdrawal.vue';
 
 const POLL_DELAY_MS = 1000;
 const candidateIdentityFields = [

@@ -17,7 +17,6 @@ from starlette.requests import ClientDisconnect
 
 import app.api.v1.chat as chat_api_module
 from app.api.v1.chat import chat_stream
-from app.api.v1.documents import _tombstone_document
 from app.chat.schemas import ChatRequest
 from app.common.config import get_settings
 from app.common.deps import get_current_user
@@ -3043,7 +3042,7 @@ def test_completed_stream_is_non_projectable_until_outer_delivery_finalization(
         asyncio.run(db_engine.dispose())
 
 
-def test_sse_refreshes_withdrawn_evidence_after_identity_before_terminal_projection(
+def test_sse_rejects_withdrawn_evidence_after_identity_before_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -3052,10 +3051,18 @@ def test_sse_refreshes_withdrawn_evidence_after_identity_before_terminal_project
     async def _run() -> None:
         async with db_engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
+        released = asyncio.Event()
+
+        class DelayedExecutor(_scripted_executor(AnswerOutcomeKind.EVIDENCE_GATED_ANSWER)):
+            async def execute(self, **kwargs):
+                outcome = await super().execute(**kwargs)
+                await released.wait()
+                return outcome
+
         monkeypatch.setattr(
             chat_service_module,
             "EvidenceGatedAnswerExecutor",
-            _scripted_executor(AnswerOutcomeKind.EVIDENCE_GATED_ANSWER),
+            DelayedExecutor,
         )
 
         async with session_factory() as session:
@@ -3089,17 +3096,17 @@ def test_sse_refreshes_withdrawn_evidence_after_identity_before_terminal_project
             async with session_factory() as tombstone_session:
                 document = await tombstone_session.get(Document, "ticket20-reviewed-document")
                 assert document is not None
-                await _tombstone_document(tombstone_session, document=document)
+                document.deleted_at = datetime.now(UTC)
                 await tombstone_session.commit()
+            released.set()
 
             terminal_payload = "".join([chunk async for chunk in response.body_iterator])
 
         execution = _sse_event_data(terminal_payload, "answer_execution")["answer_execution"]
-        summary = _sse_event_data(terminal_payload, "evidence_summary")["evidence_summary"]
-        assert execution["evidence_summary"] == summary
-        source = summary["sources"][0]
-        assert source["withdrawal_notice"] == "This source has been withdrawn."
-        assert "excerpt" not in source
+        assert execution["state"] == "failed"
+        assert execution.get("outcome") is None
+        assert execution.get("evidence_summary") is None
+        assert "event: evidence_summary" not in terminal_payload
         assert "content_preview" not in json.dumps(execution)
 
     try:
@@ -4240,7 +4247,9 @@ def test_document_tombstone_appends_redaction_without_rewriting_frozen_execution
         async with session_factory() as session:
             document = await session.get(Document, "ticket20-reviewed-document")
             assert document is not None
-            await _tombstone_document(session, document=document)
+            await AnswerExecutionStore(session, ChatRepository(session)).redact_document_evidence(
+                document_id=document.id,
+            )
             await session.commit()
 
         async with session_factory() as session:
@@ -4304,7 +4313,7 @@ def test_document_tombstone_appends_redaction_without_rewriting_frozen_execution
         asyncio.run(db_engine.dispose())
 
 
-def test_document_tombstone_after_evidence_freeze_redacts_completion_projection(
+def test_document_tombstone_after_evidence_freeze_rejects_new_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -4359,7 +4368,7 @@ def test_document_tombstone_after_evidence_freeze_redacts_completion_projection(
         async with session_factory() as session:
             document = await session.get(Document, "ticket20-reviewed-document")
             assert document is not None
-            await _tombstone_document(session, document=document)
+            document.deleted_at = datetime.now(UTC)
             await session.commit()
 
         async def _global_redaction_must_not_run(self, *, document_id: str) -> int:
@@ -4392,14 +4401,10 @@ def test_document_tombstone_after_evidence_freeze_redacts_completion_projection(
                 ).all()
             )
 
-        assert len(redaction_events) == 1
-        frozen_item = loaded.result["evidence_set"]["items"][0]
-        assert frozen_item["withdrawn"] is True
-        assert frozen_item["evidence"]["withdrawn"] is True
-        assert "content_preview" not in frozen_item["evidence"]
-        summary = evidence_summary_from_execution(loaded.result)
-        assert summary["sources"][0]["withdrawal_notice"] == "This source has been withdrawn."
-        assert "excerpt" not in summary["sources"][0]
+        assert redaction_events == []
+        assert loaded.projection["state"] == "failed"
+        assert loaded.projection.get("outcome") is None
+        assert loaded.result.get("evidence_set") is None
 
     try:
         asyncio.run(_run())

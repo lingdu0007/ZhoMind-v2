@@ -180,6 +180,20 @@
             <dt>复核日期</dt>
             <dd>{{ selectedSource.review_date }}</dd>
           </div>
+          <template v-if="selectedSource.withdrawal_notice && selectedSource.withdrawal">
+            <div>
+              <dt>撤回原因</dt>
+              <dd>{{ selectedSource.withdrawal.reason_code }}</dd>
+            </div>
+            <div>
+              <dt>撤回操作者</dt>
+              <dd>{{ selectedSource.withdrawal.actor_identity }}</dd>
+            </div>
+            <div>
+              <dt>撤回时间</dt>
+              <dd>{{ selectedSource.withdrawal.occurred_at }}</dd>
+            </div>
+          </template>
           <div v-if="selectedSource.review_status">
             <dt>审查状态</dt>
             <dd>{{ selectedSource.review_status }}</dd>

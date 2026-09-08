@@ -26,10 +26,12 @@ from app.contracts.canonical import (
 from app.editorial_authority.schemas import editorial_export_safety_findings
 from app.model.canonical import CanonicalEventModel, CanonicalRecordModel
 from app.rag.dense_contract import DenseEmbeddingContract
+from app.repository.chat_repository import ChatRepository
 from app.reviewed_bundles.events import candidate_job_event_payload
 from app.reviewed_bundles.inputs import frozen_candidate_build_input_sha256
 from app.reviewed_bundles.lifecycle import bundle_intake_state, complete_bundle_when_candidate_work_is_finished
 from app.reviewed_bundles.models import CandidateBuildJob
+from app.reviewed_bundles.withdrawal_facts import read_publication_withdrawals
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _BUNDLE_SCHEMA = "reviewed_release_bundle/v1"
@@ -98,6 +100,10 @@ class ReviewedReleaseBundleService:
             raise
         bundle_id = manifest["bundle_id"]
         bundle_identity = StableIdentity(StableIdentityKind.BUNDLE, bundle_id)
+        await ChatRepository(self.session).acquire_private_conversation_write_fence()
+        await self.session.scalars(select(CanonicalRecordModel).where(
+            CanonicalRecordModel.stable_id.in_({item["artifact"]["entry_identity"] for item in manifest["items"]}),
+        ).order_by(CanonicalRecordModel.stable_id).with_for_update())
         existing = await self.session.get(CanonicalRecordModel, bundle_identity.stable_id)
         if existing is not None:
             if existing.payload.get("bundle_sha256") != manifest["bundle_sha256"]:
@@ -145,6 +151,9 @@ class ReviewedReleaseBundleService:
         supersession_events: list[CanonicalEventModel] = []
         job_events: list[CanonicalEventModel] = []
         has_rejected_items = False
+        withdrawn_entries = {
+            event.payload["entry_identity"] for event in await read_publication_withdrawals(self.session)
+        }
         for position, item in enumerate(manifest["items"]):
             item_identity = StableIdentity(StableIdentityKind.BUNDLE_ITEM, item["bundle_item_id"])
             artifact = item["artifact"]
@@ -158,6 +167,11 @@ class ReviewedReleaseBundleService:
                 await self.session.rollback()
                 raise
             entry_identity = artifact["entry_identity"]
+            if failure_reason is None and entry_identity in withdrawn_entries and item["operation"] in {"create", "replace"}:
+                failure_reason = self._failure_reason(
+                    code="ENTRY_WITHDRAWN", field="entry_identity",
+                    message="withdrawn knowledge cannot admit another Candidate Build",
+                )
             state = "rejected" if failure_reason is not None else "admitted"
             allowed_next_action = "correct_item_in_new_bundle" if failure_reason is not None else "dispatch_candidate_build"
             if failure_reason is not None:

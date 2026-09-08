@@ -24,6 +24,7 @@ from app.rag.answer_evidence import evidence_summary_from_execution
 from app.rag.answer_execution import AnswerExecutionOutcome
 from app.rag.evidence_sufficiency import InsufficientEvidenceReply, QueryConditionSet
 from app.repository.chat_repository import ChatRepository
+from app.reviewed_bundles.withdrawal_facts import read_publication_withdrawals
 
 _REQUEST_SCHEMA = "answer_execution_request/v1"
 _EVENT_SCHEMA = "answer_execution_event/v1"
@@ -253,6 +254,14 @@ class AnswerExecutionStore:
         await self.repository.acquire_private_conversation_write_fence()
         if not isinstance(handle.assistant_message_id, str) or not handle.assistant_message_id:
             raise ValueError("admitted answer execution has no reserved assistant message identity")
+        result = self._completed_result(
+            handle=handle,
+            outcome=outcome,
+            assistant_message_id=handle.assistant_message_id,
+        )
+        tombstoned_document_ids = await self._tombstoned_evidence_document_ids(result=result)
+        if tombstoned_document_ids or await self._publication_redactions(result):
+            return await self.fail(handle=handle, failure_code="ANSWER_EVIDENCE_WITHDRAWN")
         assistant_message = await self.repository.add_message(
             session_id=handle.session_id,
             user_id=handle.user_id,
@@ -262,12 +271,6 @@ class AnswerExecutionStore:
             rag_trace=outcome.to_persisted_rag_trace(),
             message_id=handle.assistant_message_id,
         )
-        result = self._completed_result(
-            handle=handle,
-            outcome=outcome,
-            assistant_message_id=handle.assistant_message_id,
-        )
-        tombstoned_document_ids = await self._tombstoned_evidence_document_ids(result=result)
         execution = await self._locked_execution(execution_id=handle.execution_id)
         if execution.user_id != handle.user_id or execution.session_id != handle.session_id:
             raise ValueError("private answer execution does not belong to this conversation")
@@ -434,7 +437,9 @@ class AnswerExecutionStore:
                 raise ValueError("completed answer execution has no terminal result")
             if delivery_pending and not delivery_completed:
                 raise ValueError("closed answer execution stream delivery is pending")
-            terminal = self._apply_evidence_redactions(terminal=terminal, redactions=redactions)
+            terminal = self._apply_evidence_redactions(
+                terminal=terminal, redactions=(*redactions, *await self._publication_redactions(terminal)),
+            )
             return LoadedAnswerExecution(
                 projection=self._completed_projection(handle=handle, result=terminal),
                 result=terminal,
@@ -657,7 +662,9 @@ class AnswerExecutionStore:
             or delivery_interrupted
         ):
             raise ValueError("answer execution is not a pending completed stream result")
-        redacted_terminal = self._apply_evidence_redactions(terminal=terminal, redactions=redactions)
+        redacted_terminal = self._apply_evidence_redactions(
+            terminal=terminal, redactions=(*redactions, *await self._publication_redactions(terminal)),
+        )
         return LoadedAnswerExecution(
             projection=self._completed_projection(handle=handle, result=redacted_terminal),
             result=redacted_terminal,
@@ -781,7 +788,26 @@ class AnswerExecutionStore:
         await self.session.flush()
         return True
 
-    async def redact_document_evidence(self, *, document_id: str) -> int:
+    async def _publication_redactions(self, terminal: Mapping[str, object]) -> list[dict]:
+        versions = terminal.get("knowledge_version_identities")
+        if not isinstance(versions, list) or not versions:
+            return []
+        events = await read_publication_withdrawals(self.session, versions)
+        redactions = []
+        for event in events:
+            withdrawal = event.payload
+            item_ids = self._item_identities_for_document(
+                terminal=terminal, document_id=withdrawal["document_identity"], publication_identity=event.aggregate_id,
+            )
+            if item_ids:
+                redactions.append({
+                    "document_id": withdrawal["document_identity"], "item_identities": item_ids, "withdrawal": withdrawal,
+                })
+        return redactions
+
+    async def redact_document_evidence(
+        self, *, document_id: str, publication_identity: str | None = None, withdrawal: dict | None = None,
+    ) -> int:
         """Append private redaction events without rewriting frozen terminal results."""
 
         if not document_id.strip():
@@ -804,7 +830,9 @@ class AnswerExecutionStore:
             )
             if delivery_interrupted or state is not AnswerExecutionState.COMPLETED or terminal is None:
                 continue
-            item_ids = self._item_identities_for_document(terminal=terminal, document_id=document_id)
+            item_ids = self._item_identities_for_document(
+                terminal=terminal, document_id=document_id, publication_identity=publication_identity,
+            )
             if not item_ids:
                 continue
             already_redacted = {
@@ -825,6 +853,7 @@ class AnswerExecutionStore:
                 payload={
                     "document_id": document_id,
                     "item_identities": pending,
+                    **({"withdrawal": withdrawal} if withdrawal is not None else {}),
                 },
             )
             appended += 1
@@ -1231,7 +1260,9 @@ class AnswerExecutionStore:
         return max(sequences, default=0) + 1
 
     @staticmethod
-    def _item_identities_for_document(*, terminal: Mapping[str, object], document_id: str) -> list[str]:
+    def _item_identities_for_document(
+        *, terminal: Mapping[str, object], document_id: str, publication_identity: str | None = None,
+    ) -> list[str]:
         evidence_set = terminal.get("evidence_set")
         if not isinstance(evidence_set, Mapping):
             return []
@@ -1246,7 +1277,11 @@ class AnswerExecutionStore:
             item_identity = item.get("item_identity")
             if not isinstance(evidence, Mapping) or not isinstance(item_identity, str):
                 raise ValueError("frozen evidence item identity is malformed")
-            if evidence.get("document_id") == document_id:
+            binding = item.get("identity_binding")
+            if evidence.get("document_id") == document_id and (
+                publication_identity is None
+                or isinstance(binding, Mapping) and binding.get("publication_identity") == publication_identity
+            ):
                 item_ids.append(item_identity)
         return item_ids
 
@@ -1324,6 +1359,17 @@ class AnswerExecutionStore:
                 evidence.pop("content", None)
                 evidence["withdrawn"] = True
                 item["withdrawn"] = True
+                withdrawal = redaction.get("withdrawal")
+                if isinstance(withdrawal, Mapping):
+                    binding = item.get("identity_binding")
+                    if (
+                        not isinstance(binding, Mapping)
+                        or binding.get("publication_identity") != withdrawal.get("publication_identity")
+                        or evidence.get("generation") != withdrawal.get("generation")
+                        or document_id != withdrawal.get("document_identity")
+                    ):
+                        raise ValueError("withdrawal targets a different publication")
+                    item["withdrawal"] = dict(withdrawal)
         return result
 
     @staticmethod

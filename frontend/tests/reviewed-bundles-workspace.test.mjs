@@ -3,6 +3,7 @@
 // administrator actions and stay hidden from Knowledge Users.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import test from 'node:test';
 import { loginAdmin, registerKnowledgeUserViaApi, startWorkbench } from './acceptance-env.mjs';
 
@@ -811,4 +812,71 @@ test('Reviewed Release Bundle acceptance runs inside the deterministic browser g
     'node --test --test-concurrency=1 tests/reviewed-bundles-workspace.test.mjs'
   );
   assert.match(packageJson.scripts['test:browser'], /npm run test:reviewed-bundles/);
+});
+
+test('Ticket 25 administrator explicitly withdraws a publication and retries its cleanup', { timeout: 120000 }, async (t) => {
+  const { page, baseUrl } = await startWorkbench(t, {
+    env: { BROWSER_ACCEPTANCE_SEED: 'minimal', BROWSER_ACCEPTANCE_TICKET24: '1' }
+  });
+  await loginAdmin(page, baseUrl);
+  const question = 'Which Candidate publication contract applies? deployment=production';
+  await page.goto(`${baseUrl}chat`);
+  await page.getByPlaceholder('请输入需要检索的问题').fill(question);
+  await page.getByRole('button', { name: '发送' }).click();
+  await page.getByLabel('助手消息').last().getByLabel('已支持的知识回答').waitFor();
+  const retained = await page.evaluate(async () => {
+    const headers = { Authorization: `Bearer ${localStorage.getItem('access_token')}` };
+    const sessions = await (await fetch('/api/sessions', { headers })).json();
+    const identity = sessions.data.sessions[0].session_id;
+    const history = await (await fetch(`/api/sessions/${encodeURIComponent(identity)}`, { headers })).json();
+    return { identity, answer: history.data.messages.at(-1) };
+  });
+  await page.goto(`${baseUrl}reviewed-bundles`);
+  await page.getByRole('button', { name: 'ticket24-browser-original', exact: true }).click();
+  await page.getByRole('button', { name: /^查看 Candidate / }).click();
+  const withdrawal = page.getByRole('region', { name: '发布撤回' });
+  await withdrawal.waitFor();
+  await withdrawal.getByLabel('撤回原因').selectOption('privacy_defect');
+  await withdrawal.getByLabel('确认撤回此精确发布版本').check();
+  const withdrawalResponse = page.waitForResponse((response) =>
+    response.request().method() === 'POST' && response.url().endsWith('/withdrawal'));
+  await withdrawal.getByRole('button', { name: '撤回发布版本', exact: true }).click();
+  const withdrawn = await withdrawalResponse;
+  assert.equal(withdrawn.status(), 200, await withdrawn.text());
+  await withdrawal.getByText('已撤回', { exact: true }).waitFor();
+  await withdrawal.getByText('privacy_defect', { exact: true }).waitFor();
+  await withdrawal.getByRole('button', { name: '重试清理' }).click();
+  await withdrawal.getByText('清理完成', { exact: true }).waitFor();
+  assert.equal(await withdrawal.getByRole('button', { name: '撤回发布版本', exact: true }).count(), 0);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  if (process.env.TICKET25_SCREENSHOT_DIR) {
+    await withdrawal.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(process.env.TICKET25_SCREENSHOT_DIR, 'ticket25-withdrawal-desktop.png') });
+  }
+  await page.reload();
+  await page.getByRole('button', { name: 'ticket24-browser-original', exact: true }).click();
+  await page.getByRole('button', { name: /^查看 Candidate / }).click();
+  await page.getByRole('region', { name: '发布撤回' }).getByText('已撤回', { exact: true }).waitFor();
+  const redacted = await page.evaluate(async (identity) => {
+    const response = await fetch(`/api/sessions/${encodeURIComponent(identity)}`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem('access_token')}` }
+    });
+    return (await response.json()).data.messages.at(-1);
+  }, retained.identity);
+  assert.deepEqual(redacted.answer_execution.snapshot_ids, retained.answer.answer_execution.snapshot_ids);
+  assert.deepEqual(redacted.answer_execution.knowledge_version_identities, retained.answer.answer_execution.knowledge_version_identities);
+  const source = redacted.evidence_summary.sources[0];
+  assert.equal(source.withdrawal.reason_code, 'privacy_defect');
+  assert.ok(source.withdrawal_notice);
+  assert.equal(source.excerpt, undefined);
+  assert.equal(source.source_url, undefined);
+  await page.goto(`${baseUrl}chat`);
+  await page.getByPlaceholder('请输入需要检索的问题').fill(question);
+  await page.getByRole('button', { name: '发送' }).click();
+  await page.getByLabel('助手消息').last().getByLabel('证据不足回复').waitFor();
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  if (process.env.TICKET25_SCREENSHOT_DIR) {
+    await page.screenshot({ path: join(process.env.TICKET25_SCREENSHOT_DIR, 'ticket25-withdrawal-mobile.png') });
+  }
 });
