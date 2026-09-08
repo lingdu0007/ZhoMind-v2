@@ -425,6 +425,11 @@ inspection reload exposes the retained acceptance and its exact bindings.
 The administrator view keeps those records inspectable and distinguishes
 partial publication from complete batch success.
 
+Release-Assured acceptance recognizes both a stable `event:` reference and the
+32-character lowercase UUID hex retained by `canonical_events.id` in an
+authoritative editorial snapshot. It rejects other unqualified references and
+does not normalize, rewrite, or rehash the frozen export to bridge these forms.
+
 An administrator may reload a historical inspection after a Candidate becomes
 stale or its job reaches `superseded`, but eligibility remains latest-generation
 only. The administrator-only Candidate publication read projection reports that
@@ -521,6 +526,15 @@ metadata can bind that reconstruction only; it cannot supply a decision query,
 source relationship, assurance, condition, freshness, or access authority.
 Any missing, malformed, mismatched, or newly unusable retained fact excludes
 the pointed version.
+
+A successor's unverified or unavailable new source does not itself revoke the
+pointed predecessor. The pool revalidates the pointed revision's own sources,
+approval and integrity facts before retaining it. Decisive loss of a source
+used by that revision remains blocking after source recovery; a later
+successor approval cannot truncate that revision's loss history. A new revision
+approved after the loss is evaluated from its own approval boundary. Both
+current and historical authority use the same validated source/section
+projection, while their eligibility decisions remain separately scoped.
 
 Candidate Build chunks and Candidate records are not members of this ordinary
 pool. Candidate preview is an explicit, administrator-only, isolated path:

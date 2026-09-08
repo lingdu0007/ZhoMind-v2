@@ -123,7 +123,7 @@ class AuthorizedRetrievalCandidatePool:
             needs_published_version_authority = (
                 reason == "entry_not_published"
                 or (
-                    reason is None
+                    reason in {None, "source_unavailable"}
                     and authority is not None
                     and authority.get("editorial_revision_identity") != revision_identity
                 )
@@ -486,7 +486,10 @@ class AuthorizedRetrievalCandidatePool:
         if current_authority.get("editorial_revision_identity") != revision_identity:
             if current_authority.get("answer_eligible") is not True and (
                 not isinstance(reasons, list)
-                or set(reasons) - {"editorial_approval_missing", "not_published"}
+                or set(reasons) - {
+                    "editorial_approval_missing", "not_published",
+                    "source_unavailable", "source_availability_missing", "decisive_source_loss",
+                }
             ):
                 return None, "entry_not_published"
         elif not isinstance(reasons, list) or set(reasons) - {
@@ -719,7 +722,13 @@ class AuthorizedRetrievalCandidatePool:
         ):
             return None
         pointer = await self._session.get(PublishedKnowledgePointer, version.entry_identity)
-        if pointer is None or pointer.current_version_id != version.id:
+        if (
+            pointer is None
+            or pointer.current_version_id != version.id
+            or pointer.entry_identity != version.entry_identity
+            or pointer.document_identity != version.document_identity
+            or pointer.generation != version.generation
+        ):
             return None
         return version.id, version
 

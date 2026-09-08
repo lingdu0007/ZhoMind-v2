@@ -735,6 +735,13 @@ class _SourceLostUnpublishedSuccessorRetrievalAuthority(_UnpublishedSuccessorRet
         )
 
 
+class _UnverifiedSourceSuccessorRetrievalAuthority(_UnpublishedSuccessorRetrievalAuthority):
+    async def get_retrieval_authority(self, entry_id: str, *, now=None) -> dict:
+        authority = await super().get_retrieval_authority(entry_id, now=now)
+        authority["eligibility_reasons"] = ["not_published", "source_unavailable"]
+        return authority
+
+
 def test_inspection_is_durable_and_exactly_bound(client: TestClient, monkeypatch) -> None:
     from app.api.v1 import reviewed_bundles as reviewed_bundles_api
 
@@ -1491,6 +1498,9 @@ def test_candidate_acceptance_requires_exact_supported_and_boundary_records(clie
         ("inspection", ("bundle_id",), "bundle:foreign-bundle"),
         ("inspection", ("bundle_item_id",), "bundle_item:foreign-item"),
         ("inspection", ("editorial_source_revision",), "0" * 64),
+        ("inspection", ("requested_generation",), True),
+        ("inspection", ("configuration", "active"), 0),
+        ("acceptance", ("configuration", "active"), 0),
         ("acceptance", ("entry_identity",), "entry:foreign-entry"),
         ("acceptance", ("result", "candidate_id"), "candidate:foreign-candidate"),
         ("acceptance", ("result", "supported", "answer_evidence_set", "identity"), "forged-evidence"),
@@ -2044,6 +2054,15 @@ def test_replacement_inspection_rejects_corrupted_publication_projection(
         assert response.status_code == 409
         assert response.json()["code"] == "PUBLISHED_KNOWLEDGE_POINTER_INTEGRITY_FAILED"
 
+    async def retrieve() -> list[dict]:
+        async with client.app.state.test_auth_session_factory() as session:
+            result = await AuthorizedRetrievalCandidatePool(
+                session, settings=get_settings(), editorial_authority=_PublishedRetrievalAuthority(),
+            ).retrieve("Which Candidate publication contract applies?", top_k=5)
+            return result.items
+
+    assert asyncio.run(retrieve()) == []
+
 
 def test_processing_confirmation_recovers_a_persisted_item_before_its_result_is_recorded(
     client: TestClient,
@@ -2529,9 +2548,13 @@ def test_ordinary_retrieval_excludes_a_published_chunk_with_a_forged_current_rev
     assert {item["reason"] for item in exclusions} == {"editorial_revision_mismatch"}
 
 
+@pytest.mark.parametrize(
+    "authority_type", [_UnpublishedSuccessorRetrievalAuthority, _UnverifiedSourceSuccessorRetrievalAuthority],
+)
 def test_ordinary_retrieval_preserves_a_published_version_during_an_unpublished_successor_revision(
     client: TestClient,
     monkeypatch,
+    authority_type,
 ) -> None:
     from app.api.v1 import reviewed_bundles as reviewed_bundles_api
 
@@ -2563,7 +2586,7 @@ def test_ordinary_retrieval_preserves_a_published_version_during_an_unpublished_
             result = await AuthorizedRetrievalCandidatePool(
                 session,
                 settings=get_settings(),
-                editorial_authority=_UnpublishedSuccessorRetrievalAuthority(),
+                editorial_authority=authority_type(),
             ).retrieve("Which Candidate publication contract applies?", top_k=5)
         return result.items
 

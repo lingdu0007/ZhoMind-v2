@@ -1091,6 +1091,15 @@ class EditorialAuthorityService:
 
         sources = await self._verified_source_snapshot(draft, action="retrieval")
         release_assurance_snapshot = await self._release_assurance_snapshot(draft)
+        authority.update(self._retrieval_content_projection(draft, sources, release_assurance_snapshot))
+        return authority
+
+    @staticmethod
+    def _retrieval_content_projection(
+        draft: CreateEditorialEntryRequest,
+        sources: list[dict[str, Any]],
+        release_assurance_snapshot: dict[str, Any] | None,
+    ) -> dict[str, Any]:
         source_by_id: dict[str, dict[str, str]] = {}
         source_definitions: list[dict[str, str]] = []
         for source_snapshot in sources:
@@ -1162,23 +1171,20 @@ class EditorialAuthorityService:
         if set(by_section) != set(body):
             raise RuntimeError("retrieval authority section-source relationships do not cover the retained body")
 
-        authority.update(
-            {
-                "section_source_relationships": by_section,
-                "assurance_level": draft.assurance_level,
-                "applicability_conditions": list(draft.applicability_conditions or []),
-                "non_applicability_conditions": list(draft.non_applicability_conditions or []),
-                "freshness_triggers": list(draft.freshness_triggers or []),
-                "release_assurance_snapshot": release_assurance_snapshot,
-                "decision_query": decision_query.strip(),
-                "entry_title": draft.title,
-                "coverage_position": draft.coverage_position,
-                "review_date": draft.review_date,
-                "applicable_versions": list(draft.applicable_versions or []),
-                "source_definitions": source_definitions,
-            }
-        )
-        return authority
+        return {
+            "section_source_relationships": by_section,
+            "assurance_level": draft.assurance_level,
+            "applicability_conditions": list(draft.applicability_conditions or []),
+            "non_applicability_conditions": list(draft.non_applicability_conditions or []),
+            "freshness_triggers": list(draft.freshness_triggers or []),
+            "release_assurance_snapshot": release_assurance_snapshot,
+            "decision_query": decision_query.strip(),
+            "entry_title": draft.title,
+            "coverage_position": draft.coverage_position,
+            "review_date": draft.review_date,
+            "applicable_versions": list(draft.applicable_versions or []),
+            "source_definitions": source_definitions,
+        }
 
     async def get_retrieval_authority_for_revision(
         self,
@@ -1241,93 +1247,8 @@ class EditorialAuthorityService:
             return authority
 
         release_assurance_snapshot = await self._release_assurance_snapshot(draft)
-        source_by_id: dict[str, dict[str, str]] = {}
-        source_definitions: list[dict[str, str]] = []
-        for source_snapshot in sources:
-            source_identity = source_snapshot.get("source_identity")
-            source_definition = source_snapshot.get("source")
-            if (
-                not isinstance(source_identity, str)
-                or not isinstance(source_definition, dict)
-                or not isinstance(source_definition.get("source_id"), str)
-                or source_definition.get("access_scope") not in {"public", "controlled_internal"}
-            ):
-                raise RuntimeError("published retrieval authority source snapshot is invalid")
-            access_scope = str(source_definition["access_scope"])
-            source_projection = {
-                "source_identity": source_identity,
-                "title": str(source_definition.get("title") or ""),
-                "authority": str(source_definition.get("authority") or ""),
-                "version": str(source_definition.get("version_or_date") or ""),
-                "access_scope": access_scope,
-            }
-            if not all(source_projection[key] for key in ("title", "authority", "version")):
-                raise RuntimeError("published retrieval authority source snapshot is invalid")
-            if access_scope == "public":
-                public_url = source_definition.get("public_url")
-                if not isinstance(public_url, str) or not public_url:
-                    raise RuntimeError("published retrieval authority public source locator is invalid")
-                source_projection["public_url"] = public_url
-            else:
-                controlled_locator = source_definition.get("controlled_locator")
-                if not isinstance(controlled_locator, str) or not controlled_locator:
-                    raise RuntimeError("published retrieval authority controlled source locator is invalid")
-                source_projection["controlled_locator"] = controlled_locator
-            source_by_id[source_definition["source_id"]] = {
-                "source_identity": source_identity,
-                "availability": str(source_snapshot["availability"]),
-                "access_scope": access_scope,
-            }
-            source_definitions.append(source_projection)
-
-        body = draft.body if isinstance(draft.body, dict) else {}
-        decision_query = body.get("decision_query")
-        if not isinstance(decision_query, str) or not decision_query.strip():
-            raise RuntimeError("published retrieval authority decision query is missing")
-        relationships = draft.section_source_relationships
-        if not isinstance(relationships, list):
-            raise RuntimeError("published retrieval authority section-source relationships are missing")
-        by_section: dict[str, list[dict[str, str]]] = {}
-        for relationship in relationships:
-            if not isinstance(relationship, dict):
-                raise RuntimeError("published retrieval authority section-source relationship is invalid")
-            section_id = relationship.get("section_id")
-            source_ids = relationship.get("source_ids")
-            if (
-                not isinstance(section_id, str)
-                or not section_id
-                or section_id in by_section
-                or not isinstance(source_ids, list)
-                or not source_ids
-            ):
-                raise RuntimeError("published retrieval authority section-source relationship is invalid")
-            section_sources: list[dict[str, str]] = []
-            seen_source_ids: set[str] = set()
-            for source_id in source_ids:
-                if not isinstance(source_id, str) or source_id in seen_source_ids or source_id not in source_by_id:
-                    raise RuntimeError("published retrieval authority section-source relationship is invalid")
-                seen_source_ids.add(source_id)
-                section_sources.append(dict(source_by_id[source_id]))
-            by_section[section_id] = sorted(section_sources, key=lambda item: item["source_identity"])
-        if set(by_section) != set(body):
-            raise RuntimeError("published retrieval authority section-source relationships do not cover the retained body")
-        authority.update(
-            {
-                "section_source_relationships": by_section,
-                "assurance_level": draft.assurance_level,
-                "applicability_conditions": list(draft.applicability_conditions or []),
-                "non_applicability_conditions": list(draft.non_applicability_conditions or []),
-                "freshness_triggers": list(draft.freshness_triggers or []),
-                "release_assurance_snapshot": release_assurance_snapshot,
-                "decision_query": decision_query.strip(),
-                "entry_title": draft.title,
-                "coverage_position": draft.coverage_position,
-                "review_date": draft.review_date,
-                "applicable_versions": list(draft.applicable_versions or []),
-                "source_definitions": source_definitions,
-                "source_revalidated_at": (now.isoformat() if now is not None else None),
-            }
-        )
+        authority.update(self._retrieval_content_projection(draft, sources, release_assurance_snapshot))
+        authority["source_revalidated_at"] = now.isoformat() if now is not None else None
         return authority
 
     async def _entry_and_events(
@@ -2508,21 +2429,8 @@ class EditorialAuthorityService:
             for source in draft.sources or []
             if isinstance(source, dict) and isinstance(source.get("source_id"), str)
         }
-        next_material_approval_sequence = min(
-            (
-                EditorialAuthorityService._event_sequence([event])
-                for event in events
-                if EditorialAuthorityService._event_sequence([event]) > approval_sequence
-                and EditorialAuthorityService._payload(event).get("action") == "revision_approved"
-            ),
-            default=None,
-        )
         return bool(source_identities) and any(
             EditorialAuthorityService._event_sequence([event]) > approval_sequence
-            and (
-                next_material_approval_sequence is None
-                or EditorialAuthorityService._event_sequence([event]) < next_material_approval_sequence
-            )
             and EditorialAuthorityService._payload(event).get("decisive_source_loss") is True
             and EditorialAuthorityService._payload(event).get("source_identity") in source_identities
             for event in events

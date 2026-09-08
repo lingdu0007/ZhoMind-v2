@@ -1001,7 +1001,8 @@ class CandidatePublicationService:
             and payload.get("input_sha256") == binding.frozen_input.input_sha256
             and payload.get("frozen_input_sha256") == binding.frozen_input.frozen_input_sha256
             and payload.get("configuration_identity") == binding.configuration_identity
-            and payload.get("configuration") == binding.frozen_input.embedding_configuration
+            and canonical_json_sha256(payload.get("configuration"))
+            == canonical_json_sha256(binding.frozen_input.embedding_configuration)
             and "replaces_published_knowledge_version_identity" in payload
             and (
                 payload.get("replaces_published_knowledge_version_identity") is None
@@ -1878,7 +1879,9 @@ class CandidatePublicationService:
             and payload.get("input_sha256") == binding.frozen_input.input_sha256
             and payload.get("frozen_input_sha256") == binding.frozen_input.frozen_input_sha256
             and payload.get("configuration_identity") == binding.configuration_identity
-            and payload.get("configuration") == binding.frozen_input.embedding_configuration
+            and canonical_json_sha256(payload.get("configuration"))
+            == canonical_json_sha256(binding.frozen_input.embedding_configuration)
+            and type(payload.get("requested_generation")) is int
             and payload.get("requested_generation") == binding.frozen_input.requested_generation
             and payload.get("chunk_sha256s") == [chunk.content_sha256 for chunk in binding.chunks]
             and "replaces_published_knowledge_version_identity" in payload

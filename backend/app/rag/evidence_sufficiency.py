@@ -923,8 +923,13 @@ def _release_assurance_reason(candidate: _AuthorizedCandidate) -> str | None:
     acceptance_status = snapshot.get("frozen_acceptance_status")
     if not isinstance(acceptance_status, Mapping):
         return "assurance_support_missing"
+    event_id = acceptance_status.get("event_id")
+    # Editorial snapshots retain canonical_events.id as UUID hex; never rewrite their hashes.
+    event_identity_valid = _stable_identity_has_kind(event_id, StableIdentityKind.EVENT) or (
+        isinstance(event_id, str) and re.fullmatch(r"[0-9a-f]{32}", event_id) is not None
+    )
     if (
-        not _stable_identity_has_kind(acceptance_status.get("event_id"), StableIdentityKind.EVENT)
+        not event_identity_valid
         or not isinstance(acceptance_status.get("event_sha256"), str)
         or _SHA256.fullmatch(str(acceptance_status["event_sha256"])) is None
         or acceptance_status.get("to_state") != "active"

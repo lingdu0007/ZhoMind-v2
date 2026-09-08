@@ -339,6 +339,10 @@ scalar type；形状相似或损坏的 record 不能授予 eligibility。此验�
 acceptance record，也不修改历史结果。管理员重新加载 inspection 时可以查看保留的 acceptance
 及其精确绑定。管理员界面保留这些记录的可检查性，并明确区分部分发布与完整批次成功。
 
+Release-Assured acceptance 同时识别 stable `event:` reference，以及 authoritative editorial
+snapshot 中由 `canonical_events.id` 保留的 32 位小写 UUID hex。其他未限定的 reference 会被
+拒绝；兼容这两种形式不会 normalize、改写或重新计算 frozen export 的 hash。
+
 administrator 可以在 Candidate 变 stale 或其 job 到达 `superseded` 后重新加载 historical
 inspection，但 eligibility 始终只接受 latest generation。仅管理员可用的 Candidate publication
 read projection 会返回该 Candidate 的不可变 Published Knowledge Version identity、精确
@@ -413,6 +417,13 @@ revision，并重新验证当前 source 与 release-assurance record 后，才�
 runtime projection metadata 只能绑定这次 reconstruction，不能提供 decision query、source
 relationship、assurance、condition、freshness 或 access authority。任何缺失、畸形、
 不匹配或新近不可用的保留事实都会排除该 pointed version。
+
+后继 revision 新增但尚未验证或不可用的 source 本身不会撤销被 pointer 指向的前驱版本。
+pool 会先复核 pointed revision 自己的 source、approval 与 integrity fact，再决定是否保留。
+该 revision 使用的 source 一旦发生 decisive loss，即使 source 恢复仍会阻断；后继 revision
+的 approval 不能截断旧 revision 的失效历史。在失效之后重新批准的新 revision 则从它自己
+的 approval boundary 评估。current 与 historical authority 共用经过验证的 source/section
+projection，但各自的 eligibility decision 仍按独立 scope 判断。
 
 Candidate Build chunk 与 Candidate record 不是这个普通 pool 的成员。Candidate preview
 是一条显式的、仅 System Administrator 可用的隔离路径：

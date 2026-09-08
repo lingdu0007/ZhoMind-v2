@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.common.config import get_settings
 from app.common.exceptions import AppError
 from app.contracts.canonical import (
     AcceptanceStatus,
@@ -34,9 +35,13 @@ from app.model.canonical import CanonicalEventModel, CanonicalRecordModel
 from app.model.document import Document
 from app.model.user import User
 from app.rag.claim_evidence import parse_claim_evidence_contract
+from app.retrieval.candidate_pool import AuthorizedRetrievalCandidatePool
+from app.reviewed_bundles.build_service import CandidateBuildService
 from app.reviewed_bundles.models import CandidateBuildJob
+from app.reviewed_bundles.publication import CandidatePublicationService
 from app.reviewed_bundles.service import ReviewedReleaseBundleService
 from app.reviewed_bundles.verifier import CanonicalEditorialExportVerifier
+from app.service.identity_audit_service import IdentityAuditService
 
 
 def _canonical_sha256(value: object) -> str:
@@ -855,8 +860,10 @@ async def test_published_revision_authority_retains_decisive_source_loss_after_s
     assert "decisive_source_loss" in historical["eligibility_reasons"]
 
 
+@pytest.mark.parametrize("successor_change_kind", ["wording_only", "material"])
 async def test_published_revision_authority_retains_a_later_source_loss_across_successor_revisions(
     db_session,
+    successor_change_kind: str,
 ) -> None:
     author = User(username="successor-loss-author", password_hash="hash", role="user", is_active=True)
     reviewer = User(username="successor-loss-reviewer", password_hash="hash", role="user", is_active=True)
@@ -885,13 +892,16 @@ async def test_published_revision_authority_retains_a_later_source_loss_across_s
         draft["entry_id"],
         ReviseEditorialEntryRequest(
             entry=wording,
-            change_kind="wording_only",
+            change_kind=successor_change_kind,
             lightweight_reason="clarity-only wording correction",
         ),
         maintainer,
     )
     await authority.accept_maintainer_responsibility(draft["entry_id"], maintainer)
-    await authority.accept_wording_revision(draft["entry_id"], reviewer)
+    if successor_change_kind == "wording_only":
+        await authority.accept_wording_revision(draft["entry_id"], reviewer)
+    else:
+        await authority.approve_current_revision(draft["entry_id"], reviewer)
 
     await authority.record_source_availability(
         draft["entry_id"],
@@ -1377,6 +1387,93 @@ async def test_release_assured_requires_retained_active_canonical_assurance_reco
 
     collected = await authority.collect_evidence(draft["entry_id"], author)
     assert collected["lifecycle_state"] == "evidence_collected"
+
+
+async def test_real_release_assured_export_builds_accepts_and_publishes_without_rewriting_its_snapshot(db_session) -> None:
+    author = User(username="author", password_hash="hash", role="user", is_active=True)
+    reviewer = User(username="reviewer", password_hash="hash", role="user", is_active=True)
+    maintainer = User(username="maintainer", password_hash="hash", role="user", is_active=True)
+    administrator = User(username="administrator", password_hash="hash", role="admin", is_active=True)
+    db_session.add_all([author, reviewer, maintainer, administrator])
+    await db_session.commit()
+    actor = await IdentityAuditService(db_session).ensure_member_record(administrator, admission_path="candidate_publication")
+    entry = _review_ready_entry(assurance_level="release_assured")
+    entry.acceptance_material["supported_queries"][0]["query"] = (
+        "Which source admission conditions are required? deployment=production"
+    )
+    entry.release_assurance = {
+        "contract_identity": "product_path:claim-contract-v1",
+        "calibration_identity": "configuration:resolver-calibration-v1",
+        "frozen_acceptance_identity": "delivery_acceptance_record:editorial-preview-001",
+        "named_gate": "capability:release-assurance-gate-v1",
+    }
+    db_session.add_all(_release_assurance_authority_records(
+        entry_identity=f"entry:{entry.entry_id}",
+        contract_identity=entry.release_assurance["contract_identity"],
+        calibration_identity=entry.release_assurance["calibration_identity"],
+        acceptance_identity=entry.release_assurance["frozen_acceptance_identity"],
+        named_gate=entry.release_assurance["named_gate"],
+        qualified_active_status=True,
+    ))
+    await db_session.commit()
+    authority = EditorialAuthorityService(db_session)
+    draft = await authority.create_draft(entry, author)
+    await _prepare_editorial_review(authority, draft["entry_id"], author, maintainer)
+    await authority.approve_current_revision(draft["entry_id"], reviewer)
+    exported = await authority.export_approved_revision(draft["entry_id"], administrator)
+    snapshot = deepcopy(exported["artifact"]["release_assurance_snapshot"])
+    event_id = snapshot["frozen_acceptance_status"]["event_id"]
+    assert len(event_id) == 32 and ":" not in event_id
+
+    verifier = CanonicalEditorialExportVerifier(db_session)
+    bundle = await ReviewedReleaseBundleService(db_session, editorial_export_verifier=verifier).import_bundle(
+        _bundle_from_export(exported, bundle_id="release-assured-publication"),
+        actor_identity=actor,
+    )
+    build = CandidateBuildService(db_session, editorial_export_verifier=verifier)
+    job_id = bundle["items"][0]["job_id"]
+    assert await build.dispatch_job(job_id, actor_identity=actor)
+    candidate = await build.process_job(job_id)
+    assert candidate["status"] == "candidate_ready"
+    publication = CandidatePublicationService(db_session, editorial_export_verifier=verifier)
+    candidate_id = candidate["candidate_id"]
+    inspection = await publication.inspect(candidate_id, actor_identity=actor)
+    acceptance = await publication.accept(candidate_id, actor_identity=actor)
+    assert acceptance["supported"]["outcome"] == "evidence_gated_answer"
+    assert acceptance["boundary"]["outcome"] == "insufficient_evidence_reply"
+    result = await publication.confirm_publication_batch(
+        {
+            "confirmation_id": "release-assured-publication",
+            "selected_items": [{
+                "candidate_id": candidate_id,
+                "effect": "create",
+                "current_published_knowledge_version": None,
+                "inspection_record_identity": inspection["inspection"]["record_identity"],
+                "acceptance_record_identity": acceptance["record_identity"],
+            }],
+        },
+        actor_identity=actor,
+    )
+    assert result["batch_complete"] is True
+    reconstructed = await authority.reconstruct_export(entry.entry_id, exported["artifact"]["editorial_revision_identity"])
+    assert reconstructed["artifact"]["release_assurance_snapshot"] == snapshot
+    assert reconstructed["artifact_sha256"] == exported["artifact_sha256"]
+    successor = entry.model_copy(deep=True)
+    successor.sources.append({**successor.sources[0], "source_id": "source-successor-unverified"})
+    successor.section_source_relationships[0]["source_ids"].append("source-successor-unverified")
+    await authority.revise_entry(
+        entry.entry_id,
+        ReviseEditorialEntryRequest(entry=successor, change_kind="material"),
+        author,
+    )
+    current = await authority.get_retrieval_authority(entry.entry_id)
+    assert "source_unavailable" in current["eligibility_reasons"]
+    retrieved = await AuthorizedRetrievalCandidatePool(db_session, settings=get_settings()).retrieve(
+        "Which source admission conditions are required? deployment=production", top_k=5,
+    )
+    assert retrieved.items
+    assert {item["publication_identity"] for item in retrieved.items} == {result["published"][0]["publication_identity"]}
+    assert {item["editorial_revision_identity"] for item in retrieved.items} == {exported["artifact"]["editorial_revision_identity"]}
 
 
 async def test_release_assured_rejects_unqualified_delivery_acceptance_active_event(db_session) -> None:

@@ -591,7 +591,19 @@ def test_sufficiency_rejects_a_malformed_source_identity() -> None:
     assert decision.reason == "no_eligible_published_evidence"
 
 
-def test_release_assured_evidence_requires_and_accepts_its_frozen_assurance_snapshot() -> None:
+@pytest.mark.parametrize(
+    "event_id,expected_sufficient",
+    [
+        ("event:ticket19-acceptance-active-v1", True),
+        ("0123456789abcdef0123456789abcdef", True),
+        ("unqualified-event", False),
+        ("member:0123456789abcdef0123456789abcdef", False),
+        ("g" * 32, False),
+    ],
+)
+def test_release_assured_evidence_requires_and_accepts_its_frozen_assurance_snapshot(
+    event_id: str, expected_sufficient: bool,
+) -> None:
     question = "What is the reviewed default for environment=production?"
     candidate = _candidate(
         entry_id="decision-release-assured-001",
@@ -631,7 +643,7 @@ def test_release_assured_evidence_requires_and_accepts_its_frozen_assurance_snap
             },
         ],
         "frozen_acceptance_status": {
-            "event_id": "event:ticket19-acceptance-active-v1",
+            "event_id": event_id,
             "event_sha256": "e" * 64,
             "to_state": "active",
         },
@@ -643,9 +655,13 @@ def test_release_assured_evidence_requires_and_accepts_its_frozen_assurance_snap
         candidates=[candidate],
     )
 
-    assert decision.is_sufficient is True
-    assert decision.evidence_set is not None
-    assert len(decision.evidence_set.items[0].excerpt) <= 1200
+    assert decision.is_sufficient is expected_sufficient
+    if expected_sufficient:
+        assert decision.evidence_set is not None
+        assert len(decision.evidence_set.items[0].excerpt) <= 1200
+    else:
+        assert decision.reason == "assurance_support_missing"
+        assert decision.evidence_set is None
 
 
 def test_claim_linked_evidence_accepts_a_matching_reviewed_contract() -> None:
