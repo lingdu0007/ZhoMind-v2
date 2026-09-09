@@ -875,6 +875,7 @@ test('Ticket 25 administrator explicitly withdraws a publication and retries its
   await page.getByRole('button', { name: '发送' }).click();
   await page.getByLabel('助手消息').last().getByLabel('证据不足回复').waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth, undefined, { timeout: 2000 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   if (process.env.TICKET25_SCREENSHOT_DIR) {
     await page.screenshot({ path: join(process.env.TICKET25_SCREENSHOT_DIR, 'ticket25-withdrawal-mobile.png') });

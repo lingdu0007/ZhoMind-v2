@@ -10,6 +10,7 @@ from app.api.v1.knowledge_feedback import router as knowledge_feedback_router
 from app.api.v1.knowledge_map import router as knowledge_map_router
 from app.api.v1.members import router as members_router
 from app.api.v1.operations import router as operations_router
+from app.api.v1.retention import router as retention_router
 from app.api.v1.reviewed_bundles import router as reviewed_bundles_router
 from app.api.v1.sessions import router as sessions_router
 from app.api.v1.settings import router as settings_router
@@ -22,6 +23,7 @@ router.include_router(acceptance_router)
 router.include_router(auth_router)
 router.include_router(members_router)
 router.include_router(operations_router)
+router.include_router(retention_router)
 router.include_router(chat_router)
 router.include_router(sessions_router)
 router.include_router(documents_router)

@@ -15,8 +15,8 @@ from app.common.request_id import RequestIdMiddleware
 from app.common.stream_delivery import StreamDeliveryMiddleware
 from app.extensions.registry import get_extension_registry
 from app.infra.db import SessionLocal, get_db_session
-from app.operations.events import OperationalEventService
 from app.operations.middleware import OperationalEventMiddleware
+from app.retention.cleanup import run_retention_sweep
 from app.reviewed_bundles.runtime import candidate_build_runtime
 from app.service.member_admission_service import MemberAdmissionService
 from app.settings.service import SystemSettingsDraftService
@@ -26,13 +26,7 @@ configure_logging()
 
 
 async def _purge_expired_records(session_factory) -> None:
-    try:
-        async with session_factory() as session:
-            await OperationalEventService(session).purge_expired()
-            await session.commit()
-    except (OSError, SQLAlchemyError):
-        # The retention tables may not exist before migrations have run.
-        pass
+    await run_retention_sweep(session_factory)
 
 
 async def _retention_loop(session_factory) -> None:

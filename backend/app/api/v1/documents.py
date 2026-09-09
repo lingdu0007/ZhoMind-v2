@@ -25,6 +25,7 @@ from app.documents.job_dispatcher import DocumentJobDispatcher
 from app.documents.operator_service import DocumentsOperatorService
 from app.documents.parsers import parse_document
 from app.documents.schemas import BatchBuildRequest, BatchDeleteRequest, BuildDocumentRequest, ChunkStrategy, DenseMaintenanceRequest
+from app.editorial_authority.schemas import editorial_secret_scan_findings
 from app.extensions.registry import get_task_backend
 from app.infra.db import get_db_session
 from app.infra.redis import get_redis_client
@@ -183,7 +184,12 @@ def _validate_upload_content(filename: str, file_type: str, content: bytes) -> N
             message="document file exceeds the 25 MiB limit",
             detail={"file_type": file_type},
         )
-    parse_document(filename, content)
+    parsed = parse_document(filename, content)
+    if editorial_secret_scan_findings({"content": parsed.text, "filename": filename}):
+        raise AppError(
+            status_code=422, code="CONTENT_BOUNDARY_REJECTED",
+            message="document contains recognizable private material",
+        )
 
 
 async def _get_document_or_404(session: AsyncSession, document_id: str) -> Document:

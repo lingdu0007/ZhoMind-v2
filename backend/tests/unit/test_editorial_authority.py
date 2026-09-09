@@ -151,6 +151,10 @@ def _review_ready_entry(
                 "access_scope": "public",
                 "public_url": "https://example.com/rag/source-admission",
                 "independent_public_verifiability": True,
+                "content_admission": {
+                    "material_class": "public_material", "audience": "all_admitted_members",
+                    "sensitivity": "restricted", "sanitized": True,
+                },
             }
         ],
         chunk_strategy={
@@ -506,6 +510,10 @@ async def test_claim_linked_entry_without_a_release_assured_contract_freezes_its
             "access_scope": "public",
             "public_url": "https://example.com/rag/security-review",
             "independent_public_verifiability": True,
+            "content_admission": {
+                "material_class": "public_material", "audience": "all_admitted_members",
+                "sensitivity": "restricted", "sanitized": True,
+            },
         }
     )
     for relationship in entry.section_source_relationships:
@@ -1694,7 +1702,9 @@ async def test_secret_fixture_is_rejected_before_it_can_enter_retained_editorial
 
     assert exc_info.value.status_code == 422
     assert exc_info.value.code == "EDITORIAL_SECRET_REJECTED"
-    assert exc_info.value.detail["findings"] == ["body.unknowns:openai-api-key"]
+    assert exc_info.value.detail["findings"] == [
+        "body.unknowns:openai-api-key", "body.unknowns:private-material",
+    ]
 
 
 async def test_conflicting_stable_source_identity_is_rejected_from_private_authority(db_session) -> None:

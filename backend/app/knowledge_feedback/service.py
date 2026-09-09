@@ -4,7 +4,7 @@ import re
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +15,7 @@ from app.model.document import Document, DocumentChunk
 from app.model.knowledge_feedback import KnowledgeFeedbackSignal, ReviewWorkItem
 from app.rag.answer_evidence import evidence_summary_from_execution
 from app.repository.chat_repository import ChatRepository
+from app.retention.policy import read_policy
 from app.service.answer_execution_store import AnswerExecutionStore
 
 FEEDBACK_RETENTION_DAYS = 180
@@ -148,14 +149,6 @@ class KnowledgeFeedbackService:
             label=payload.label,
             note=payload.note,
             signal_metadata=metadata,
-            work_item_metadata={
-                "answer_id": payload.answer_id,
-                "entry_id": entry_id,
-                "knowledge_edition": edition,
-                "label": payload.label,
-                "note": payload.note,
-                **metadata,
-            },
             subject_id=entry_id,
             conflict_message="feedback already exists for this answer and entry",
         )
@@ -269,7 +262,6 @@ class KnowledgeFeedbackService:
             label=payload.label,
             note=payload.note,
             signal_metadata=metadata,
-            work_item_metadata=metadata,
             subject_id=scope_key,
             conflict_message="feedback already exists for this answer and gap context",
         )
@@ -314,11 +306,11 @@ class KnowledgeFeedbackService:
         label: str,
         note: str | None,
         signal_metadata: dict[str, Any],
-        work_item_metadata: dict[str, Any],
         subject_id: str,
         conflict_message: str,
     ) -> dict[str, Any]:
         now = datetime.now(UTC)
+        retention_days = (await read_policy(self._session))["days"]["feedback_signals"]
         signal = KnowledgeFeedbackSignal(
             answer_id=answer_id,
             user_id=user_id,
@@ -329,7 +321,7 @@ class KnowledgeFeedbackService:
             note=note,
             normalized_metadata=signal_metadata,
             created_at=now,
-            expires_at=now + timedelta(days=FEEDBACK_RETENTION_DAYS),
+            expires_at=now + timedelta(days=retention_days),
         )
         try:
             self._session.add(signal)
@@ -340,7 +332,7 @@ class KnowledgeFeedbackService:
                     dedupe_key=f"feedback:{signal.id}",
                     subject_id=subject_id,
                     signal_id=signal.id,
-                    normalized_metadata=work_item_metadata,
+                    normalized_metadata={},
                     created_at=now,
                     updated_at=now,
                 )
@@ -368,13 +360,22 @@ class KnowledgeFeedbackService:
             select(KnowledgeFeedbackSignal).where(
                 KnowledgeFeedbackSignal.id == signal_id,
                 KnowledgeFeedbackSignal.user_id == user_id,
-            )
+            ).with_for_update()
         )
         signal = result.scalar_one_or_none()
         if signal is None:
             return {"id": signal_id, "deleted": False}
-        await self._session.execute(delete(ReviewWorkItem).where(ReviewWorkItem.signal_id == signal.id))
+        await self.detach_signals([signal.id], now=datetime.now(UTC))
         await self._session.delete(signal)
+        await self._session.flush()
+        surviving_signal = await self._session.scalar(select(KnowledgeFeedbackSignal.id).where(KnowledgeFeedbackSignal.id == signal_id))
+        surviving_reference = await self._session.scalar(select(ReviewWorkItem.id).where(ReviewWorkItem.signal_id == signal_id))
+        if surviving_signal is not None or surviving_reference is not None:
+            await self._session.rollback()
+            raise AppError(
+                status_code=503, code="PRIVACY_DELETE_UNVERIFIED",
+                message="feedback deletion could not be verified; retry is required",
+            )
         await self._session.commit()
         return {"id": signal_id, "deleted": True}
 
@@ -386,12 +387,13 @@ class KnowledgeFeedbackService:
                 ReviewWorkItem.status.asc(), ReviewWorkItem.created_at.asc(), ReviewWorkItem.id.asc()
             )
         )
-        items = [self._project_work_item(item) for item in result.scalars().all()]
+        items = [await self._project_work_item(item) for item in result.scalars().all()]
         await self._session.commit()
         return {"items": items, "pending_count": sum(item["status"] == "pending" for item in items)}
 
     async def classify(self, *, item_id: str, payload: ReviewWorkItemUpdate) -> dict[str, Any]:
-        result = await self._session.execute(select(ReviewWorkItem).where(ReviewWorkItem.id == item_id))
+        await self._purge_expired()
+        result = await self._session.execute(select(ReviewWorkItem).where(ReviewWorkItem.id == item_id).with_for_update())
         item = result.scalar_one_or_none()
         if item is None:
             raise AppError(status_code=404, code="RESOURCE_NOT_FOUND", message="review work item not found")
@@ -399,7 +401,7 @@ class KnowledgeFeedbackService:
         item.status = payload.status
         item.updated_at = datetime.now(UTC)
         await self._session.commit()
-        return self._project_work_item(item)
+        return await self._project_work_item(item)
 
     @staticmethod
     def _knowledge_edition(rag_trace: object, sources: list[object]) -> str:
@@ -419,10 +421,54 @@ class KnowledgeFeedbackService:
         return f"publication:{'+'.join(versions)}"[:128]
 
     async def _purge_expired(self) -> None:
-        now = datetime.now(UTC)
-        expired_ids = select(KnowledgeFeedbackSignal.id).where(KnowledgeFeedbackSignal.expires_at <= now)
-        await self._session.execute(delete(ReviewWorkItem).where(ReviewWorkItem.signal_id.in_(expired_ids)))
-        await self._session.execute(delete(KnowledgeFeedbackSignal).where(KnowledgeFeedbackSignal.expires_at <= now))
+        await self.purge_expired()
+
+    async def purge_expired(self, *, now: datetime | None = None, retention_days: int | None = None) -> None:
+        now = now or datetime.now(UTC)
+        days = retention_days if retention_days is not None else (await read_policy(self._session))["days"]["feedback_signals"]
+        expired = or_(
+            KnowledgeFeedbackSignal.expires_at <= now,
+            KnowledgeFeedbackSignal.created_at <= now - timedelta(days=days),
+        )
+        expired_ids = list((await self._session.scalars(select(KnowledgeFeedbackSignal.id).where(expired).with_for_update())).all())
+        await self.detach_signals(expired_ids, now=now)
+        await self._session.execute(delete(KnowledgeFeedbackSignal).where(KnowledgeFeedbackSignal.id.in_(expired_ids)))
+        await self._detach_items(await self.unresolved_feedback_references(), now=now)
+
+    async def unresolved_feedback_references(self) -> list[ReviewWorkItem]:
+        items = (await self._session.scalars(select(ReviewWorkItem).where(
+            ReviewWorkItem.kind == "feedback_signal",
+            or_(
+                ReviewWorkItem.signal_id.is_(None),
+                ~ReviewWorkItem.signal_id.in_(select(KnowledgeFeedbackSignal.id)),
+            ),
+        ).execution_options(populate_existing=True).with_for_update())).all()
+        return [
+            item for item in items if (
+                item.signal_id is not None or item.classification is None or item.normalized_metadata
+                or item.dedupe_key != f"detached:{item.id}" or item.subject_id.startswith("gap:")
+            )
+        ]
+
+    async def detach_signals(self, signal_ids: list[str], *, now: datetime) -> None:
+        items = (await self._session.scalars(select(ReviewWorkItem).where(
+            ReviewWorkItem.signal_id.in_(signal_ids),
+        ).with_for_update())).all()
+        await self._detach_items(list(items), now=now)
+
+    async def _detach_items(self, items: list[ReviewWorkItem], *, now: datetime) -> None:
+        for item in items:
+            if item.classification is None:
+                await self._session.delete(item)
+                continue
+            item.signal_id = None
+            item.dedupe_key = f"detached:{item.id}"
+            item.normalized_metadata = {}
+            if item.subject_id.startswith("gap:"):
+                item.subject_id = "detached-feedback"
+            item.created_at = now
+            item.updated_at = now
+        await self._session.flush()
 
     async def _sync_published_triggers(self) -> None:
         result = await self._session.execute(
@@ -532,7 +578,7 @@ class KnowledgeFeedbackService:
             "label": signal.label,
             "created_at": signal.created_at.isoformat(),
             "expires_at": signal.expires_at.isoformat(),
-            "retention_days": FEEDBACK_RETENTION_DAYS,
+            "retention_days": (signal.expires_at - signal.created_at).days,
             "duplicate": duplicate,
         }
         outcome = signal.normalized_metadata.get("outcome")
@@ -543,8 +589,19 @@ class KnowledgeFeedbackService:
             projection["gap_context"] = gap_context
         return projection
 
-    @staticmethod
-    def _project_work_item(item: ReviewWorkItem) -> dict[str, Any]:
+    async def _project_work_item(self, item: ReviewWorkItem) -> dict[str, Any]:
+        metadata = item.normalized_metadata if isinstance(item.normalized_metadata, dict) else {}
+        if item.kind == "feedback_signal":
+            metadata = {}
+            signal = await self._session.get(KnowledgeFeedbackSignal, item.signal_id) if item.signal_id else None
+            if signal is not None:
+                expires_at = signal.expires_at.replace(tzinfo=UTC) if signal.expires_at.tzinfo is None else signal.expires_at
+                if expires_at > datetime.now(UTC):
+                    raw = signal.normalized_metadata
+                    metadata = {key: raw[key] for key in ("outcome", "gap_context", "evidence_coverage", "source_count") if key in raw}
+                    metadata.update({"answer_id": signal.answer_id, "label": signal.label, "note": signal.note})
+                    if signal.entry_id is not None:
+                        metadata.update({"entry_id": signal.entry_id, "knowledge_edition": signal.knowledge_edition})
         return {
             "id": item.id,
             "kind": item.kind,
@@ -552,5 +609,5 @@ class KnowledgeFeedbackService:
             "status": item.status,
             "classification": item.classification,
             "created_at": item.created_at.isoformat(),
-            "metadata": item.normalized_metadata if isinstance(item.normalized_metadata, dict) else {},
+            "metadata": metadata,
         }

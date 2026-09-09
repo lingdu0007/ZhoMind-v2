@@ -8,7 +8,7 @@ from io import BytesIO
 from ipaddress import ip_address
 from pathlib import Path
 from urllib.error import HTTPError
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import yaml
@@ -19,6 +19,7 @@ except ModuleNotFoundError:  # pragma: no cover - environment-dependent fallback
     PdfReader = None  # type: ignore[assignment]
 
 from app.common.exceptions import AppError
+from app.documents.source_urls import is_canonical_public_source_url
 from app.documents.types import ParsedDocument
 from app.rag.claim_evidence import (
     ClaimEvidenceContractError,
@@ -74,47 +75,11 @@ def _probe_public_source(url: str) -> None:
 
 
 def validate_canonical_source_url(url: str, *, source_probe: Callable[[str], None]) -> None:
-    try:
-        parsed = urlsplit(url)
-        port = parsed.port
-    except ValueError as exc:
-        raise AppError(
-            status_code=400,
-            code="AGENT_SOURCE_URL_INVALID",
-            message="source URL is invalid",
-            detail={"url": url},
-        ) from exc
-
-    hostname = (parsed.hostname or "").rstrip(".").lower()
-    unsafe = (
-        parsed.scheme != "https"
-        or not hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or port not in (None, 443)
-        or bool(parsed.fragment)
-        or hostname == "localhost"
-        or hostname.endswith((".localhost", ".local", ".internal"))
-        or "." not in hostname
-    )
-    try:
-        address = ip_address(hostname)
-    except ValueError:
-        address = None
-    if address is not None and not address.is_global:
-        unsafe = True
-
-    for key, _value in parse_qsl(parsed.query, keep_blank_values=True):
-        normalized_key = key.lower()
-        if normalized_key in _REDIRECT_QUERY_KEYS or any(part in normalized_key for part in _SENSITIVE_QUERY_PARTS):
-            unsafe = True
-
-    if unsafe:
+    if not is_canonical_public_source_url(url):
         raise AppError(
             status_code=400,
             code="AGENT_SOURCE_URL_INVALID",
             message="source URL must be a credential-free public HTTPS canonical URL",
-            detail={"url": url},
         )
 
     try:

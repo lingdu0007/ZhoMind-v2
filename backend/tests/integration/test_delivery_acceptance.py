@@ -14,6 +14,7 @@ from app.infra.redis import get_redis_client
 from app.main import app
 from app.model.base import Base
 from app.model.canonical import CanonicalRecordModel
+from app.retention.policy import RetentionDays, policy_projection
 
 
 class _InMemoryRedis:
@@ -83,6 +84,7 @@ def _administrator_headers(client: TestClient) -> dict[str, str]:
 
 
 def _record(stage: str = "local_development", predecessor_record_identity: str | None = None) -> dict:
+    retention_identity = policy_projection(RetentionDays())["identity"]
     record = {
         "stage": stage,
         "predecessor_record_identity": predecessor_record_identity,
@@ -90,7 +92,7 @@ def _record(stage: str = "local_development", predecessor_record_identity: str |
             "entry_identities": ["entry:decision-entry-001"],
             "collection_identities": ["collection:production-rag-agent-engineering"],
             "product_path_identities": ["product_path:chat-evidence-gate-v1"],
-            "configuration_identities": ["configuration:retrieval-profile-20260905"],
+            "configuration_identities": ["configuration:retrieval-profile-20260905", retention_identity],
             "protected_capability_identities": [],
             "public_claim_identities": [],
             "deployment_identity": "deployment:editorial-preview-20260905",
@@ -104,6 +106,7 @@ def _record(stage: str = "local_development", predecessor_record_identity: str |
         "product_identities": [
             "product_revision:3ec565873608c7dcb3f824355dacf77bb1b277c9",
             "configuration:retrieval-profile-20260905",
+            retention_identity,
         ],
         "conditions": {"language": "zh-cn", "audience": "internal-editorial-preview"},
         "assumptions": ["one reviewed entry", "approved retrieval profile"],

@@ -33,6 +33,7 @@ from app.delivery_acceptance.schemas import (
     CreateDeliveryAcceptanceRecordRequest,
     UpdateDeliveryAcceptanceStatusRequest,
 )
+from app.documents.content_admission import source_admission_allowed
 from app.editorial_authority.schemas import (
     CreateEditorialEntryRequest,
     ReviseEditorialEntryRequest,
@@ -1596,6 +1597,7 @@ class EditorialAuthorityService:
             source.identity_kind != StableIdentityKind.SOURCE.value
             or source.record_class != CanonicalRecordClass.AUTHORITATIVE.value
             or self._payload(source).get("schema") != "editorial_source/v1"
+            or not source_admission_allowed(self._payload(source).get("source", {}))
         ):
             return None
         result = await self.session.execute(

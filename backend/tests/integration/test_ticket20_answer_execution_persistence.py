@@ -3932,7 +3932,7 @@ def test_private_execution_retention_cleanup_locks_header_before_event_trail(
                 assert await repository.delete_session(session_id=session_id, user_id="ticket20-user")
             await session.commit()
 
-            assert len(lock_queries) == 2
+            assert len(lock_queries) == (4 if expired else 2)
             assert all(query._for_update_arg is not None for query in lock_queries)
             assert await session.get(AnswerExecutionModel, execution_id) is None
             remaining_events = list(

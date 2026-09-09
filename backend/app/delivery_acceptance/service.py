@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +31,9 @@ from app.delivery_acceptance.schemas import (
 )
 from app.model.canonical import CanonicalEventModel, CanonicalRecordModel
 from app.model.user import User
+from app.retention.acceptance import retention_acceptance_blockers
+from app.retention.failures import RetentionFailureObservation
+from app.retention.policy import REGISTRY_ID
 from app.reviewed_bundles.withdrawal_facts import read_publication_withdrawals
 from app.service.identity_audit_service import IdentityAuditService
 
@@ -93,6 +97,8 @@ class DeliveryAcceptanceService:
         blockers = self._current_blockers(events, checks)
         withdrawal_blockers = await self._withdrawal_blockers(payload)
         blockers.extend(withdrawal_blockers)
+        retention_blockers = await retention_acceptance_blockers(self.session, payload, record.stable_id)
+        blockers.extend(retention_blockers)
         return {
             "record_id": record.stable_id,
             "stage": payload["stage"],
@@ -119,12 +125,72 @@ class DeliveryAcceptanceService:
             "blockers": blockers,
             "current_status": (
                 AcceptanceStatus.SUSPENDED.value
-                if withdrawal_blockers and events[-1].to_state != AcceptanceStatus.SUPERSEDED.value
+                if (withdrawal_blockers or retention_blockers) and events[-1].to_state != AcceptanceStatus.SUPERSEDED.value
                 else events[-1].to_state
             ),
             "status_history": [self._status_projection(event) for event in events],
             "created_at": self._utc_timestamp(record.created_at),
         }
+
+    async def suspend_retention_policy(self, policy_identity: str, actor_identity: str) -> None:
+        await self._suspend_retention_records(policy_identity, actor_identity, AcceptanceStatusReason.REACCEPTANCE_DUE)
+
+    async def suspend_retention_failure(self, observation: dict) -> None:
+        event_id = uuid4().hex
+        affected: list[str] = []
+        await self._suspend_retention_records(
+            None, "system:retention-cleanup", AcceptanceStatusReason.INTEGRITY_FAILURE,
+            failure_evidence=f"evidence://retention/events/{event_id}", affected_records=affected,
+        )
+        payload = RetentionFailureObservation.model_validate({
+            "invalidated_attempt": observation.get("attempt"),
+            "schema": "retention_cleanup_failure/v1", **observation, "affected_acceptance_identities": affected,
+        }).model_dump(mode="json", by_alias=True)
+        event = CanonicalEventModel(
+            id=event_id, aggregate_id=REGISTRY_ID, aggregate_kind="configuration",
+            event_type="retention_cleanup_failed", to_state="failed",
+            recorded_by="system:retention-cleanup",
+            payload=payload,
+        )
+        self.session.add(event)
+        await self.session.flush()
+
+    async def _suspend_retention_records(
+        self, policy_identity: str | None, actor_identity: str, reason: AcceptanceStatusReason,
+        *, failure_evidence: str | None = None,
+        affected_records: list[str] | None = None,
+    ) -> None:
+        records = (await self.session.scalars(select(CanonicalRecordModel).where(
+            CanonicalRecordModel.identity_kind == "delivery_acceptance_record",
+        ).order_by(CanonicalRecordModel.stable_id).with_for_update())).all()
+        for record in records:
+            payload = self._record_payload(record)
+            if not payload.get("affected_scope", {}).get("deployment_identity"):
+                continue
+            if policy_identity not in payload.get("product_identities", []) and payload.get("stage") not in {
+                "limited_team_pilot", "daily_use_release", "public_evidence_release",
+            }:
+                continue
+            events = await self._status_events(record.stable_id)
+            if events and events[-1].to_state != AcceptanceStatus.SUPERSEDED.value and affected_records is not None:
+                affected_records.append(record.stable_id)
+            if not events or events[-1].to_state not in {"active", "at_risk"}:
+                continue
+            await self._append_status(
+                record_identity=record.stable_id, event_type=CanonicalEventType.STATUS_CHANGED,
+                from_status=AcceptanceStatus(events[-1].to_state), to_status=AcceptanceStatus.SUSPENDED,
+                reason_code=reason, actor_identity=actor_identity,
+                reacceptance_trigger="retention policy change" if policy_identity else None,
+                status_failure={
+                    "check_id": "check:retention-boundary", "reason": "retention_cleanup_failed",
+                    "failure_kind": AcceptanceFailureKind.SHARED_PRIVACY.value,
+                    "blocking_scope": {
+                        "scope": AcceptanceBlockingScope.DEPLOYMENT.value,
+                        "identity": payload["affected_scope"]["deployment_identity"],
+                    },
+                    "evidence_links": [failure_evidence],
+                } if failure_evidence else None,
+            )
 
     async def suspend_withdrawn_publication(
         self, *, publication_identity: str, entry_identity: str, actor_identity: str,
@@ -217,6 +283,11 @@ class DeliveryAcceptanceService:
         stored_payload = self._record_payload(record)
         stored_checks = self._validated_persisted_checks(stored_payload)
         if payload.status is AcceptanceStatus.ACTIVE:
+            if await retention_acceptance_blockers(self.session, stored_payload, record.stable_id):
+                raise AppError(
+                    status_code=409, code="ACCEPTANCE_REACCEPTANCE_REQUIRED",
+                    message="retention boundary requires current policy and verified cleanup",
+                )
             if current_status is AcceptanceStatus.SUSPENDED:
                 raise AppError(
                     status_code=409,

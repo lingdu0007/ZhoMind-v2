@@ -379,7 +379,7 @@ def test_failed_stream_still_records_non_content_attempt_identity(client, monkey
     if failure == "outer_send_failure" or transport.startswith("http"):
         path = "/api/v1/chat/stream" if failure == "outer_send_failure" else "/api/v1/chat"
         if transport == "http_with_id":
-            headers["X-Request-ID"] = "review-request-123"
+            headers["X-Request-ID"] = "cba9d526-19f9-4571-bc2a-f1162433696a"
 
         async def call():
             body = json.dumps(question).encode()
@@ -433,4 +433,4 @@ def test_failed_stream_still_records_non_content_attempt_identity(client, monkey
     if response_request_id is not None:
         assert events[0]["request_id"] == response_request_id
     if transport == "http_with_id":
-        assert response_request_id == "review-request-123"
+        assert response_request_id == "cba9d526-19f9-4571-bc2a-f1162433696a"

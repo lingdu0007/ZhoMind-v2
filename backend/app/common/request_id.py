@@ -1,5 +1,5 @@
 from contextvars import ContextVar
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -13,7 +13,13 @@ def get_request_id() -> str:
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        rid = request.headers.get("x-request-id") or str(uuid4())
+        supplied = request.headers.get("x-request-id", "")
+        try:
+            parsed = UUID(supplied)
+            safe = parsed.version == 4 and str(parsed) == supplied
+        except ValueError:
+            safe = False
+        rid = supplied if safe else str(uuid4())
         request.state.request_id = rid
         token = request_id_ctx.set(rid)
         try:

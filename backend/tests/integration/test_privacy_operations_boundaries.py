@@ -206,7 +206,8 @@ def test_chat_records_a_content_free_operational_event(client: TestClient) -> No
             return list((await session.scalars(select(OperationalEvent))).all())
 
     events = asyncio.run(_events())
-    event = next(item for item in events if item.request_id == "event-request-id")
+    event = next(item for item in events if item.request_id == response.headers["x-request-id"])
+    assert event.request_id != "event-request-id"
     assert event.route_outcome == "POST /api/v1/chat:success"
     assert event.gate_outcome == "rejected"
     assert event.candidate_count == 0
@@ -247,7 +248,8 @@ def test_chat_stream_records_a_deferred_operational_event(client: TestClient) ->
             return list((await session.scalars(select(OperationalEvent))).all())
 
     events = asyncio.run(_events())
-    event = next(item for item in events if item.request_id == "stream-event-request-id")
+    event = next(item for item in events if item.request_id == stream_response.headers["x-request-id"])
+    assert event.request_id != "stream-event-request-id"
     assert event.route_outcome == "POST /api/v1/chat/stream:success"
     assert event.gate_outcome == "rejected"
     assert event.candidate_count == 0

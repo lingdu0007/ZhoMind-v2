@@ -4,7 +4,6 @@ import re
 from collections.abc import Iterator
 from datetime import date
 from typing import Any, Literal
-from urllib.parse import parse_qsl, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -18,6 +17,8 @@ from app.contracts.canonical import (
     StableIdentityKind,
 )
 from app.contracts.claim_materiality import content_indicates_high_impact, is_high_impact_claim, is_material_claim
+from app.documents.content_admission import credential_findings, recognizable_private_material, source_admission_allowed
+from app.documents.source_urls import is_canonical_public_source_url
 from app.rag.claim_evidence import ClaimEvidenceContractError, parse_claim_evidence_contract
 from app.rag.evidence_sufficiency import QueryConditionSet
 
@@ -45,17 +46,6 @@ _BODY_SECTIONS = (
 _SENSITIVE_QUERY_PARTS = ("credential", "password", "secret", "signature", "signed", "token")
 _REDIRECT_QUERY_KEYS = {"continue", "next", "redirect", "redirect_uri", "return_to", "target", "url"}
 _CONTROLLED_LOCATOR = re.compile(r"^controlled://[a-z0-9][a-z0-9._/-]{2,159}$")
-_SECRET_PATTERNS = (
-    ("aws-access-key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
-    ("openai-api-key", re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")),
-    ("anthropic-api-key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b")),
-    ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b")),
-    ("github-pat", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b")),
-    ("google-api-key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
-    ("slack-token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
-    ("private-key-block", re.compile(r"-----BEGIN (?:[A-Z0-9 ]* )?PRIVATE KEY-----")),
-    ("database-url-with-password", re.compile(r"\b(?:postgres|postgresql|mysql)://[^/\s:@]+:[^@\s/]+@")),
-)
 _SECRET_FIELD_NAMES = frozenset(
     {
         "api_key",
@@ -207,9 +197,10 @@ def editorial_secret_scan_findings(value: object) -> list[str]:
             findings.add(f"{path}:secret-bearing-field")
         if not isinstance(item, str):
             continue
-        for name, pattern in _SECRET_PATTERNS:
-            if pattern.search(item):
-                findings.add(f"{path}:{name}")
+        if recognizable_private_material(item):
+            findings.add(f"{path}:private-material")
+        for name in credential_findings(item):
+            findings.add(f"{path}:{name}")
     return sorted(findings)
 
 
@@ -504,6 +495,11 @@ def _validate_sources(value: object) -> tuple[list[dict[str, str]], dict[str, st
         if not isinstance(source, dict):
             reasons.append({"field": prefix, "code": "invalid", "message": "source must be an object"})
             continue
+        if not source_admission_allowed(source):
+            reasons.append({
+                "field": f"{prefix}.content_admission", "code": "content_boundary_rejected",
+                "message": "source requires reviewed restricted-sensitivity admission for all admitted members",
+            })
         source_id = source.get("source_id")
         if not _stable_identifier(source_id):
             reasons.append(
@@ -958,30 +954,7 @@ def _is_iso_date(value: object) -> bool:
 
 
 def _canonical_public_url(value: object) -> bool:
-    if not isinstance(value, str):
-        return False
-    try:
-        parsed = urlsplit(value)
-        port = parsed.port
-    except ValueError:
-        return False
-    hostname = (parsed.hostname or "").lower().rstrip(".")
-    if (
-        parsed.scheme != "https"
-        or not hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or port not in (None, 443)
-        or parsed.fragment
-        or hostname in {"localhost", "127.0.0.1", "0.0.0.0"}
-        or hostname.endswith((".local", ".internal"))
-        or "." not in hostname
-    ):
-        return False
-    return not any(
-        key.lower() in _REDIRECT_QUERY_KEYS or any(part in key.lower() for part in _SENSITIVE_QUERY_PARTS)
-        for key, _ in parse_qsl(parsed.query, keep_blank_values=True)
-    )
+    return is_canonical_public_source_url(value)
 
 
 def _controlled_locator(value: object) -> bool:

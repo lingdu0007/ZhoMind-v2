@@ -303,7 +303,7 @@ def test_canonical_immutability_tail_migration_rejects_database_rewrites(
         "published_knowledge_pointers",
         "published_knowledge_versions",
     }
-    assert revision == ("20260908_merge_t22_t24",)
+    assert revision == ("20260909_0026",)
 
 
 def test_frozen_candidate_input_hash_migration_backfills_existing_immutable_input(
@@ -464,4 +464,4 @@ def test_frozen_candidate_input_hash_migration_backfills_existing_immutable_inpu
 
     assert stored_hash == (canonical_json_sha256(frozen_input),)
     assert stored_input == (json.dumps(frozen_input, ensure_ascii=True, sort_keys=True),)
-    assert revision == ("20260908_merge_t22_t24",)
+    assert revision == ("20260909_0026",)

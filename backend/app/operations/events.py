@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.extensions.provider_router import ADVANCE_REASONS, STOP_REASONS
 from app.model.operational_event import OperationalEvent
-from app.repository.chat_repository import ChatRepository
+from app.retention.policy import read_policy
 
 _SAFE_CODE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _GATE_OUTCOMES = {"passed", "rejected", "unavailable"}
@@ -44,9 +44,9 @@ class OperationalEventService:
         await self.purge_expired()
         await self.session.commit()
 
-    async def purge_expired(self, *, now: datetime | None = None) -> None:
-        cutoff = (now or datetime.now(UTC)) - timedelta(days=30)
-        await ChatRepository(self.session).purge_expired_sessions(now=now)
+    async def purge_expired(self, *, now: datetime | None = None, retention_days: int | None = None) -> None:
+        days = retention_days if retention_days is not None else (await read_policy(self.session))["days"]["operational_events"]
+        cutoff = (now or datetime.now(UTC)) - timedelta(days=days)
         await self.session.execute(delete(OperationalEvent).where(OperationalEvent.created_at <= cutoff))
 
     @staticmethod

@@ -672,7 +672,12 @@ def test_admin_review_queue_exposes_only_normalized_feedback_and_classifies_with
     deleted = client.delete(f"/api/v1/knowledge-feedback/{submitted['id']}", headers=_headers(user_token))
     assert deleted.status_code == 200
     assert deleted.json()["data"] == {"id": submitted["id"], "deleted": True}
-    assert client.get("/api/v1/knowledge-review-queue", headers=_headers(admin_token)).json()["data"]["items"] == []
+    retained = client.get("/api/v1/knowledge-review-queue", headers=_headers(admin_token)).json()["data"]["items"]
+    assert len(retained) == 1
+    assert retained[0]["classification"] == "p1"
+    assert retained[0]["metadata"] == {}
+    assert "Please clarify" not in str(retained)
+    assert "answer-2" not in str(retained)
 
 
 def test_review_queue_syncs_source_release_and_review_age_triggers_and_purges_expired_feedback(feedback_client) -> None:
@@ -993,8 +998,9 @@ def test_session_list_isolates_one_unprojectable_execution_from_other_private_se
     assert batch_calls == ["all-sessions"]
 
 
+@pytest.mark.parametrize("orphaned_execution", [False, True])
 def test_session_list_fails_closed_when_an_unindexed_message_is_bound_to_another_private_conversation(
-    tmp_path,
+    tmp_path, orphaned_execution,
 ) -> None:
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'cross-session-summary.db'}")
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -1004,6 +1010,8 @@ def test_session_list_fails_closed_when_an_unindexed_message_is_bound_to_another
             await connection.run_sync(Base.metadata.create_all)
         async with session_factory() as session:
             now = datetime.now(UTC)
+            if not orphaned_execution:
+                session.add(ChatSession(id="alice-session", user_id="alice", created_at=now, updated_at=now))
             session.add_all(
                 [
                     ChatSession(id="bob-session", user_id="bob", created_at=now, updated_at=now),
@@ -1041,7 +1049,11 @@ def test_session_list_fails_closed_when_an_unindexed_message_is_bound_to_another
             await session.commit()
 
         async with session_factory() as session:
-            return await ChatService(session).list_sessions(user_id="bob")
+            service = ChatService(session)
+            items = await service.list_sessions(user_id="bob")
+            if orphaned_execution:
+                assert await service.get_session_messages("bob-session", "bob", "user") == []
+            return items
 
     try:
         items = asyncio.run(init_and_list())
@@ -1053,7 +1065,7 @@ def test_session_list_fails_closed_when_an_unindexed_message_is_bound_to_another
             "session_id": "bob-session",
             "title": "未命名会话",
             "updated_at": items[0]["updated_at"],
-            "message_count": 1,
-            "latest_execution_state": "unavailable",
+            "message_count": 0 if orphaned_execution else 1,
+            **({} if orphaned_execution else {"latest_execution_state": "unavailable"}),
         }
     ]

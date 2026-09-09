@@ -6,6 +6,7 @@ from app.model.knowledge_feedback import KnowledgeFeedbackSignal, ReviewWorkItem
 from app.model.operational_event import OperationalEvent
 from app.model.system_settings import SystemSettingsDraft, SystemSettingsState
 from app.model.user import User
+from app.retention.models import RetentionCleanupState
 from app.reviewed_bundles.models import CandidateBuildChunk, CandidateBuildJob
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "SystemSettingsState",
     "GenerationRouteSecret",
     "GenerationRouteState",
+    "RetentionCleanupState",
 ]

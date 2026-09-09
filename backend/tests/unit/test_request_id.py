@@ -13,6 +13,7 @@ def test_request_id_generated_when_missing() -> None:
 
 def test_request_id_passthrough() -> None:
     client = TestClient(app)
-    response = client.get("/api/v1/health", headers={"x-request-id": "req-123"})
-    assert response.headers["x-request-id"] == "req-123"
-    assert response.json()["request_id"] == "req-123"
+    request_id = "cba9d526-19f9-4571-bc2a-f1162433696a"
+    response = client.get("/api/v1/health", headers={"x-request-id": request_id})
+    assert response.headers["x-request-id"] == request_id
+    assert response.json()["request_id"] == request_id

@@ -735,6 +735,10 @@ history。每个动作都会先提交无内容的 `pending` audit event；随后
 
 ## 兼容性
 
+Ticket 26 的 [Pilot 安全与保留策略契约](pilot-safety-retention.zh-CN.md)
+规范已审核的全员内容准入、私有记录独立过期、策略身份、清理证据及受保护
+重新验收。ADR 0007 新增这些边界，不改写已有规范记录。
+
 `compatibility_read_projection` 将现有记录确定性地映射为可替换投影。它只读，
 携带 `legacy_id` 和 `unknown_fields`。新调用方应优先写入规范化记录，并可在
 expand-contract 迁移期间继续写旧投影。

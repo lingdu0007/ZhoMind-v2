@@ -1,10 +1,24 @@
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.exceptions import AppError
 from app.model.answer_execution import AnswerExecutionEventModel, AnswerExecutionModel
 from app.model.chat import ChatMessage, ChatSession
+from app.retention.policy import read_policy
+
+
+def orphaned_private_record_predicates():
+    return (
+        (ChatMessage, ~select(ChatSession.id).where(
+            ChatSession.id == ChatMessage.session_id, ChatSession.user_id == ChatMessage.user_id,
+        ).exists()),
+        (AnswerExecutionModel, ~select(ChatSession.id).where(
+            ChatSession.id == AnswerExecutionModel.session_id, ChatSession.user_id == AnswerExecutionModel.user_id,
+        ).exists()),
+        (AnswerExecutionEventModel, ~AnswerExecutionEventModel.execution_id.in_(select(AnswerExecutionModel.id))),
+    )
 
 
 class ChatRepository:
@@ -112,11 +126,24 @@ class ChatRepository:
         await self.session.execute(delete(ChatMessage).where(ChatMessage.session_id == session_id, ChatMessage.user_id == user_id))
         await self.session.delete(session)
         await self.session.flush()
+        for model, predicate in (
+            (ChatSession, ChatSession.id == session_id),
+            (ChatMessage, ChatMessage.session_id == session_id),
+            (AnswerExecutionModel, AnswerExecutionModel.session_id == session_id),
+            (AnswerExecutionEventModel, AnswerExecutionEventModel.execution_id.in_(execution_ids)),
+        ):
+            if await self.session.scalar(select(model.id).where(predicate).limit(1)) is not None:
+                await self.session.rollback()
+                raise AppError(
+                    status_code=503, code="PRIVACY_DELETE_UNVERIFIED",
+                    message="conversation deletion could not be verified; retry is required",
+                )
         return True
 
-    async def purge_expired_sessions(self, *, now: datetime | None = None) -> int:
+    async def purge_expired_sessions(self, *, now: datetime | None = None, retention_days: int | None = None) -> int:
         await self.acquire_private_conversation_write_fence()
-        cutoff = (now or datetime.now(UTC)) - timedelta(days=30)
+        days = retention_days if retention_days is not None else (await read_policy(self.session))["days"]["conversations"]
+        cutoff = (now or datetime.now(UTC)) - timedelta(days=days)
         candidate_session_ids = list(
             (
                 await self.session.scalars(
@@ -127,6 +154,7 @@ class ChatRepository:
             ).all()
         )
         if not candidate_session_ids:
+            await self._purge_orphaned_private_records()
             return 0
         await self._locked_execution_ids_for_sessions(candidate_session_ids)
         expired_session_ids = list(
@@ -140,13 +168,30 @@ class ChatRepository:
             ).all()
         )
         if not expired_session_ids:
+            await self._purge_orphaned_private_records()
             return 0
         execution_ids = await self._locked_execution_ids_for_sessions(expired_session_ids)
         await self._delete_execution_ids(execution_ids)
         await self.session.execute(delete(ChatMessage).where(ChatMessage.session_id.in_(expired_session_ids)))
         await self.session.execute(delete(ChatSession).where(ChatSession.id.in_(expired_session_ids)))
         await self.session.flush()
+        await self._purge_orphaned_private_records()
         return len(expired_session_ids)
+
+    async def _purge_orphaned_private_records(self) -> None:
+        predicates = dict(orphaned_private_record_predicates())
+        execution_ids = list((await self.session.scalars(
+            select(AnswerExecutionModel.id).where(predicates[AnswerExecutionModel])
+            .order_by(AnswerExecutionModel.id).with_for_update(),
+        )).all())
+        await self._delete_execution_ids(execution_ids)
+        await self.session.execute(delete(ChatMessage).where(predicates[ChatMessage]))
+        orphan_event_execution_ids = list((await self.session.scalars(
+            select(AnswerExecutionEventModel.execution_id).where(predicates[AnswerExecutionEventModel])
+            .order_by(AnswerExecutionEventModel.execution_id, AnswerExecutionEventModel.id).with_for_update(),
+        )).all())
+        await self._delete_execution_ids(list(dict.fromkeys(orphan_event_execution_ids)))
+        await self.session.flush()
 
     async def _locked_session(self, *, session_id: str, user_id: str) -> ChatSession | None:
         return await self.session.scalar(
@@ -187,6 +232,23 @@ class ChatRepository:
 
     async def _delete_execution_ids(self, execution_ids: list[str]) -> None:
         if execution_ids:
+            # Immutable bindings still identify private messages whose mutable
+            # session or execution index was corrupted. Remove them before
+            # deleting the binding facts that prevent cross-member disclosure.
+            bound_messages = or_(
+                ChatMessage.id.in_(select(AnswerExecutionModel.request["user_message_id"].as_string()).where(
+                    AnswerExecutionModel.id.in_(execution_ids),
+                )),
+                ChatMessage.id.in_(select(
+                    AnswerExecutionEventModel.payload["data"]["assistant_message_id"].as_string(),
+                ).where(AnswerExecutionEventModel.execution_id.in_(execution_ids))),
+            )
+            await self.session.execute(delete(ChatMessage).where(bound_messages))
+            if await self.session.scalar(select(ChatMessage.id).where(bound_messages).limit(1)) is not None:
+                raise AppError(
+                    status_code=503, code="PRIVACY_DELETE_UNVERIFIED",
+                    message="conversation deletion could not be verified; retry is required",
+                )
             await self.session.execute(
                 delete(AnswerExecutionEventModel).where(AnswerExecutionEventModel.execution_id.in_(execution_ids))
             )

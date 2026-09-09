@@ -140,6 +140,10 @@ def _review_ready_payload() -> dict:
                 "availability": "verified_usable",
                 "access_scope": "public",
                 "public_url": "https://example.com/editorial/authority",
+                "content_admission": {
+                    "material_class": "public_material", "audience": "all_admitted_members",
+                    "sensitivity": "restricted", "sanitized": True,
+                },
             }
         ],
         "chunk_strategy": {
@@ -272,3 +276,36 @@ def test_editorial_http_slice_enforces_maintainer_source_events_and_blocks_expor
     export = client.post(f"/api/v1/editorial/entries/{entry_id}/export", headers=admin_headers)
     assert export.status_code == 409
     assert export.json()["code"] == "EDITORIAL_SOURCE_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("material_class", [
+    "public_material", "team_shared_internal", "sanitized_bounded_internal_case",
+])
+def test_admitted_material_completes_authenticated_review_and_export(client: TestClient, material_class: str) -> None:
+    author = _member_headers(client, "author")
+    reviewer = _member_headers(client, "reviewer")
+    maintainer = _member_headers(client, "maintainer")
+    payload = _review_ready_payload()
+    payload["acceptance_material"]["boundary_queries"][0]["query"] = "Is an unreviewed source sufficient?"
+    source = payload["sources"][0]
+    source["content_admission"]["material_class"] = material_class
+    if material_class != "public_material":
+        source["access_scope"] = "controlled_internal"
+        source.pop("public_url")
+        source["controlled_locator"] = "controlled://team/reviewed-material"
+    if material_class == "sanitized_bounded_internal_case":
+        source["source_tier"] = "bounded_internal_case"
+        payload["claims"][0]["scope"] = "bounded_internal"
+    root = f"/api/v1/editorial/entries/{payload['entry_id']}"
+    assert client.post("/api/v1/editorial/entries", headers=author, json=payload).status_code == 200
+    assert client.post(f"{root}/evidence-collected", headers=author).status_code == 200
+    assert client.post(f"{root}/maintainer-acceptance", headers=maintainer).status_code == 200
+    assert client.post(
+        f"{root}/sources/{source['source_id']}/availability",
+        headers=maintainer, json={"availability": "verified_usable"},
+    ).status_code == 200
+    review = client.post(f"{root}/editorial-review", headers=author)
+    assert review.status_code == 200, review.text
+    assert client.post(f"{root}/approve", headers=reviewer).status_code == 200
+    exported = client.post(f"{root}/export", headers=_administrator_headers(client))
+    assert exported.status_code == 200, exported.text

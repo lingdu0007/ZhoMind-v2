@@ -932,6 +932,11 @@ trail does not incorrectly end at a historical failure.
 
 ## Compatibility
 
+Ticket 26's [Pilot Safety And Retention contract](pilot-safety-retention.md)
+governs reviewed all-member content admission, independent private-record
+expiry, policy identities, cleanup evidence and protected re-acceptance.
+ADR 0007 adds these boundaries without rewriting prior canonical records.
+
 `compatibility_read_projection` maps existing records to deterministic
 replaceable projections. It is read-only and carries `legacy_id` plus an
 `unknown_fields` list. New callers must write canonical records first and may

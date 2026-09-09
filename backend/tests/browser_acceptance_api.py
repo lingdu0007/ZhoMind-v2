@@ -328,6 +328,10 @@ def _browser_editorial_entry() -> CreateEditorialEntryRequest:
                 "access_scope": "public",
                 "public_url": "https://www.anthropic.com/engineering/building-effective-agents",
                 "independent_public_verifiability": True,
+                "content_admission": {
+                    "material_class": "public_material", "audience": "all_admitted_members",
+                    "sensitivity": "restricted", "sanitized": True,
+                },
             }
         ],
         chunk_strategy={
@@ -423,6 +427,10 @@ def _browser_ticket24_entry(entry_id: str) -> CreateEditorialEntryRequest:
                     "access_scope": "public",
                     "public_url": "https://example.com/ticket24-browser",
                     "independent_public_verifiability": True,
+                    "content_admission": {
+                        "material_class": "public_material", "audience": "all_admitted_members",
+                        "sensitivity": "restricted", "sanitized": True,
+                    },
                 }
             ],
             "acceptance_material": {
