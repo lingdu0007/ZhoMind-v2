@@ -168,6 +168,54 @@ class GenerationRouteService:
             "active": self._project(active, active=True, evidence=evidence) if active else None,
         }
 
+    async def verification_context(self) -> dict | None:
+        """Freeze non-secret current activation evidence without changing route authority."""
+        state = await self._lock_state()
+        if state is None or state.active_identity is None:
+            return None
+        try:
+            active = (await self.read())["active"]
+        except AppError:
+            return None
+        if active is None:
+            return None
+        event = await self.session.scalar(
+            select(CanonicalEventModel)
+            .where(
+                CanonicalEventModel.aggregate_id == state.active_identity,
+                CanonicalEventModel.event_type == "generation_route_activated",
+            )
+            .order_by(CanonicalEventModel.occurred_at.desc(), CanonicalEventModel.id.desc())
+            .limit(1)
+        )
+        if event is None:
+            return None
+        evidence = active["providers"][0]["validation_evidence"]
+        return {
+            "route_identity": state.active_identity,
+            "activation_event_id": str(event.id),
+            "acceptance_record_identity": evidence["record_identity"],
+            "acceptance_evidence_sha256": evidence["evidence_sha256"],
+        }
+
+    async def verification_admission(self, route_identity: str, acceptance_identity: str, actor: User) -> dict:
+        """Validate isolated invocation admission without constructing Providers or activating a route."""
+        administrator = await self.session.scalar(
+            select(User).where(User.id == actor.id).with_for_update().execution_options(populate_existing=True)
+        )
+        if administrator is None or not administrator.is_active or administrator.role != "admin":
+            raise route_error("AUTH_FORBIDDEN", 403)
+        await self.session.scalar(
+            select(CanonicalRecordModel).where(CanonicalRecordModel.stable_id == acceptance_identity).with_for_update()
+        )
+        route = await self._record(route_identity)
+        evidence = await self._verify_acceptance(acceptance_identity, route)
+        return {
+            "route_identity": route_identity,
+            "acceptance_record_identity": evidence["record_identity"],
+            "acceptance_evidence_sha256": evidence["evidence_sha256"],
+        }
+
     async def activate(self, *, actor: str, payload: object) -> dict:
         try:
             request = ActivationInput.model_validate(payload)
@@ -205,6 +253,15 @@ class GenerationRouteService:
         state.version += 1
         await self.session.commit()
         return self._project(route, active=True, evidence=evidence)
+
+    async def capture_verification(self, admission: dict, actor: User) -> ProviderRouter:
+        current = await self.verification_admission(
+            admission["route_identity"], admission["acceptance_record_identity"], actor,
+        )
+        if current != admission:
+            raise route_error("GENERATION_ROUTE_STALE")
+        route = await self._record(current["route_identity"])
+        return ProviderRouter(providers=await self.providers(route), approved_route=route_contract(route))
 
     async def _lock_state(self) -> GenerationRouteState | None:
         if self.session.bind is not None and self.session.bind.dialect.name == "sqlite":

@@ -23,3 +23,10 @@ test('browser base gate isolates resource-heavy acceptance files', () => {
   const packageJson = JSON.parse(read('./package.json'));
   assert.match(packageJson.scripts['test:browser:base'], /node --test --test-concurrency=1 /);
 });
+
+test('browser base gate includes every maintenance journey', () => {
+  const script = JSON.parse(read('./package.json')).scripts['test:browser:base'].split(/\s+/);
+  for (const file of fs.readdirSync('./tests').filter((name) => /^maintenance-.*\.test\.mjs$/.test(name))) {
+    assert.ok(script.includes(`tests/${file}`), `${file} must run in the default browser gate`);
+  }
+});

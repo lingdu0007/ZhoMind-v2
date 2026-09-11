@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import uvicorn
@@ -12,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.canonical_json import canonical_json_sha256
 from app.common.config import get_settings
+from app.common.security import hash_password
 from app.contracts.canonical import CanonicalEventType
 from app.delivery_acceptance.schemas import CreateDeliveryAcceptanceRecordRequest, UpdateDeliveryAcceptanceStatusRequest
 from app.delivery_acceptance.service import DeliveryAcceptanceService
@@ -27,8 +29,10 @@ from app.model.chat import ChatMessage, ChatSession
 from app.model.document import Document, DocumentChunk, DocumentJob
 from app.model.system_settings import SystemSettingsState
 from app.model.user import User
+from app.rag import answer_execution as answer_execution_module
 from app.rag.claim_evidence import ClaimEvidenceContract, ClaimResolution, ResolvedClaim, parse_claim_evidence_contract
 from app.repository.user_repository import UserRepository
+from app.retrieval.candidate_pool import AuthorizedRetrievalCandidatePool
 from app.reviewed_bundles.build_service import CandidateBuildService
 from app.reviewed_bundles.publication import CandidatePublicationService
 from app.reviewed_bundles.service import ReviewedReleaseBundleService
@@ -126,6 +130,8 @@ class _DeterministicLlm:
     def __init__(self) -> None:
         self._delay_ms = int(os.getenv("BROWSER_ACCEPTANCE_LLM_DELAY_MS", "0") or "0")
         self._fail_first = os.getenv("BROWSER_ACCEPTANCE_FAIL_FIRST") == "1"
+        self._fail_on_call = int(os.getenv("BROWSER_ACCEPTANCE_PROVIDER_FAIL_ON_CALL", "0") or "0")
+        self._citation_failure_on_call = int(os.getenv("BROWSER_ACCEPTANCE_CITATION_FAILURE_ON_CALL", "0") or "0")
         self._calls = 0
 
     async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
@@ -135,12 +141,16 @@ class _DeterministicLlm:
         self._calls += 1
         if self._fail_first and self._calls == 1:
             raise RuntimeError("browser acceptance first-call failure")
+        if self._calls == self._fail_on_call:
+            raise TimeoutError("browser acceptance selected provider timeout")
         if self._delay_ms > 0:
             await asyncio.sleep(self._delay_ms / 1000)
         envelope = json.loads(prompt)
         contract = envelope.get("response_contract")
         if isinstance(contract, dict):
             marker = f"[{contract['citation_markers'][0]}]"
+            if self._calls == self._citation_failure_on_call:
+                marker = "[S99]"
             label = contract.get("required_label")
             heading = f"【{label}】\n\n" if label else ""
             return heading + "\n\n".join(
@@ -538,10 +548,14 @@ async def _build_ticket24_candidate(
 
 async def _seed_ticket24_publication_fixture(session: AsyncSession) -> None:
     author = User(username="ticket24-browser-author", password_hash="browser-acceptance", role="user", is_active=True)
-    reviewer = User(username="ticket24-browser-reviewer", password_hash="browser-acceptance", role="user", is_active=True)
+    reviewer = User(
+        username="ticket24-browser-reviewer",
+        password_hash=hash_password("safe-password") if os.getenv("BROWSER_ACCEPTANCE_TICKET27_CONTENT") == "1" else "browser-acceptance",
+        role="user", is_active=True,
+    )
     maintainer = User(
         username="ticket24-browser-maintainer",
-        password_hash="browser-acceptance",
+        password_hash=hash_password("safe-password") if os.getenv("BROWSER_ACCEPTANCE_TICKET27_SOURCE") == "1" else "browser-acceptance",
         role="user",
         is_active=True,
     )
@@ -596,6 +610,8 @@ async def _seed_ticket24_publication_fixture(session: AsyncSession) -> None:
         },
         actor_identity=actor_identity,
     )
+    if os.getenv("BROWSER_ACCEPTANCE_TICKET27_GRACE") == "1":
+        return
     replacement_entry = primary.model_copy(deep=True)
     replacement_entry.body["recommendation_or_reviewed_branches"] = (
         "Only an inspected Candidate with Candidate-bound acceptance and explicit administrator "
@@ -1058,6 +1074,52 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _install_retrieval_miss() -> None:
+    selected_call = int(os.getenv("BROWSER_ACCEPTANCE_RETRIEVAL_MISS_ON_CALL", "0") or "0")
+    if not selected_call:
+        return
+    original = AuthorizedRetrievalCandidatePool.retrieve
+    calls = 0
+
+    async def retrieve(pool, query, top_k):
+        nonlocal calls
+        result = await original(pool, query, top_k)
+        calls += 1
+        if calls == selected_call:
+            if not result.items:
+                raise RuntimeError("retrieval-miss fixture requires eligible published evidence")
+            return replace(result, items=[], merged_count=0)
+        return result
+
+    AuthorizedRetrievalCandidatePool.retrieve = retrieve
+
+
+def _install_generation_input_failure() -> None:
+    selected_call = int(os.getenv("BROWSER_ACCEPTANCE_CONDITION_LOSS_ON_CALL", "0") or "0")
+    product_call = int(os.getenv("BROWSER_ACCEPTANCE_PRODUCT_FAILURE_ON_CALL", "0") or "0")
+    if not selected_call and not product_call:
+        return
+    original = answer_execution_module.build_generation_prompt
+    calls = 0
+
+    def build_prompt(question, evidence):
+        nonlocal calls
+        prompt = original(question, evidence)
+        calls += 1
+        if calls in {selected_call, product_call}:
+            envelope = json.loads(prompt.user_prompt)
+            if not envelope["query_condition_set"]["conditions"]:
+                raise RuntimeError("condition-loss fixture requires admitted query conditions")
+            if calls == product_call:
+                envelope["user_question"] = "A different synthetic question."
+            else:
+                envelope["query_condition_set"]["conditions"] = []
+            return replace(prompt, user_prompt=json.dumps(envelope))
+        return prompt
+
+    answer_execution_module.build_generation_prompt = build_prompt
+
+
 def main() -> None:
     args = parse_args()
     allowed_source_url = os.getenv("BROWSER_ACCEPTANCE_PUBLIC_SOURCE_URL", "").strip()
@@ -1072,6 +1134,8 @@ def main() -> None:
     asyncio.run(_seed_test_data())
     GenerationRouteService.providers = _deterministic_route_providers
     asyncio.run(_seed_generation_route())
+    _install_retrieval_miss()
+    _install_generation_input_failure()
     redis = _InMemoryRedis()
     app.dependency_overrides[get_redis_client] = lambda: redis
     registry = get_extension_registry()

@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from datetime import date
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.contracts.canonical import (
     CoveragePosition,
@@ -115,6 +115,29 @@ class RecordSourceAvailabilityRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     availability: str = Field(min_length=1, max_length=80)
+
+
+class RequestFreshnessReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision_identity: str = Field(pattern=r"^editorial_revision:[a-z0-9][a-z0-9._:-]{2,159}$")
+    publication_identity: str = Field(pattern=r"^published_knowledge_version:[a-f0-9]{64}$")
+    trigger_id: str = Field(min_length=1, max_length=160)
+
+
+class RecordIntegrityReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision_identity: str = Field(pattern=r"^editorial_revision:[a-z0-9][a-z0-9._:-]{2,159}$")
+    publication_identity: str = Field(pattern=r"^published_knowledge_version:[a-f0-9]{64}$")
+    source_identity: str = Field(pattern=r"^source:[a-z0-9][a-z0-9._:-]{2,159}$")
+    defect: Literal["known_contradiction", "integrity_defect"]
+    confirmed_independent_review: Literal[True]
+
+    @field_validator("confirmed_independent_review", mode="before")
+    @classmethod
+    def require_confirmation(cls, value: object) -> Literal[True]:
+        if value is not True:
+            raise ValueError("explicit independent review required")
+        return True
 
 
 def review_validation_reasons(

@@ -4,6 +4,7 @@ import AuthEntryPage from '../pages/AuthEntryPage.vue';
 import ChatPage from '../pages/ChatPage.vue';
 import KnowledgeMapPage from '../pages/KnowledgeMapPage.vue';
 import KnowledgeReviewPage from '../pages/KnowledgeReviewPage.vue';
+import MaintenancePage from '../pages/MaintenancePage.vue';
 import UploadPage from '../pages/UploadPage.vue';
 import IndexingJobsPage from '../pages/IndexingJobsPage.vue';
 import ReviewedBundlesPage from '../pages/ReviewedBundlesPage.vue';
@@ -17,6 +18,7 @@ const routes = [
   { path: '/chat', name: 'chat', component: ChatPage, meta: { requiresAuth: true } },
   { path: '/knowledge', name: 'knowledge-map', component: KnowledgeMapPage, meta: { requiresAuth: true } },
   { path: '/reviews', name: 'knowledge-review', component: KnowledgeReviewPage, meta: { requiresAuth: true, requiresAdmin: true } },
+  { path: '/maintenance', name: 'knowledge-maintenance', component: MaintenancePage, meta: { requiresAuth: true } },
   { path: '/documents', name: 'documents', component: UploadPage, meta: { requiresAuth: true, requiresAdmin: true } },
   { path: '/jobs', name: 'indexing-jobs', component: IndexingJobsPage, meta: { requiresAuth: true, requiresAdmin: true } },
   {

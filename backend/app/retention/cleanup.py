@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.knowledge_feedback.service import KnowledgeFeedbackService
 from app.model.chat import ChatSession
-from app.model.knowledge_feedback import KnowledgeFeedbackSignal
+from app.model.knowledge_feedback import KnowledgeFeedbackSignal, MaintenanceSignalLink
 from app.model.operational_event import OperationalEvent
 from app.operations.events import OperationalEventService
 from app.repository.chat_repository import ChatRepository, orphaned_private_record_predicates
@@ -37,6 +37,9 @@ async def expired_count(session: AsyncSession, data_class: DataClass, *, now: da
         total += int(await session.scalar(select(func.count()).select_from(model).where(predicate)) or 0)
     if data_class == "feedback_signals":
         total += len(await KnowledgeFeedbackService(session).unresolved_feedback_references())
+        total += int(await session.scalar(select(func.count()).select_from(MaintenanceSignalLink).where(
+            ~MaintenanceSignalLink.signal_id.in_(select(KnowledgeFeedbackSignal.id)),
+        )) or 0)
     return total
 
 

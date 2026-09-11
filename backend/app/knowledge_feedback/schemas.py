@@ -1,7 +1,7 @@
 import re
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 _SECRET_ASSIGNMENT = re.compile(
     r"(?i)\b(?:api[_ -]?key|access[_ -]?token|password|secret|token)\s*[:=]\s*\S+"
@@ -24,12 +24,6 @@ class KnowledgeFeedbackCreate(BaseModel):
     @classmethod
     def strip_entry_identity(cls, value: str | None) -> str | None:
         return value.strip() if value is not None else None
-
-    @model_validator(mode="after")
-    def validate_feedback_scope(self) -> "KnowledgeFeedbackCreate":
-        if self.entry_id is None and self.label != "insufficient_evidence":
-            raise ValueError("entry-free feedback must report insufficient evidence")
-        return self
 
     @field_validator("note")
     @classmethod

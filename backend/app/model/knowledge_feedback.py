@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, DateTime, String, Text, UniqueConstraint
+from sqlalchemy import JSON, DateTime, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.model.base import Base
@@ -52,4 +52,16 @@ class ReviewWorkItem(Base):
         nullable=False,
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
+    )
+
+
+class MaintenanceSignalLink(Base):
+    __tablename__ = "maintenance_signal_links"
+
+    item_id: Mapped[str] = mapped_column(
+        String(192), ForeignKey("canonical_records.stable_id"), primary_key=True,
+    )
+    signal_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("knowledge_feedback_signals.id", ondelete="CASCADE"), primary_key=True,
+        index=True,
     )

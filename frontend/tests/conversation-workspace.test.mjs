@@ -739,12 +739,17 @@ test('a Knowledge User previews, reloads, and deletes only their retained eviden
   await feedback.getByRole('button', { name: '预览反馈' }).waitFor();
 
   await feedback.getByRole('radio', { name: '有帮助' }).click();
+  assert.equal(feedbackItems.length, 0);
+  await feedback.getByRole('button', { name: '预览反馈' }).click();
+  await feedback.getByLabel('反馈预览').getByRole('button', { name: '确认提交' }).click();
   await feedback.getByText('反馈已提交', { exact: true }).waitFor();
   assert.equal(await feedback.getByText('有帮助', { exact: true }).isVisible(), true);
   await feedback.getByRole('button', { name: '删除反馈' }).click();
   await feedback.getByRole('button', { name: '预览反馈' }).waitFor();
   await feedback.getByLabel('补充说明（可选）').fill('这条有帮助反馈需要保留说明。');
   await feedback.getByRole('radio', { name: '有帮助' }).click();
+  assert.equal(feedbackItems.length, 0);
+  await feedback.getByRole('button', { name: '预览反馈' }).click();
   const helpfulPreview = feedback.getByLabel('反馈预览');
   await helpfulPreview.waitFor();
   assert.equal(

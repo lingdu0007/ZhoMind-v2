@@ -6,7 +6,9 @@ from app.common.request_id import get_request_id
 from app.common.responses import ok_response
 from app.editorial_authority.schemas import (
     CreateEditorialEntryRequest,
+    RecordIntegrityReview,
     RecordSourceAvailabilityRequest,
+    RequestFreshnessReview,
     ReviseEditorialEntryRequest,
 )
 from app.editorial_authority.service import EditorialAuthorityService
@@ -120,4 +122,26 @@ async def export_editorial_revision(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     result = await EditorialAuthorityService(session).export_approved_revision(entry_id, current_user)
+    return ok_response(data=result, request_id=get_request_id())
+
+
+@router.post("/entries/{entry_id}/freshness-review")
+async def request_freshness_review(
+    entry_id: str,
+    payload: RequestFreshnessReview,
+    current_user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    result = await EditorialAuthorityService(session).request_freshness_review(entry_id, payload, current_user)
+    return ok_response(data=result, request_id=get_request_id())
+
+
+@router.post("/entries/{entry_id}/integrity-review")
+async def record_integrity_review(
+    entry_id: str,
+    payload: RecordIntegrityReview,
+    current_user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    result = await EditorialAuthorityService(session).record_integrity_review(entry_id, payload, current_user)
     return ok_response(data=result, request_id=get_request_id())

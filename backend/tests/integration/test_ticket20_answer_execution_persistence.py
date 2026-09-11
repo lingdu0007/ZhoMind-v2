@@ -1632,12 +1632,18 @@ def test_insufficient_gap_feedback_uses_only_the_closed_execution_envelope(
             "query_condition_set_identity": execution["query_condition_set"]["identity"],
         }
 
-        invalid_scope = client.post(
+        helpful = client.post(
             "/api/v1/knowledge-feedback",
             headers=headers,
             json={"answer_id": answer_id, "label": "helpful"},
         )
-        assert invalid_scope.status_code == 422
+        assert helpful.status_code == 200
+        assert helpful.json()["data"]["gap_context"] == gap_context
+        assert helpful.json()["data"]["label"] == "helpful"
+        deleted = client.delete(
+            f"/api/v1/knowledge-feedback/{helpful.json()['data']['id']}", headers=headers,
+        )
+        assert deleted.status_code == 200
 
         submitted = client.post(
             "/api/v1/knowledge-feedback",

@@ -92,6 +92,10 @@ class AnswerExecutionContractError(RuntimeError):
     """The deterministic execution contract could not form a closed result."""
 
 
+class QueryConditionLossError(AnswerExecutionContractError):
+    """A valid provider input changed only the frozen query condition set."""
+
+
 def _freeze(value: Any) -> Any:
     if isinstance(value, Mapping):
         return MappingProxyType({str(key): _freeze(item) for key, item in value.items()})
@@ -533,6 +537,13 @@ class EvidenceGatedAnswerExecutor:
             )
             observed_provider_input = provider_visible_generation_input(generation_prompt.user_prompt)
             if observed_provider_input is None or observed_provider_input != expected_provider_input:
+                if (
+                    observed_provider_input is not None
+                    and observed_provider_input["query_condition_set"] != expected_provider_input["query_condition_set"]
+                    and {key: value for key, value in observed_provider_input.items() if key != "query_condition_set"}
+                    == {key: value for key, value in expected_provider_input.items() if key != "query_condition_set"}
+                ):
+                    raise QueryConditionLossError("provider-visible query conditions contradict the frozen execution")
                 raise AnswerExecutionContractError(
                     "provider-visible prompt input contradicts the frozen answer execution"
                 )

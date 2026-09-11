@@ -17,6 +17,7 @@ from app.contracts.canonical import (
     StableIdentityKind,
     validate_transition,
 )
+from app.maintenance.containment import answer_is_blocked
 from app.model.answer_execution import AnswerExecutionEventModel, AnswerExecutionModel
 from app.model.chat import ChatMessage
 from app.model.document import Document
@@ -262,6 +263,8 @@ class AnswerExecutionStore:
         tombstoned_document_ids = await self._tombstoned_evidence_document_ids(result=result)
         if tombstoned_document_ids or await self._publication_redactions(result):
             return await self.fail(handle=handle, failure_code="ANSWER_EVIDENCE_WITHDRAWN")
+        if await answer_is_blocked(self.session, result.get("knowledge_version_identities", [])):
+            return await self.fail(handle=handle, failure_code="MAINTENANCE_CONTAINMENT_ACTIVE")
         assistant_message = await self.repository.add_message(
             session_id=handle.session_id,
             user_id=handle.user_id,

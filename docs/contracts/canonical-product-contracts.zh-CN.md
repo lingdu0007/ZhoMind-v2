@@ -735,6 +735,9 @@ history。每个动作都会先提交无内容的 `pending` audit event；随后
 
 ## 兼容性
 
+Ticket 27 的[知识反馈与维护契约](knowledge-maintenance.zh-CN.md)和 ADR 0008 规范
+明确反馈、可删除信号链接、规范化维护决策、独立 Finding、停用与路线图节奏。
+
 Ticket 26 的 [Pilot 安全与保留策略契约](pilot-safety-retention.zh-CN.md)
 规范已审核的全员内容准入、私有记录独立过期、策略身份、清理证据及受保护
 重新验收。ADR 0007 新增这些边界，不改写已有规范记录。

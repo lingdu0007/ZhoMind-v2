@@ -276,7 +276,7 @@ _TRANSITIONS: dict[type[Enum], dict[str, frozenset[str]]] = {
             {MaintenanceState.IN_PROGRESS.value, MaintenanceState.DEFERRED.value, MaintenanceState.CLOSED_CONFIRMATION.value}
         ),
         MaintenanceState.IN_PROGRESS.value: frozenset(
-            {MaintenanceState.RESOLVED.value, MaintenanceState.DEFERRED.value}
+            {MaintenanceState.RESOLVED.value, MaintenanceState.DEFERRED.value, MaintenanceState.CLOSED_CONFIRMATION.value}
         ),
         MaintenanceState.DEFERRED.value: frozenset({MaintenanceState.OPEN.value, MaintenanceState.CLOSED_CONFIRMATION.value}),
         MaintenanceState.RESOLVED.value: frozenset({MaintenanceState.CLOSED_CONFIRMATION.value}),

@@ -8,14 +8,15 @@ from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.canonical_json import canonical_json_sha256
 from app.common.exceptions import AppError
 from app.knowledge_feedback.schemas import KnowledgeFeedbackCreate, ReviewWorkItemUpdate
 from app.model.chat import ChatMessage
 from app.model.document import Document, DocumentChunk
-from app.model.knowledge_feedback import KnowledgeFeedbackSignal, ReviewWorkItem
+from app.model.knowledge_feedback import KnowledgeFeedbackSignal, MaintenanceSignalLink, ReviewWorkItem
 from app.rag.answer_evidence import evidence_summary_from_execution
 from app.repository.chat_repository import ChatRepository
-from app.retention.policy import read_policy
+from app.retention.policy import lock_registry, read_policy
 from app.service.answer_execution_store import AnswerExecutionStore
 
 FEEDBACK_RETENTION_DAYS = 180
@@ -136,6 +137,7 @@ class KnowledgeFeedbackService:
         if existing is not None:
             return existing
         metadata = {
+            **self._execution_binding(projection),
             "outcome": projection["outcome"],
             "evidence_coverage": summary.get("coverage", "unavailable"),
             "source_count": len(entry_sources),
@@ -247,6 +249,7 @@ class KnowledgeFeedbackService:
         if existing is not None:
             return existing
         metadata = {
+            **self._execution_binding(projection),
             "answer_id": answer.id,
             "outcome": gap_context["outcome"],
             "gap_context": gap_context,
@@ -265,6 +268,18 @@ class KnowledgeFeedbackService:
             subject_id=scope_key,
             conflict_message="feedback already exists for this answer and gap context",
         )
+
+    @staticmethod
+    def _execution_binding(projection: dict[str, Any]) -> dict[str, Any]:
+        conditions = projection.get("query_condition_set")
+        if not isinstance(projection.get("id"), str) or not isinstance(conditions, dict):
+            return {}
+        return {
+            "answer_execution_id": projection["id"],
+            "query_condition_set_identity": conditions.get("identity"),
+            "query_conditions_sha256": canonical_json_sha256(conditions["conditions"]),
+            "knowledge_version_identities": projection.get("knowledge_version_identities", []),
+        }
 
     async def _existing_submission(
         self,
@@ -326,17 +341,18 @@ class KnowledgeFeedbackService:
         try:
             self._session.add(signal)
             await self._session.flush()
-            self._session.add(
-                ReviewWorkItem(
-                    kind="feedback_signal",
-                    dedupe_key=f"feedback:{signal.id}",
-                    subject_id=subject_id,
-                    signal_id=signal.id,
-                    normalized_metadata={},
-                    created_at=now,
-                    updated_at=now,
+            if label != "helpful":
+                self._session.add(
+                    ReviewWorkItem(
+                        kind="feedback_signal",
+                        dedupe_key=f"feedback:{signal.id}",
+                        subject_id=subject_id,
+                        signal_id=signal.id,
+                        normalized_metadata={},
+                        created_at=now,
+                        updated_at=now,
+                    )
                 )
-            )
             await self._session.commit()
         except IntegrityError as error:
             await self._session.rollback()
@@ -356,6 +372,7 @@ class KnowledgeFeedbackService:
         return self._project_signal(signal, duplicate=False)
 
     async def delete(self, *, user_id: str, signal_id: str) -> dict[str, Any]:
+        await lock_registry(self._session)
         result = await self._session.execute(
             select(KnowledgeFeedbackSignal).where(
                 KnowledgeFeedbackSignal.id == signal_id,
@@ -370,7 +387,10 @@ class KnowledgeFeedbackService:
         await self._session.flush()
         surviving_signal = await self._session.scalar(select(KnowledgeFeedbackSignal.id).where(KnowledgeFeedbackSignal.id == signal_id))
         surviving_reference = await self._session.scalar(select(ReviewWorkItem.id).where(ReviewWorkItem.signal_id == signal_id))
-        if surviving_signal is not None or surviving_reference is not None:
+        surviving_maintenance_link = await self._session.scalar(select(MaintenanceSignalLink.item_id).where(
+            MaintenanceSignalLink.signal_id == signal_id,
+        ))
+        if surviving_signal is not None or surviving_reference is not None or surviving_maintenance_link is not None:
             await self._session.rollback()
             raise AppError(
                 status_code=503, code="PRIVACY_DELETE_UNVERIFIED",
@@ -424,6 +444,7 @@ class KnowledgeFeedbackService:
         await self.purge_expired()
 
     async def purge_expired(self, *, now: datetime | None = None, retention_days: int | None = None) -> None:
+        await lock_registry(self._session)
         now = now or datetime.now(UTC)
         days = retention_days if retention_days is not None else (await read_policy(self._session))["days"]["feedback_signals"]
         expired = or_(
@@ -434,6 +455,9 @@ class KnowledgeFeedbackService:
         await self.detach_signals(expired_ids, now=now)
         await self._session.execute(delete(KnowledgeFeedbackSignal).where(KnowledgeFeedbackSignal.id.in_(expired_ids)))
         await self._detach_items(await self.unresolved_feedback_references(), now=now)
+        await self._session.execute(delete(MaintenanceSignalLink).where(
+            ~MaintenanceSignalLink.signal_id.in_(select(KnowledgeFeedbackSignal.id)),
+        ))
 
     async def unresolved_feedback_references(self) -> list[ReviewWorkItem]:
         items = (await self._session.scalars(select(ReviewWorkItem).where(
@@ -451,6 +475,9 @@ class KnowledgeFeedbackService:
         ]
 
     async def detach_signals(self, signal_ids: list[str], *, now: datetime) -> None:
+        await self._session.execute(delete(MaintenanceSignalLink).where(
+            MaintenanceSignalLink.signal_id.in_(signal_ids),
+        ))
         items = (await self._session.scalars(select(ReviewWorkItem).where(
             ReviewWorkItem.signal_id.in_(signal_ids),
         ).with_for_update())).all()
@@ -584,6 +611,9 @@ class KnowledgeFeedbackService:
         outcome = signal.normalized_metadata.get("outcome")
         if outcome in {"evidence_gated_answer", "insufficient_evidence_reply"}:
             projection["outcome"] = outcome
+        for key in ("answer_execution_id", "query_condition_set_identity", "knowledge_version_identities"):
+            if key in signal.normalized_metadata:
+                projection[key] = signal.normalized_metadata[key]
         gap_context = signal.normalized_metadata.get("gap_context")
         if isinstance(gap_context, dict):
             projection["gap_context"] = gap_context

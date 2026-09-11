@@ -15,6 +15,10 @@
           <BookOpen :size="20" aria-hidden="true" />
           <span>知识地图</span>
         </RouterLink>
+        <RouterLink class="workbench-shell__nav-item" to="/maintenance" title="知识维护" aria-label="知识维护">
+          <Wrench :size="20" aria-hidden="true" />
+          <span>知识维护</span>
+        </RouterLink>
         <RouterLink
           v-if="authStore.isAdmin"
           class="workbench-shell__nav-item"
@@ -86,7 +90,7 @@
 <script setup>
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { BookOpen, ClipboardList, LibraryBig, ListChecks, LogOut, MessageCircle, PackageCheck, Settings2 } from 'lucide-vue-next';
+import { BookOpen, ClipboardList, LibraryBig, ListChecks, LogOut, MessageCircle, PackageCheck, Settings2, Wrench } from 'lucide-vue-next';
 import { clearProtectedSession } from './protected-session';
 import { useAuthStore } from '../store/auth';
 
@@ -243,12 +247,13 @@ const signOut = async () => {
 
 @media (max-width: 640px) {
   .workbench-shell {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
   }
 
   .workbench-shell__rail {
     position: static;
+    min-width: 0;
     height: auto;
     flex-direction: row;
     justify-content: space-between;
@@ -262,6 +267,14 @@ const signOut = async () => {
     margin-left: auto;
     flex-direction: row;
     gap: 4px;
+    min-width: 0;
+    overflow-x: auto;
+    flex: 1;
+    width: 0;
+  }
+
+  .workbench-shell__nav-item {
+    flex-shrink: 0;
   }
 
   .workbench-shell__nav-item--reviewed-bundles {

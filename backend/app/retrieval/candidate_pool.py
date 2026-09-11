@@ -13,6 +13,7 @@ from app.common.config import Settings
 from app.common.exceptions import AppError
 from app.contracts.canonical import CanonicalRecordClass, StableIdentity, StableIdentityKind
 from app.editorial_authority.service import EditorialAuthorityService
+from app.maintenance.containment import active_answer_blocks, publication_is_blocked
 from app.model.canonical import CanonicalRecordModel
 from app.model.document import Document, DocumentChunk
 from app.rag.interfaces import RetrieveResult
@@ -82,6 +83,7 @@ class AuthorizedRetrievalCandidatePool:
     async def retrieve(self, query: str, top_k: int) -> RetrieveResult:
         del top_k
         policy = self._pilot_policy()
+        maintenance_blocks = await active_answer_blocks(self._session)
         statement = (
             select(DocumentChunk, Document)
             .join(Document, DocumentChunk.document_id == Document.id)
@@ -118,6 +120,11 @@ class AuthorizedRetrievalCandidatePool:
                 exclusions.append({"chunk_id": chunk.id, "reason": "published_version_identity_invalid"})
                 continue
             publication_identity, published_version = published_version_state
+            if publication_is_blocked(
+                maintenance_blocks, entry_identity=entry_identity, publication_identity=publication_identity,
+            ):
+                exclusions.append({"chunk_id": chunk.id, "reason": "maintenance_containment"})
+                continue
             authority, authority_error = await self._current_authority(entry_id, authority_cache)
             reason = self._authority_exclusion_reason(authority, authority_error)
             needs_published_version_authority = (

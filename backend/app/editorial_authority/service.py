@@ -36,6 +36,8 @@ from app.delivery_acceptance.schemas import (
 from app.documents.content_admission import source_admission_allowed
 from app.editorial_authority.schemas import (
     CreateEditorialEntryRequest,
+    RecordIntegrityReview,
+    RequestFreshnessReview,
     ReviseEditorialEntryRequest,
     editorial_export_safety_findings,
     editorial_secret_scan_findings,
@@ -605,6 +607,224 @@ class EditorialAuthorityService:
         await self.session.commit()
         return await self.get_projection(entry_id)
 
+    async def _freshness_review_event(
+        self, events: list[CanonicalEventModel], revision_identity: str,
+    ) -> CanonicalEventModel | None:
+        candidates = [
+            event for event in events
+            if event.payload.get("revision_identity") == revision_identity
+            and (
+                event.payload.get("action") == "freshness_review_requested"
+                or (event.to_state == EntryLifecycleState.NEEDS_REVIEW.value
+                    and event.payload.get("action") not in {"source_decisive_loss_observed", "integrity_review_confirmed"})
+            )
+        ]
+        if not candidates:
+            return None
+        try:
+            if len(candidates) != 1:
+                raise ValueError("ambiguous review")
+            event = candidates[0]
+            body = event.payload
+            if set(body) != {
+                "schema", "sequence", "action", "revision_identity", "roles", "needs_review_at",
+                "trigger_id", "publication_identity", "maintainer_acceptance_event_id",
+            }:
+                raise ValueError("review fields")
+            binding = RequestFreshnessReview.model_validate({
+                key: body[key] for key in ("publication_identity", "revision_identity", "trigger_id")
+            })
+            revision = await self.session.get(CanonicalRecordModel, revision_identity)
+            if revision is None:
+                raise ValueError("revision missing")
+            draft = CreateEditorialEntryRequest.model_validate(self._payload(revision).get("draft"))
+            roles = self._roles_for_revision(events, revision_identity)
+            acceptance = self._require_maintainer_acceptance(events, revision_identity)
+            publication = await self.session.get(CanonicalRecordModel, binding.publication_identity)
+            started = datetime.fromisoformat(body["needs_review_at"])
+            recorded = event.occurred_at.replace(tzinfo=UTC) if event.occurred_at.tzinfo is None else event.occurred_at
+            if (
+                body["schema"] != "editorial_authority_event/v1"
+                or body["action"] != "freshness_review_requested"
+                or type(body["sequence"]) is not int
+                or body["sequence"] < 1
+                or event.aggregate_id != f"entry:{draft.entry_id}"
+                or event.aggregate_kind != StableIdentityKind.ENTRY.value
+                or event.event_type != CanonicalEventType.STATE_CHANGED.value
+                or event.from_state != EntryLifecycleState.PUBLISHED.value
+                or event.to_state != EntryLifecycleState.NEEDS_REVIEW.value
+                or body["roles"] != roles
+                or event.recorded_by != roles.get("accountable_maintainer_identity")
+                or body["maintainer_acceptance_event_id"] != acceptance["event_id"]
+                or started.tzinfo is None or started != recorded
+                or body["trigger_id"] not in {trigger["trigger_id"] for trigger in draft.freshness_triggers or []}
+                or publication is None or publication.identity_kind != "published_knowledge_version"
+                or publication.payload.get("schema") != "published_knowledge_version/v1"
+                or publication.payload.get("entry_identity") != event.aggregate_id
+                or publication.payload.get("editorial_revision_identity") != revision_identity
+            ):
+                raise ValueError("review authority")
+            return event
+        except (AppError, ValidationError, KeyError, ValueError, TypeError) as exc:
+            raise AppError(
+                status_code=409, code="EDITORIAL_FRESHNESS_REVIEW_INVALID", message="retained review invalid"
+            ) from exc
+
+    async def _integrity_review_event(
+        self, events: list[CanonicalEventModel], revision_identity: str,
+    ) -> CanonicalEventModel | None:
+        candidates = [
+            event for event in events
+            if event.payload.get("revision_identity") == revision_identity
+            and event.payload.get("action") == "integrity_review_confirmed"
+        ]
+        if not candidates:
+            return None
+        try:
+            if len(candidates) != 1:
+                raise ValueError("ambiguous integrity review")
+            event = candidates[0]
+            body = event.payload
+            if set(body) != {
+                "schema", "sequence", "action", "revision_identity", "roles",
+                "publication_identity", "source_identity", "defect",
+                "maintainer_acceptance_event_id", "integrity_defect",
+            }:
+                raise ValueError("integrity review fields")
+            request = RecordIntegrityReview.model_validate({
+                **{key: body[key] for key in ("revision_identity", "publication_identity", "source_identity", "defect")},
+                "confirmed_independent_review": True,
+            })
+            revision = await self._revision(revision_identity)
+            draft = CreateEditorialEntryRequest.model_validate(revision.payload["draft"])
+            roles = self._roles_for_revision(events, revision_identity)
+            acceptance = self._require_maintainer_acceptance(events, revision_identity)
+            publication = await self.session.get(CanonicalRecordModel, request.publication_identity)
+            if (
+                body["schema"] != "editorial_authority_event/v1"
+                or type(body["sequence"]) is not int or body["sequence"] < 1
+                or body["integrity_defect"] is not True
+                or event.aggregate_id != f"entry:{draft.entry_id}" or event.aggregate_kind != "entry"
+                or event.event_type != CanonicalEventType.STATUS_CHANGED.value
+                or event.from_state not in {EntryLifecycleState.PUBLISHED.value, EntryLifecycleState.NEEDS_REVIEW.value}
+                or event.to_state != event.from_state
+                or body["roles"] != roles or event.recorded_by != roles.get("accountable_maintainer_identity")
+                or body["maintainer_acceptance_event_id"] != acceptance["event_id"]
+                or request.source_identity not in {f"source:{source['source_id']}" for source in draft.sources or []}
+                or publication is None or publication.identity_kind != "published_knowledge_version"
+                or publication.payload.get("schema") != "published_knowledge_version/v1"
+                or publication.payload.get("entry_identity") != event.aggregate_id
+                or publication.payload.get("editorial_revision_identity") != revision_identity
+            ):
+                raise ValueError("integrity review authority")
+            return event
+        except (AppError, ValidationError, KeyError, TypeError, ValueError) as exc:
+            raise AppError(
+                status_code=409, code="EDITORIAL_INTEGRITY_REVIEW_INVALID", message="retained integrity review invalid",
+            ) from exc
+
+    async def get_integrity_review_for_revision(self, entry_id: str, revision_identity: str) -> str | None:
+        entry, events = await self._entry_and_events(entry_id)
+        revision = await self._revision(revision_identity)
+        if revision.payload.get("entry_identity") != entry.stable_id:
+            raise AppError(status_code=409, code="EDITORIAL_REVISION_INVALID", message="revision does not belong to entry")
+        event = await self._integrity_review_event(events, revision_identity)
+        return str(event.id) if event else None
+
+    async def record_integrity_review(self, entry_id: str, payload: RecordIntegrityReview, actor: User) -> dict[str, Any]:
+        from app.reviewed_bundles.models import PublishedKnowledgePointer
+
+        self._require_editorial_member(actor)
+        await self._acquire_editorial_write_fence()
+        entry, events = await self._entry_and_events(entry_id, for_update=True)
+        current = self._latest_event(events)
+        draft, revision_identity = await self._current_draft(self._payload(entry), current)
+        actor_identity = await IdentityAuditService(self.session).ensure_member_record(
+            actor, admission_path="private_editorial_repository",
+        )
+        roles = self._roles_for_revision(events, revision_identity)
+        if actor_identity != roles.get("accountable_maintainer_identity"):
+            raise AppError(status_code=403, code="EDITORIAL_MAINTAINER_REQUIRED", message="accountable maintainer required")
+        acceptance = self._require_maintainer_acceptance(events, revision_identity)
+        pointer = await self.session.get(PublishedKnowledgePointer, entry.stable_id, with_for_update=True, populate_existing=True)
+        publication = await self.session.get(CanonicalRecordModel, payload.publication_identity)
+        if (
+            revision_identity != payload.revision_identity
+            or pointer is None or pointer.current_version_id != payload.publication_identity
+            or publication is None or publication.payload.get("schema") != "published_knowledge_version/v1"
+            or publication.payload.get("editorial_revision_identity") != revision_identity
+            or publication.payload.get("entry_identity") != entry.stable_id
+            or payload.source_identity not in {f"source:{source['source_id']}" for source in draft.sources or []}
+            or current.to_state not in {EntryLifecycleState.PUBLISHED.value, EntryLifecycleState.NEEDS_REVIEW.value}
+        ):
+            raise AppError(status_code=409, code="EDITORIAL_INTEGRITY_REVIEW_INVALID", message="current published source required")
+        prior = await self._integrity_review_event(events, revision_identity)
+        if prior is not None:
+            if any(prior.payload[key] != getattr(payload, key) for key in ("source_identity", "publication_identity", "defect")):
+                raise AppError(status_code=409, code="EDITORIAL_INTEGRITY_REVIEW_INVALID", message="review already recorded")
+            return await self.get_projection(entry_id)
+        await self._append_entry_event(
+            entry, events, event_type=CanonicalEventType.STATUS_CHANGED,
+            from_state=current.to_state, to_state=current.to_state, action="integrity_review_confirmed",
+            revision_identity=revision_identity, actor_identity=actor_identity, roles=roles,
+            extra={
+                "publication_identity": payload.publication_identity, "source_identity": payload.source_identity,
+                "defect": payload.defect, "integrity_defect": True,
+                "maintainer_acceptance_event_id": acceptance["event_id"],
+            },
+        )
+        await self.session.commit()
+        return await self.get_projection(entry_id)
+
+    async def request_freshness_review(self, entry_id: str, payload: RequestFreshnessReview, actor: User) -> dict[str, Any]:
+        from app.reviewed_bundles.models import PublishedKnowledgePointer
+
+        self._require_editorial_member(actor)
+        await self._acquire_editorial_write_fence()
+        entry, events = await self._entry_and_events(entry_id, for_update=True)
+        current = self._latest_event(events)
+        draft, revision_identity = await self._current_draft(self._payload(entry), current)
+        actor_identity = await IdentityAuditService(self.session).ensure_member_record(
+            actor, admission_path="private_editorial_repository",
+        )
+        roles = self._roles_for_revision(events, revision_identity)
+        if actor_identity != roles.get("accountable_maintainer_identity"):
+            raise AppError(status_code=403, code="EDITORIAL_MAINTAINER_REQUIRED", message="accountable maintainer required")
+        acceptance = self._require_maintainer_acceptance(events, revision_identity)
+        pointer = await self.session.get(PublishedKnowledgePointer, entry.stable_id, with_for_update=True, populate_existing=True)
+        publication = await self.session.get(CanonicalRecordModel, payload.publication_identity)
+        if (
+            revision_identity != payload.revision_identity
+            or pointer is None or pointer.current_version_id != payload.publication_identity
+            or publication is None or publication.payload.get("editorial_revision_identity") != revision_identity
+            or publication.payload.get("schema") != "published_knowledge_version/v1"
+            or publication.payload.get("entry_identity") != entry.stable_id
+            or payload.trigger_id not in {trigger.get("trigger_id") for trigger in draft.freshness_triggers or []}
+        ):
+            raise AppError(status_code=409, code="EDITORIAL_FRESHNESS_REVIEW_INVALID", message="current published trigger required")
+        prior = await self._freshness_review_event(events, revision_identity)
+        if prior is not None:
+            if prior.payload.get("trigger_id") != payload.trigger_id:
+                raise AppError(status_code=409, code="EDITORIAL_FRESHNESS_REVIEW_INVALID", message="review already recorded")
+            return await self.get_projection(entry_id)
+        projection = await self.get_projection(entry_id)
+        if current.to_state != EntryLifecycleState.PUBLISHED.value or projection["answer_eligible"] is not True:
+            raise AppError(status_code=409, code="EDITORIAL_FRESHNESS_REVIEW_INVALID", message="eligible published revision required")
+        target = validate_transition(EntryLifecycleState, current.to_state, EntryLifecycleState.NEEDS_REVIEW).value
+        started_at = datetime.now(UTC)
+        await self._append_entry_event(
+            entry, events, event_type=CanonicalEventType.STATE_CHANGED,
+            from_state=current.to_state, to_state=target, action="freshness_review_requested",
+            revision_identity=revision_identity, actor_identity=actor_identity, roles=roles, occurred_at=started_at,
+            extra={
+                "needs_review_at": started_at.isoformat(), "trigger_id": payload.trigger_id,
+                "publication_identity": payload.publication_identity,
+                "maintainer_acceptance_event_id": acceptance["event_id"],
+            },
+        )
+        await self.session.commit()
+        return await self.get_projection(entry_id)
+
     async def record_source_availability(
         self,
         entry_id: str,
@@ -782,6 +1002,43 @@ class EditorialAuthorityService:
             )
         projection = await self.get_projection(entry_id)
         projection["entry"] = draft.model_dump(mode="json")
+        from app.reviewed_bundles.models import PublishedKnowledgePointer
+
+        pointer = await self.session.get(PublishedKnowledgePointer, entry.stable_id)
+        publication = await self.session.get(CanonicalRecordModel, pointer.current_version_id) if pointer else None
+        matching_publication = (
+            publication is not None
+            and publication.payload.get("schema") == "published_knowledge_version/v1"
+            and publication.payload.get("editorial_revision_identity") == revision_identity
+            and publication.payload.get("entry_identity") == entry.stable_id
+        )
+        review_event = await self._freshness_review_event(events, revision_identity)
+        started_at = review_event.payload["needs_review_at"] if review_event is not None else None
+        projection["freshness_review"] = {
+            "publication_identity": publication.stable_id if matching_publication and publication else None,
+            "revision_identity": revision_identity,
+            "trigger_ids": [trigger["trigger_id"] for trigger in draft.freshness_triggers or []],
+            "started_at": started_at,
+            "can_request": (
+                matching_publication and actor_identity == roles.get("accountable_maintainer_identity")
+                and self._maintainer_acceptance_for_revision(events, revision_identity) is not None
+                and (review_event is not None or projection["answer_eligible"] is True)
+            ),
+        }
+        integrity_event = await self._integrity_review_event(events, revision_identity)
+        projection["integrity_review"] = {
+            "publication_identity": publication.stable_id if matching_publication and publication else None,
+            "revision_identity": revision_identity,
+            "source_identities": [f"source:{source['source_id']}" for source in draft.sources or []],
+            "event_id": str(integrity_event.id) if integrity_event else None,
+            "source_identity": integrity_event.payload["source_identity"] if integrity_event else None,
+            "defect": integrity_event.payload["defect"] if integrity_event else None,
+            "can_record": (
+                matching_publication and actor_identity == roles.get("accountable_maintainer_identity")
+                and self._maintainer_acceptance_for_revision(events, revision_identity) is not None
+                and current.to_state in {EntryLifecycleState.PUBLISHED.value, EntryLifecycleState.NEEDS_REVIEW.value}
+            ),
+        }
         return projection
 
     async def reconstruct_export(self, entry_id: str, revision_identity: str) -> dict[str, Any]:
@@ -927,7 +1184,7 @@ class EditorialAuthorityService:
     ) -> AsyncIterator[dict[str, Any]]:
         """Hold current authority facts stable through Candidate persistence."""
 
-        await self._acquire_candidate_finalization_fence()
+        await self._acquire_editorial_write_fence()
         await self._lock_canonical_records(self._candidate_finalization_authority_record_ids(artifact))
         yield await self.verify_approved_export(artifact, artifact_sha256)
 
@@ -1036,7 +1293,7 @@ class EditorialAuthorityService:
             lifecycle_state=current.to_state,
             approval_status=(approval or {}).get("status", "pending"),
             source_availability=[source["availability"] for source in sources],
-            needs_review_at=self._needs_review_at(events, revision_identity, current),
+            needs_review_at=await self._needs_review_at(events, revision_identity, current),
             applicability_explicit=bool(draft.applicability_conditions),
             known_contradiction=self._revision_flag(events, revision_identity, "known_contradiction"),
             integrity_defect=self._revision_flag(events, revision_identity, "integrity_defect"),
@@ -1187,6 +1444,73 @@ class EditorialAuthorityService:
             "source_definitions": source_definitions,
         }
 
+    async def lock_retrieval_authority_for_revisions(self, revision_identities: set[str]) -> set[str]:
+        """Lock the same authority dependencies as publication before final eligibility checks."""
+        entries = set()
+        identities = set()
+        for identity in sorted(revision_identities):
+            revision = await self.session.get(CanonicalRecordModel, identity)
+            try:
+                if revision is None or revision.identity_kind != StableIdentityKind.EDITORIAL_REVISION.value:
+                    raise ValueError("revision missing")
+                payload = self._payload(revision)
+                draft = CreateEditorialEntryRequest.model_validate(payload.get("draft"))
+                entry_identity = f"entry:{draft.entry_id}"
+                if payload.get("entry_identity") != entry_identity:
+                    raise ValueError("revision entry mismatch")
+            except (ValidationError, ValueError, TypeError) as exc:
+                raise AppError(
+                    status_code=409, code="EDITORIAL_REVISION_INVALID", message="qualified revision authority required",
+                ) from exc
+            entries.add(entry_identity)
+            identities.update(self._candidate_finalization_authority_record_ids({
+                "entry_identity": entry_identity, "entry": draft.model_dump(mode="json"),
+            }))
+        records = await self._lock_canonical_records(identities)
+        if set(records) != identities:
+            raise AppError(status_code=409, code="EDITORIAL_REVISION_INVALID", message="revision authority missing")
+        return entries
+
+    async def get_source_review_for_revision(self, entry_id: str, revision_identity: str) -> dict[str, Any]:
+        """Read current source facts for an exact retained revision, including unavailable sources."""
+        entry, _events = await self._entry_and_events(entry_id)
+        revision = await self._revision(revision_identity)
+        payload = self._payload(revision)
+        draft = CreateEditorialEntryRequest.model_validate(payload.get("draft"))
+        if payload.get("entry_identity") != entry.stable_id or draft.entry_id != entry_id:
+            raise AppError(status_code=409, code="EDITORIAL_REVISION_INVALID", message="revision does not belong to entry")
+        sources = await self._source_projections(draft)
+        if not sources or any(source["availability"] == "unknown" for source in sources):
+            raise AppError(status_code=409, code="EDITORIAL_SOURCE_STORE_UNAUDITABLE", message="qualified source facts required")
+        records = await self._lock_canonical_records({source["source_identity"] for source in sources})
+        for source in sources:
+            record = records.get(source["source_identity"])
+            event = await self._qualified_source_availability_event(record) if record is not None else None
+            if event is None:
+                raise AppError(status_code=409, code="EDITORIAL_SOURCE_STORE_UNAUDITABLE", message="qualified source facts required")
+            trail = (
+                await self.session.scalars(
+                    select(CanonicalEventModel).where(
+                        CanonicalEventModel.aggregate_id == source["source_identity"],
+                        CanonicalEventModel.aggregate_kind == StableIdentityKind.SOURCE.value,
+                    )
+                )
+            ).all()
+            if sum(
+                candidate.occurred_at == event.occurred_at
+                and self._payload(candidate).get("action") == "source_availability_recorded"
+                for candidate in trail
+            ) != 1:
+                raise AppError(status_code=409, code="EDITORIAL_SOURCE_STORE_UNAUDITABLE", message="source event order is ambiguous")
+            source["availability"] = event.to_state
+            source["status_event_id"] = str(event.id)
+            source["event_trail_sha256"] = canonical_json_sha256(sorted(candidate.id for candidate in trail))
+        return {
+            "entry_identity": entry.stable_id,
+            "revision_identity": revision_identity,
+            "sources": sources,
+        }
+
     async def get_retrieval_authority_for_revision(
         self,
         entry_id: str,
@@ -1226,7 +1550,7 @@ class EditorialAuthorityService:
             lifecycle_state=EntryLifecycleState.PUBLISHED.value,
             approval_status=(approval or {}).get("status", "pending"),
             source_availability=[source["availability"] for source in sources],
-            needs_review_at=self._needs_review_at(events, revision_identity, historical_current),
+            needs_review_at=await self._needs_review_at(events, revision_identity, historical_current),
             applicability_explicit=bool(draft.applicability_conditions),
             known_contradiction=self._revision_flag(events, revision_identity, "known_contradiction"),
             integrity_defect=self._revision_flag(events, revision_identity, "integrity_defect"),
@@ -1344,7 +1668,7 @@ class EditorialAuthorityService:
         )
         return {record.stable_id: record for record in result.scalars()}
 
-    async def _acquire_candidate_finalization_fence(self) -> None:
+    async def _acquire_editorial_write_fence(self) -> None:
         bind = self.session.bind
         if bind is None or bind.dialect.name != "sqlite":
             return
@@ -1355,7 +1679,7 @@ class EditorialAuthorityService:
             raise AppError(
                 status_code=409,
                 code="EDITORIAL_AUTHORITY_FENCE_UNAVAILABLE",
-                message="Candidate finalization could not acquire the editorial authority fence",
+                message="Could not acquire the editorial authority fence",
             ) from exc
 
     async def _current_draft(
@@ -1475,6 +1799,7 @@ class EditorialAuthorityService:
         actor_identity: str,
         roles: dict[str, str] | None = None,
         extra: dict[str, Any] | None = None,
+        occurred_at: datetime | None = None,
     ) -> None:
         self.session.add(
             CanonicalEventModel(
@@ -1492,6 +1817,7 @@ class EditorialAuthorityService:
                     **(extra or {}),
                 },
                 recorded_by=actor_identity,
+                **({"occurred_at": occurred_at} if occurred_at is not None else {}),
             )
         )
 
@@ -2438,12 +2764,16 @@ class EditorialAuthorityService:
             for event in events
         )
 
-    @staticmethod
-    def _needs_review_at(
+    async def _needs_review_at(
+        self,
         events: list[CanonicalEventModel],
         revision_identity: str,
         current: CanonicalEventModel,
     ) -> datetime | None:
+        await self._integrity_review_event(events, revision_identity)
+        review = await self._freshness_review_event(events, revision_identity)
+        if review is not None:
+            return datetime.fromisoformat(review.payload["needs_review_at"])
         for event in reversed(sorted(events, key=lambda item: (EditorialAuthorityService._event_sequence([item]), item.id))):
             payload = EditorialAuthorityService._payload(event)
             if payload.get("revision_identity") != revision_identity:

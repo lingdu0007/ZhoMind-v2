@@ -43,6 +43,21 @@
           <span>报告知识缺口</span>
           <strong>{{ gapReasonLabel }}</strong>
         </div>
+        <div class="knowledge-feedback__labels" role="radiogroup" aria-label="反馈类型">
+          <button
+            v-for="option in labelOptions"
+            :key="option.value"
+            type="button"
+            role="radio"
+            :aria-checked="label === option.value"
+            :class="{ active: label === option.value }"
+            :disabled="loading"
+            @click="label = option.value"
+          >
+            <component :is="option.icon" :size="15" aria-hidden="true" />
+            <span>{{ option.text }}</span>
+          </button>
+        </div>
         <textarea
           v-model="note"
           aria-label="补充说明（可选）"
@@ -71,6 +86,7 @@
           <strong>{{ gapReasonLabel }}</strong>
         </div>
         <dl>
+          <div><dt>反馈类型</dt><dd>{{ feedbackLabel(label || 'insufficient_evidence') }}</dd></div>
           <div><dt>Answer ID</dt><dd>{{ message.id }}</dd></div>
           <div><dt>Outcome</dt><dd>Insufficient Evidence Reply</dd></div>
           <div><dt>Query Condition Set</dt><dd>{{ gapContext?.query_condition_set_identity }}</dd></div>
@@ -78,6 +94,7 @@
         </dl>
         <div class="knowledge-feedback__actions">
           <span v-if="error" role="alert">{{ error }}</span>
+          <button type="button" :disabled="loading" @click="cancelGapReport">取消</button>
           <button type="button" @click="gapStage = 'edit'">返回编辑</button>
           <button type="button" :disabled="loading" @click="confirmGapReport">
             <Send :size="15" aria-hidden="true" />
@@ -126,6 +143,7 @@
       </button>
       <div class="knowledge-feedback__actions">
         <span v-if="error" role="alert">{{ error }}</span>
+        <button type="button" :disabled="loading" @click="cancelEvidenceFeedback">取消</button>
         <button type="submit" :disabled="!label || loading">
           <Send :size="15" aria-hidden="true" />
           <span>{{ loading ? '提交中' : '预览反馈' }}</span>
@@ -145,6 +163,7 @@
       </dl>
       <div class="knowledge-feedback__actions">
         <span v-if="error" role="alert">{{ error }}</span>
+        <button type="button" :disabled="loading" @click="cancelEvidenceFeedback">取消</button>
         <button type="button" @click="evidenceStage = 'edit'">返回编辑</button>
         <button type="button" :disabled="loading" @click="confirmEvidenceFeedback">
           <Send :size="15" aria-hidden="true" />
@@ -368,22 +387,14 @@ const submitFeedback = async ({ answerId, mode, scopeEntryId, selectedLabel, sel
 
 const selectEvidenceLabel = (value) => {
   if (!entryId.value || loading.value) return;
-  if (value !== 'helpful') {
-    label.value = value;
-    return;
-  }
-  if (note.value.trim()) {
-    label.value = value;
-    evidenceStage.value = 'preview';
-    return;
-  }
-  void submitFeedback({
-    answerId: props.message?.id,
-    mode: props.mode,
-    scopeEntryId: entryId.value,
-    selectedLabel: value,
-    selectedNote: null
-  });
+  label.value = value;
+};
+
+const cancelEvidenceFeedback = () => {
+  evidenceStage.value = 'edit';
+  label.value = '';
+  note.value = '';
+  error.value = '';
 };
 
 const copyQuestionIntoSharedDescription = () => {
@@ -404,12 +415,14 @@ const confirmEvidenceFeedback = async () => {
 
 const cancelGapReport = () => {
   gapStage.value = 'idle';
+  label.value = '';
   note.value = '';
   error.value = '';
 };
 
 const previewGapReport = () => {
   if (!gapContext.value) return;
+  if (!label.value) label.value = 'insufficient_evidence';
   error.value = '';
   gapStage.value = 'preview';
 };
@@ -422,7 +435,7 @@ const confirmGapReport = async () => {
     answerId,
     mode,
     scopeEntryId: null,
-    selectedLabel: 'insufficient_evidence',
+    selectedLabel: label.value || 'insufficient_evidence',
     selectedNote: note.value.trim() || null
   });
 };

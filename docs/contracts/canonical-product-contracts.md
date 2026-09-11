@@ -932,6 +932,10 @@ trail does not incorrectly end at a historical failure.
 
 ## Compatibility
 
+Ticket 27's [Knowledge Feedback And Maintenance contract](knowledge-maintenance.md)
+and ADR 0008 govern explicit feedback, deletable signal links, canonical
+maintenance decisions, independent findings, containment and roadmap cadence.
+
 Ticket 26's [Pilot Safety And Retention contract](pilot-safety-retention.md)
 governs reviewed all-member content admission, independent private-record
 expiry, policy identities, cleanup evidence and protected re-acceptance.

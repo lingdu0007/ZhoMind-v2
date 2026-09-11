@@ -8,6 +8,41 @@ const sendQuestion = async (page, question) => {
   await page.getByRole('button', { name: '发送' }).click();
 };
 
+test('helpful feedback is only submitted after preview and explicit confirmation', { timeout: 30000 }, async (t) => {
+  const { page, baseUrl, api } = await startWorkbench(t, {});
+  const token = await registerKnowledgeUserViaApi(api, 'confirmed-helpful-user');
+  await page.addInitScript((value) => localStorage.setItem('access_token', value), token);
+  await page.goto(`${baseUrl}chat`);
+  const conditions = page.locator('.composer').getByLabel('查询条件');
+  await conditions.getByRole('button', { name: '添加查询条件' }).click();
+  await conditions.getByLabel('条件 1 字段').fill('execution_path');
+  await conditions.getByLabel('条件 1 值').fill('known');
+  await sendQuestion(page, '什么时候使用 deterministic workflow？');
+  const feedback = page.getByLabel('助手消息').last().getByLabel('知识反馈', { exact: true });
+  const retained = async () => {
+    const response = await fetch(`${api.baseUrl}/knowledge-feedback`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    assert.equal(response.status, 200);
+    return (await response.json()).data.items;
+  };
+  await feedback.getByRole('radio', { name: '有帮助' }).waitFor();
+  for (const label of ['有帮助', '证据不足', '已过时', '超出范围']) {
+    assert.equal(await feedback.getByRole('radio', { name: label }).count(), 1);
+  }
+  assert.deepEqual(await retained(), []);
+  await feedback.getByRole('radio', { name: '有帮助' }).click();
+  await feedback.getByRole('button', { name: '预览反馈' }).click();
+  assert.deepEqual(await retained(), []);
+  await feedback.getByRole('button', { name: '取消', exact: true }).click();
+  assert.deepEqual(await retained(), []);
+  await feedback.getByRole('radio', { name: '有帮助' }).click();
+  await feedback.getByRole('button', { name: '预览反馈' }).click();
+  await feedback.getByRole('button', { name: '确认提交' }).click();
+  await feedback.getByText('反馈已提交', { exact: true }).waitFor();
+  assert.equal((await retained()).length, 1);
+});
+
 
 test('Knowledge User previews and confirms a closed insufficient knowledge-gap report without a cited entry or transcript', { timeout: 30000 }, async (t) => {
   const { page, baseUrl, api } = await startWorkbench(t, {
@@ -30,6 +65,15 @@ test('Knowledge User previews and confirms a closed insufficient knowledge-gap r
 
   const gapReport = answer.getByLabel('知识缺口报告');
   await gapReport.getByRole('button', { name: '报告知识缺口' }).click();
+  for (const label of ['有帮助', '证据不足', '已过时', '超出范围']) {
+    assert.equal(await gapReport.getByRole('radio', { name: label }).count(), 1);
+  }
+  await gapReport.getByRole('radio', { name: '已过时' }).click();
+  await gapReport.getByRole('button', { name: '预览缺口报告' }).click();
+  await gapReport.getByLabel('缺口报告预览').getByText('已过时', { exact: true }).waitFor();
+  await gapReport.getByRole('button', { name: '取消', exact: true }).click();
+  await gapReport.getByRole('button', { name: '报告知识缺口' }).click();
+  await gapReport.getByRole('radio', { name: '证据不足' }).click();
   await gapReport.getByRole('button', { name: '复制当前问题到共享说明' }).click();
   assert.equal(
     await gapReport.getByLabel('补充说明（可选）').inputValue(),
