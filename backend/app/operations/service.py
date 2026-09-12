@@ -1,11 +1,16 @@
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.exceptions import AppError
 from app.model.document import Document, DocumentJob
 from app.model.operational_event import OperationalEvent
 from app.operations.chat_capacity import get_chat_admission_gate
 from app.operations.events import OperationalEventService
 from app.operations.limits import first_release_limits
+from app.retention.policy import read_policy
 from app.reviewed_bundles.models import CandidateBuildJob
 from app.settings.service import SystemSettingsDraftService
 
@@ -15,6 +20,31 @@ class OperationsService:
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    async def read_request(self, request_id: UUID) -> dict:
+        days = (await read_policy(self.session))["days"]["operational_events"]
+        events = list(await self.session.scalars(
+            select(OperationalEvent).where(
+                OperationalEvent.request_id == str(request_id),
+                OperationalEvent.created_at > datetime.now(UTC) - timedelta(days=days),
+                OperationalEvent.route_outcome.in_([
+                    f"POST /api/v1/chat{suffix}:{status}"
+                    for suffix in ("", "/stream") for status in ("success", "client_error", "server_error")
+                ]),
+            ).limit(2),
+        ))
+        if len(events) != 1:
+            raise AppError(status_code=404, code="MEASUREMENT_UNAVAILABLE", message="unique retained measurement unavailable")
+        event = events[0]
+        return {
+            "request_id": OperationalEventService.request_identity(event.request_id),
+            "created_at": event.created_at.replace(tzinfo=UTC).isoformat(),
+            "duration_ms": OperationalEventService.nonnegative_integer(event.duration_ms),
+            "route_class": OperationalEventService.route_class(event.route_outcome),
+            "dimensions": OperationalEventService.dimensions(event.dimensions),
+            "generation_route": OperationalEventService.retained_route(event.generation_route),
+            "normalized_error": OperationalEventService.error_code(event.normalized_error),
+        }
 
     async def read(self) -> dict:
         document_counts = await self._document_counts()

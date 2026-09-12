@@ -186,7 +186,7 @@ async def _run_admitted_chat(
     started = perf_counter()
     stage_started = started
     stage_name = "queue"
-    timings: dict[str, int] = {}
+    timings: dict[str, int] = dict.fromkeys(("queue", "application", "retrieval", "provider", "persistence"), 0)
     if operational is not None:
         operational["dimensions"] = {
             "configuration_identity": gate.configuration()["identity"], "stage_durations_ms": timings,

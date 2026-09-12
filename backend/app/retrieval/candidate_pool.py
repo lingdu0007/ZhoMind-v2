@@ -80,8 +80,7 @@ class AuthorizedRetrievalCandidatePool:
             _KNOWN_ACCESS_SCOPES if allowed_access_scopes is None else allowed_access_scopes
         )
 
-    async def retrieve(self, query: str, top_k: int) -> RetrieveResult:
-        del top_k
+    async def _eligible_candidates(self) -> tuple[dict[str, dict[str, Any]], list[Bm25Chunk], list[dict[str, str]]]:
         policy = self._pilot_policy()
         maintenance_blocks = await active_answer_blocks(self._session)
         statement = (
@@ -221,6 +220,28 @@ class AuthorizedRetrievalCandidatePool:
                 )
             )
 
+        return candidates, bm25_chunks, exclusions
+
+    async def measurement_snapshot(self) -> dict:
+        """Hash the same authorized corpus before ranking, without exposing text."""
+        candidates, chunks, _ = await self._eligible_candidates()
+        return {
+            "editorial_inputs_sha256": canonical_json_sha256(sorted({
+                (candidate["entry_identity"], candidate["editorial_revision_identity"])
+                for candidate in candidates.values()
+            })),
+            "corpus": "corpus:" + canonical_json_sha256([
+                {"candidate": candidate, "content_sha256": hashlib.sha256(chunk.content.encode()).hexdigest()}
+                for chunk in chunks if (candidate := candidates.get(chunk.chunk_id)) is not None
+            ]),
+            "active_entries": len({candidate["entry_identity"] for candidate in candidates.values()}),
+            "eligible_chunks": len(chunks),
+        }
+
+    async def retrieve(self, query: str, top_k: int) -> RetrieveResult:
+        del top_k
+        policy = self._pilot_policy()
+        candidates, bm25_chunks, exclusions = await self._eligible_candidates()
         items, ranked_exclusions = self._rank_pre_sufficiency_candidates(
             candidates=candidates,
             bm25_chunks=bm25_chunks,
