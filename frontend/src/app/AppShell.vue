@@ -7,6 +7,10 @@
       </div>
 
       <nav class="workbench-shell__nav" aria-label="主导航">
+        <RouterLink v-if="authStore.isAdmin" class="workbench-shell__nav-item" to="/operations" title="运行状态" aria-label="运行状态">
+          <Activity :size="20" aria-hidden="true" />
+          <span>运行状态</span>
+        </RouterLink>
         <RouterLink class="workbench-shell__nav-item" to="/chat" title="对话工作区" aria-label="对话工作区">
           <MessageCircle :size="20" aria-hidden="true" />
           <span>对话工作区</span>
@@ -90,7 +94,7 @@
 <script setup>
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { BookOpen, ClipboardList, LibraryBig, ListChecks, LogOut, MessageCircle, PackageCheck, Settings2, Wrench } from 'lucide-vue-next';
+import { Activity, BookOpen, ClipboardList, LibraryBig, ListChecks, LogOut, MessageCircle, PackageCheck, Settings2, Wrench } from 'lucide-vue-next';
 import { clearProtectedSession } from './protected-session';
 import { useAuthStore } from '../store/auth';
 

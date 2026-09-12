@@ -135,4 +135,4 @@ def test_ticket14_tail_migration_fails_closed_for_legacy_active_invitations(
     assert "answer_executions" in tables
     assert "answer_execution_events" in tables
     assert "chat_messages" not in tables
-    assert revision == ("20260911_0027",)
+    assert revision == ("20260912_0028",)

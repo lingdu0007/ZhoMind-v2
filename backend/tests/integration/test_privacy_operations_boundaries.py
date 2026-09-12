@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
+from fnmatch import fnmatch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -47,7 +48,15 @@ class _InMemoryRedis:
             if key in self.values:
                 del self.values[key]
                 removed += 1
+            if key in self.hashes:
+                del self.hashes[key]
+                removed += 1
         return removed
+
+    async def scan_iter(self, match: str):
+        for key in list(self.hashes):
+            if fnmatch(key, match):
+                yield key
 
 
 @pytest.fixture
@@ -142,7 +151,7 @@ def test_administrator_operations_surface_is_admin_only_and_never_projects_priva
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["documents"]["published_sources"] == 1
-    assert set(data) == {"documents", "generation", "failures", "retry_actions", "limits"}
+    assert set(data) == {"documents", "generation", "failures", "retry_actions", "limits", "admission", "events"}
     assert private_question not in response.text
     assert private_answer not in response.text
     assert "private source excerpt" not in response.text
@@ -225,6 +234,7 @@ def test_chat_records_a_content_free_operational_event(client: TestClient) -> No
         "normalized_error",
         "candidate_count",
         "generation_route",
+        "dimensions",
         "created_at",
     }
 
@@ -363,7 +373,7 @@ def test_administrator_operations_surface_projects_normalized_failures_with_supp
         {
             "kind": "generation_provider",
             "code": "PROVIDER_TIMEOUT",
-            "request_id": "provider-failure-request",
+            "request_id": "unknown-request",
         },
     ]
     assert data["retry_actions"] == [
@@ -447,12 +457,11 @@ def test_legacy_publication_bypass_rejects_before_source_capacity_evaluation(cli
     assert response.json()["code"] == "LEGACY_PUBLICATION_BYPASS_REJECTED"
 
 
-def test_chat_rejects_requests_over_the_five_concurrent_chat_limit(client: TestClient) -> None:
+def test_chat_rejects_fifth_request_over_the_pilot_admission_envelope(client: TestClient) -> None:
     member_token = _register(client, username="chat-capacity-member")
     gate = get_chat_admission_gate()
-    gate.reset()
-    reservations = [gate.try_admit() for _ in range(5)]
-    assert all(reservations)
+    reservations = [gate.reserve(member_id=f"capacity-{index}") for index in range(4)]
+    assert [gate.observe(item)["state"] for item in reservations] == ["running", "running", "queued", "queued"]
     try:
         response = client.post(
             "/api/v1/chat",
@@ -461,9 +470,7 @@ def test_chat_rejects_requests_over_the_five_concurrent_chat_limit(client: TestC
         )
     finally:
         for reservation in reservations:
-            if reservation:
-                gate.release()
-        gate.reset()
+            gate.finish(reservation)
 
     assert response.status_code == 429
-    assert response.json()["code"] == "CHAT_CONCURRENCY_LIMIT_REACHED"
+    assert response.json()["code"] == "CHAT_QUEUE_FULL"

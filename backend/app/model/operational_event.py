@@ -23,6 +23,7 @@ class OperationalEvent(Base):
     normalized_error: Mapped[str | None] = mapped_column(String(128), nullable=True)
     candidate_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     generation_route: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
+    dimensions: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

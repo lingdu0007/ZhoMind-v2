@@ -1122,6 +1122,11 @@ def _install_generation_input_failure() -> None:
 
 def main() -> None:
     args = parse_args()
+    queue_timeout = os.getenv("BROWSER_ACCEPTANCE_QUEUE_TIMEOUT_SECONDS")
+    if queue_timeout:
+        from app.operations.chat_capacity import get_chat_admission_gate
+
+        get_chat_admission_gate().queue_timeout_seconds = float(queue_timeout)
     allowed_source_url = os.getenv("BROWSER_ACCEPTANCE_PUBLIC_SOURCE_URL", "").strip()
     if allowed_source_url:
         def probe_acceptance_source(url: str) -> None:

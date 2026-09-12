@@ -3,7 +3,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.model.document import Document, DocumentJob
 from app.model.operational_event import OperationalEvent
+from app.operations.chat_capacity import get_chat_admission_gate
+from app.operations.events import OperationalEventService
 from app.operations.limits import first_release_limits
+from app.reviewed_bundles.models import CandidateBuildJob
 from app.settings.service import SystemSettingsDraftService
 
 
@@ -21,12 +24,22 @@ class OperationsService:
             OperationalEvent.generation_route.is_not(None),
         ).order_by(OperationalEvent.created_at.desc()).limit(20))
         failures, retry_actions = await self._failure_projection()
+        recent_events = list(await self.session.scalars(
+            select(OperationalEvent).order_by(OperationalEvent.created_at.desc()).limit(20),
+        ))
         self._append_generation_settings_failure(
             failures=failures,
             retry_actions=retry_actions,
             settings=settings,
         )
         return {
+            "admission": get_chat_admission_gate().snapshot(),
+            "events": [{
+                "request_id": OperationalEventService.request_identity(event.request_id),
+                "route_class": OperationalEventService.route_class(event.route_outcome),
+                "duration_ms": OperationalEventService.nonnegative_integer(event.duration_ms),
+                "dimensions": OperationalEventService.dimensions(event.dimensions),
+            } for event in recent_events],
             "documents": {
                 "total": document_counts["total"],
                 "published_sources": document_counts["published_sources"],
@@ -36,8 +49,9 @@ class OperationsService:
             },
             "generation": {
                 "route_executions": [
-                    {**event.generation_route, "request_id": event.request_id}
-                    for event in route_events if event.generation_route
+                    {**projection, "request_id": OperationalEventService.request_identity(event.request_id)}
+                    for event in route_events
+                    if (projection := OperationalEventService.retained_route(event.generation_route)) is not None
                 ],
                 "application_state": settings["application_state"],
                 "active": settings["active"],
@@ -64,10 +78,13 @@ class OperationsService:
 
     async def _job_counts(self) -> dict[str, int]:
         async def _count(status: str) -> int:
-            value = await self.session.scalar(
-                select(func.count()).select_from(DocumentJob).where(DocumentJob.status == status)
-            )
-            return int(value or 0)
+            total = 0
+            for model in (DocumentJob, CandidateBuildJob):
+                value = await self.session.scalar(
+                    select(func.count()).select_from(model).where(model.status == status)
+                )
+                total += int(value or 0)
+            return total
 
         return {"queued": await _count("queued"), "running": await _count("running")}
 
@@ -97,6 +114,23 @@ class OperationsService:
                     "path": f"/api/v1/documents/{job.document_id}/build",
                 }
             )
+        candidate_jobs = await self.session.scalars(
+            select(CandidateBuildJob)
+            .where(CandidateBuildJob.status.in_(("failed", "canceled", "interrupted_retryable")))
+            .order_by(CandidateBuildJob.updated_at.desc()).limit(20)
+        )
+        for job in candidate_jobs:
+            failures.append({
+                "kind": "candidate_build", "code": {
+                    "failed": "CANDIDATE_BUILD_FAILED", "canceled": "CANDIDATE_BUILD_CANCELED",
+                    "interrupted_retryable": "CANDIDATE_BUILD_INTERRUPTED",
+                }[job.status], "job_id": job.id,
+            })
+            if job.allowed_next_action in {"retry_fixed_inputs", "reconcile_derived_data_then_retry"}:
+                retry_actions.append({
+                    "action": "retry_candidate_build", "job_id": job.id, "method": "POST",
+                    "path": f"/api/v1/reviewed-release-bundles/jobs/{job.id}/retry",
+                })
         event_result = await self.session.execute(
             select(OperationalEvent)
             .where(OperationalEvent.normalized_error.is_not(None))
@@ -105,9 +139,9 @@ class OperationsService:
         )
         failures.extend(
             {
-                "kind": "generation_provider",
-                "code": event.normalized_error,
-                "request_id": event.request_id,
+                "kind": OperationalEventService.failure_category(event.normalized_error),
+                "code": OperationalEventService.error_code(event.normalized_error),
+                "request_id": OperationalEventService.request_identity(event.request_id),
             }
             for event in event_result.scalars().all()
         )

@@ -698,7 +698,7 @@ class ChatService:
             AnswerExecutionState.REJECTED.value,
         }:
             return
-        if loaded.projection["state"] != AnswerExecutionState.RUNNING.value:
+        if loaded.projection["state"] not in {AnswerExecutionState.RUNNING.value, AnswerExecutionState.QUEUED.value}:
             raise ValueError("answer execution cannot be terminalized from its retained state")
         try:
             if state is AnswerExecutionState.STOPPED:
@@ -729,7 +729,7 @@ class ChatService:
                 AnswerExecutionState.REJECTED.value,
             }:
                 return
-            if loaded.projection["state"] != AnswerExecutionState.RUNNING.value:
+            if loaded.projection["state"] not in {AnswerExecutionState.RUNNING.value, AnswerExecutionState.QUEUED.value}:
                 raise ValueError("answer execution cannot recover from its retained state") from terminal_persistence_error
             try:
                 await self.answer_execution_store.fail_persistence_without_assistant_message(handle=execution)
@@ -767,6 +767,7 @@ class ChatService:
         inherit_conditions: bool = False,
         progress: Callable[[str, str], Awaitable[None]] | None = None,
         on_admitted: Callable[[AnswerExecutionHandle], Awaitable[None]] | None = None,
+        await_capacity: Callable[[], Awaitable[None]] | None = None,
     ) -> dict:
         # Capture generation dependencies at request admission. A later provider
         # replacement only affects requests admitted after its atomic cutover.
@@ -794,6 +795,7 @@ class ChatService:
             session_id=session.id,
             question=normalized_question,
             resolution=resolution,
+            queued=await_capacity is not None,
         )
 
         try:
@@ -802,6 +804,10 @@ class ChatService:
             await self.session.commit()
             if on_admitted is not None:
                 await on_admitted(execution)
+            if await_capacity is not None:
+                await await_capacity()
+                await self.answer_execution_store.start(handle=execution)
+                await self.session.commit()
             retriever, retriever_name = self._resolve_retriever()
             reranker, reranker_name = self._resolve_reranker()
             judge, judge_name = self._resolve_judge()
@@ -828,6 +834,8 @@ class ChatService:
                 query_conditions=resolution.query_conditions,
                 progress=progress,
             )
+            if progress is not None:
+                await progress("persistence", "Saving execution")
             assistant_message, _loaded_execution = await self.answer_execution_store.complete(
                 handle=execution,
                 outcome=outcome,
@@ -847,11 +855,12 @@ class ChatService:
                 failure_code="ANSWER_EXECUTION_STOPPED",
             )
             raise
-        except Exception:
+        except Exception as exc:
             await self._persist_noncompleted_terminal(
                 execution=execution,
                 state=AnswerExecutionState.FAILED,
-                failure_code="ANSWER_EXECUTION_FAILED",
+                failure_code="CHAT_QUEUE_TIMEOUT" if isinstance(exc, AppError) and exc.code == "CHAT_QUEUE_TIMEOUT"
+                else "ANSWER_EXECUTION_FAILED",
             )
             raise
 

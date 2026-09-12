@@ -46,6 +46,7 @@ async def _record_operational_event(
                 normalized_error=context.get("normalized_error"),
                 candidate_count=context.get("candidate_count"),
                 generation_route=context.get("generation_route"),
+                dimensions=context.get("dimensions"),
             )
     except (OSError, SQLAlchemyError):
         # Operational recording is never allowed to replace the user response.

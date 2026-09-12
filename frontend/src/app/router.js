@@ -9,6 +9,7 @@ import UploadPage from '../pages/UploadPage.vue';
 import IndexingJobsPage from '../pages/IndexingJobsPage.vue';
 import ReviewedBundlesPage from '../pages/ReviewedBundlesPage.vue';
 import ConfigPage from '../pages/ConfigPage.vue';
+import OperationsPage from '../pages/OperationsPage.vue';
 import { clearProtectedSession } from './protected-session';
 import { useAuthStore } from '../store/auth';
 
@@ -21,6 +22,7 @@ const routes = [
   { path: '/maintenance', name: 'knowledge-maintenance', component: MaintenancePage, meta: { requiresAuth: true } },
   { path: '/documents', name: 'documents', component: UploadPage, meta: { requiresAuth: true, requiresAdmin: true } },
   { path: '/jobs', name: 'indexing-jobs', component: IndexingJobsPage, meta: { requiresAuth: true, requiresAdmin: true } },
+  { path: '/operations', name: 'operations', component: OperationsPage, meta: { requiresAuth: true, requiresAdmin: true } },
   {
     path: '/reviewed-bundles',
     name: 'reviewed-bundles',

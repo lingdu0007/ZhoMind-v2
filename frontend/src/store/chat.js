@@ -223,7 +223,7 @@ export const useChatStore = defineStore('chat', {
       if (!normalizedQuestion || this.loading) return;
 
       if (!this.activeSessionId || this.activeSessionId === 'default_session') {
-        this.activeSessionId = `session_${Date.now()}`;
+        this.activeSessionId = `session_${crypto.randomUUID()}`;
       }
 
       const priorExecutionIds = this.messages
@@ -347,7 +347,7 @@ export const useChatStore = defineStore('chat', {
         terminalProjection.localTerminalSettled = true;
       };
       const localFailureState = (error) => {
-        if (error?.code === 'CHAT_CONCURRENCY_LIMIT_REACHED') return 'throttled';
+        if (['CHAT_CONCURRENCY_LIMIT_REACHED', 'CHAT_QUEUE_FULL', 'CHAT_MEMBER_LIMIT'].includes(error?.code)) return 'throttled';
         if (error?.code === 'CHAT_REQUEST_REJECTED') return 'rejected';
         return 'failed';
       };

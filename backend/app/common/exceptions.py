@@ -20,6 +20,10 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
         rid = getattr(request.state, "request_id", "") or get_request_id() or request.headers.get("x-request-id", "")
+        if exc.code in {"CHAT_QUEUE_TIMEOUT", "CHAT_QUEUE_FULL", "CHAT_MEMBER_LIMIT"}:
+            context = getattr(request.state, "operational_event", None)
+            if isinstance(context, dict):
+                context["normalized_error"] = exc.code
         return JSONResponse(
             status_code=exc.status_code,
             content=error_response(code=exc.code, message=exc.message, detail=exc.detail, request_id=rid),

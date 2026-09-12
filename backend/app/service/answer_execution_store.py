@@ -180,6 +180,7 @@ class AnswerExecutionStore:
         session_id: str,
         question: str,
         resolution: QueryConditionResolution,
+        queued: bool = False,
     ) -> AnswerExecutionHandle:
         await self.repository.acquire_private_conversation_write_fence()
         identity = StableIdentity.new(StableIdentityKind.ANSWER_EXECUTION)
@@ -235,16 +236,52 @@ class AnswerExecutionStore:
             sequence=2,
             payload={"request_id": request_id},
         )
-        self._append_event(
-            execution_id=handle.execution_id,
-            event_type="state_changed",
-            from_state=AnswerExecutionState.QUEUED,
-            to_state=AnswerExecutionState.RUNNING,
-            sequence=3,
-            payload={"request_id": request_id},
-        )
+        if not queued:
+            self._append_event(
+                execution_id=handle.execution_id,
+                event_type="state_changed",
+                from_state=AnswerExecutionState.QUEUED,
+                to_state=AnswerExecutionState.RUNNING,
+                sequence=3,
+                payload={"request_id": request_id},
+            )
         await self.session.flush()
         return handle
+
+    async def start(self, *, handle: AnswerExecutionHandle) -> None:
+        await self.repository.acquire_private_conversation_write_fence()
+        execution = await self._locked_execution(execution_id=handle.execution_id)
+        if execution.user_id != handle.user_id or execution.session_id != handle.session_id:
+            raise ValueError("private answer execution does not belong to this conversation")
+        events = await self._events_for_execution(execution_id=execution.id)
+        state, terminal, *_ = self._reconstruct_state(execution=execution, events=events)
+        if state is not AnswerExecutionState.QUEUED or terminal is not None:
+            raise ValueError("only queued executions may start")
+        self._append_event(
+            execution_id=handle.execution_id, event_type="state_changed",
+            from_state=AnswerExecutionState.QUEUED, to_state=AnswerExecutionState.RUNNING,
+            sequence=self._next_event_sequence(events), payload={"request_id": handle.request_id},
+        )
+        await self.session.flush()
+
+    async def recover_interrupted(self) -> int:
+        """Called before serving requests in the supported single-process runtime."""
+        await self.repository.acquire_private_conversation_write_fence()
+        terminal = select(AnswerExecutionEventModel.execution_id).where(
+            AnswerExecutionEventModel.to_state.in_([state.value for state in _TERMINAL_STATES]),
+        )
+        executions = list(await self.session.scalars(
+            select(AnswerExecutionModel).where(AnswerExecutionModel.id.not_in(terminal)).with_for_update(),
+        ))
+        recovered = 0
+        for execution in executions:
+            loaded = await self.load(execution_id=execution.id, user_id=execution.user_id, session_id=execution.session_id)
+            if loaded is None or loaded.projection["state"] not in {"queued", "running"}:
+                raise ValueError("interrupted execution has no verifiable recovery state")
+            handle = self._handle_from_request(execution, execution.request)
+            await self.fail(handle=handle, failure_code="ANSWER_EXECUTION_INTERRUPTED")
+            recovered += 1
+        return recovered
 
     async def complete(
         self,
@@ -381,12 +418,12 @@ class AnswerExecutionStore:
             execution=execution,
             events=events,
         )
-        if persisted_state is not AnswerExecutionState.RUNNING or terminal is not None:
+        if persisted_state not in {AnswerExecutionState.RUNNING, AnswerExecutionState.QUEUED} or terminal is not None:
             raise ValueError("answer execution cannot finish from its persisted state")
         self._append_event(
             execution_id=handle.execution_id,
             event_type="state_changed",
-            from_state=AnswerExecutionState.RUNNING,
+            from_state=persisted_state,
             to_state=state,
             sequence=self._next_event_sequence(events),
             payload=result,
@@ -694,7 +731,7 @@ class AnswerExecutionStore:
         if delivery_pending:
             return False
         if (
-            state is not AnswerExecutionState.RUNNING
+            state not in {AnswerExecutionState.RUNNING, AnswerExecutionState.QUEUED}
             or terminal is not None
             or delivery_completed
             or delivery_interrupted
@@ -1184,7 +1221,7 @@ class AnswerExecutionStore:
                 continue
             if event.event_type == _STREAM_DELIVERY_PENDING_EVENT:
                 if (
-                    state is not AnswerExecutionState.RUNNING
+                    state not in {AnswerExecutionState.RUNNING, AnswerExecutionState.QUEUED}
                     or terminal is not None
                     or delivery_pending
                     or delivery_completed
@@ -1816,12 +1853,12 @@ class AnswerExecutionStore:
                     result=terminal,
                 )
             raise ValueError("answer execution already has a contradictory terminal result")
-        if persisted_state is not AnswerExecutionState.RUNNING:
+        if persisted_state not in {AnswerExecutionState.RUNNING, AnswerExecutionState.QUEUED}:
             raise ValueError("answer execution cannot recover persistence from its persisted state")
         self._append_event(
             execution_id=handle.execution_id,
             event_type="state_changed",
-            from_state=AnswerExecutionState.RUNNING,
+            from_state=persisted_state,
             to_state=AnswerExecutionState.FAILED,
             sequence=self._next_event_sequence(events),
             payload=result,

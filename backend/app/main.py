@@ -16,8 +16,10 @@ from app.common.stream_delivery import StreamDeliveryMiddleware
 from app.extensions.registry import get_extension_registry
 from app.infra.db import SessionLocal, get_db_session
 from app.operations.middleware import OperationalEventMiddleware
+from app.repository.chat_repository import ChatRepository
 from app.retention.cleanup import run_retention_sweep
 from app.reviewed_bundles.runtime import candidate_build_runtime
+from app.service.answer_execution_store import AnswerExecutionStore
 from app.service.member_admission_service import MemberAdmissionService
 from app.settings.service import SystemSettingsDraftService
 
@@ -100,6 +102,9 @@ async def lifespan(application: FastAPI):
                 username=settings.bootstrap_admin_username,
                 password=settings.bootstrap_admin_password,
             )
+        async with session_factory() as session:
+            await AnswerExecutionStore(session, ChatRepository(session)).recover_interrupted()
+            await session.commit()
         await _recover_candidate_builds(session_factory)
         yield
     finally:

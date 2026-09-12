@@ -101,6 +101,9 @@ class CandidateBuildService:
         self._owned_attempts: dict[str, int] = {}
 
     async def process_job(self, job_id: str) -> dict[str, object]:
+        from app.operations.chat_capacity import get_chat_admission_gate
+
+        await get_chat_admission_gate().wait_for_interactive_idle()
         job = await self._get_job(job_id)
         if job.status == "candidate_ready":
             return await self._candidate_projection(job)
@@ -447,9 +450,12 @@ class CandidateBuildService:
         progress: int,
         action: str,
     ) -> bool:
+        yielded = await self._yield_to_interactive(job)
         if not await self._owns_running_job(job):
             return False
         await self._current_frozen_input(job, expected=frozen_input)
+        if yielded:
+            await self._revalidate_editorial_authority(job, frozen_input)
         if not await self._owns_running_job(job):
             return False
         from_stage = job.stage
@@ -467,6 +473,22 @@ class CandidateBuildService:
         )
         await self.session.commit()
         return True
+
+    async def _yield_to_interactive(self, job: CandidateBuildJob) -> bool:
+        from app.operations.chat_capacity import get_chat_admission_gate
+
+        gate = get_chat_admission_gate()
+        yielded = False
+        while gate.snapshot()["executing"] or gate.snapshot()["queued"]:
+            yielded = True
+            await self.session.commit()
+            if not await self._renew_lease(job_id=job.id, attempt=job.attempt):
+                raise AppError(
+                    status_code=409, code="CANDIDATE_WORKER_LEASE_LOST",
+                    message="Candidate Build lease lost while yielding to interactive work",
+                )
+            await asyncio.sleep(0.1)
+        return yielded
 
     async def _index_candidate_generation_with_lease_heartbeat(
         self,

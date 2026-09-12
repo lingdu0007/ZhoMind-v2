@@ -261,11 +261,13 @@ async def execute_fresh(
     if policy.diagnostic_or_migration_only:
         raise evidence_required()
     gate = get_chat_admission_gate()
-    if not gate.try_admit():
+    reservation = gate.reserve(member_id=actor.username)
+    if reservation.state == "throttled":
         raise AppError(
             status_code=429,
-            code="CHAT_CONCURRENCY_LIMIT_REACHED",
-            message="the first-release concurrent chat limit has been reached",
+            code=reservation.reason or "CHAT_QUEUE_FULL",
+            message="request capacity is unavailable; retry later",
+            detail={"state": "throttled", "retryable": True},
         )
     admitted: AnswerExecutionHandle | None = None
 
@@ -308,11 +310,16 @@ async def execute_fresh(
                 query_conditions=[condition.model_dump() for condition in request.query_conditions or []],
                 inherit_conditions=False,
                 on_admitted=capture,
+                await_capacity=lambda: gate.wait_for_member(reservation, session=session),
             )
             projection = await owned_execution(session, result["message"]["id"], actor)
             runtime = (result["message"].get("rag_trace") or {}).get("runtime", {})
             actual_route = runtime.get("route_identity")
         except Exception as exc:
+            if isinstance(exc, AppError) and exc.code in {
+                "CHAT_QUEUE_TIMEOUT", "CHAT_QUEUE_FULL", "CHAT_MEMBER_LIMIT", "AUTH_INVALID_TOKEN",
+            }:
+                raise
             if admitted is None or admitted.assistant_message_id is None:
                 raise
             await session.refresh(actor)
@@ -349,7 +356,7 @@ async def execute_fresh(
             ),
         }
     finally:
-        gate.release()
+        gate.finish(reservation)
 
 
 async def owned_execution(session: AsyncSession, answer_id: str, actor: User) -> dict:

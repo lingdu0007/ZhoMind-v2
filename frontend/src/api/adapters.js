@@ -28,6 +28,10 @@ const awaitWithAbort = (operation, signal) => {
 };
 
 export const apiAdapter = {
+  async getOperations() {
+    const { data } = await http.get('/operations');
+    return unwrapData(data);
+  },
   // Auth
   async register(payload) {
     const { data } = await http.post('/auth/register', payload);

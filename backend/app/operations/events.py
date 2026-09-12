@@ -1,15 +1,22 @@
 import re
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.contracts.canonical import AnswerExecutionState, AnswerOutcome
 from app.extensions.provider_router import ADVANCE_REASONS, STOP_REASONS
 from app.model.operational_event import OperationalEvent
 from app.retention.policy import read_policy
 
-_SAFE_CODE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _GATE_OUTCOMES = {"passed", "rejected", "unavailable"}
+_ERROR_CODES = ADVANCE_REASONS | STOP_REASONS | {
+    "PROVIDER_TIMEOUT", "CHAT_QUEUE_FULL", "CHAT_MEMBER_LIMIT", "CHAT_QUEUE_TIMEOUT",
+    "ANSWER_EXECUTION_INTERRUPTED", "ANSWER_EXECUTION_STOPPED", "ANSWER_EXECUTION_FAILED",
+    "ANSWER_EXECUTION_PERSISTENCE_FAILED", "CHAT_STREAM_INTERRUPTED", "RETRIEVAL_FAILED",
+    "APPLICATION_FAILED", "ANSWER_EVIDENCE_WITHDRAWN",
+}
 
 
 class OperationalEventService:
@@ -29,16 +36,22 @@ class OperationalEventService:
         normalized_error: object = None,
         candidate_count: object = None,
         generation_route: object = None,
+        dimensions: object = None,
     ) -> None:
+        policy = await read_policy(self.session)
         event = OperationalEvent(
-            request_id=self._code(request_id) or "unknown-request",
-            route_outcome=route_outcome[:128],
+            request_id=self.request_identity(request_id),
+            route_outcome=self.route_class(route_outcome),
             duration_ms=max(0, int(duration_ms)),
-            gate_outcome=str(gate_outcome) if gate_outcome in _GATE_OUTCOMES else None,
-            provider_identity=self._code(provider_identity),
-            normalized_error=self._code(normalized_error),
-            candidate_count=self._count(candidate_count),
+            gate_outcome=gate_outcome if isinstance(gate_outcome, str) and gate_outcome in _GATE_OUTCOMES else None,
+            provider_identity=(
+                provider_identity if isinstance(provider_identity, str)
+                and re.fullmatch(r"configuration:[0-9a-f]{64}", provider_identity) else None
+            ),
+            normalized_error=self.error_code(normalized_error),
+            candidate_count=self.nonnegative_integer(candidate_count),
             generation_route=self.route_observation(generation_route),
+            dimensions={**self.dimensions(dimensions), "policy_identity": policy["identity"]},
         )
         self.session.add(event)
         await self.purge_expired()
@@ -55,17 +68,17 @@ class OperationalEventService:
             return None
         identity = value.get("route_identity")
         reason = value.get("route_reason")
-        if reason not in ADVANCE_REASONS | STOP_REASONS | {"succeeded"}:
+        if not isinstance(reason, str) or reason not in ADVANCE_REASONS | STOP_REASONS | {"succeeded"}:
             return None
         if identity is not None and not re.fullmatch(r"provider_route:[0-9a-f]{64}", str(identity)):
             return None
         attempts = []
-        for item in (value.get("provider_attempts") or [])[:4]:
+        raw_attempts = value.get("provider_attempts")
+        for item in (raw_attempts if isinstance(raw_attempts, list) else [])[:4]:
             if not isinstance(item, dict):
                 continue
             safe = {}
             for key, pattern in {
-                "provider": r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}",
                 "approval_identity": r"configuration:[0-9a-f]{64}",
                 "payload_sha256": r"[0-9a-f]{64}",
                 "snapshot_sha256": r"[0-9a-f]{64}",
@@ -74,21 +87,93 @@ class OperationalEventService:
                 if isinstance(candidate, str) and re.fullmatch(pattern, candidate):
                     safe[key] = candidate
             for key in ("attempt", "latency_ms"):
-                candidate = OperationalEventService._count(item.get(key))
+                candidate = OperationalEventService.nonnegative_integer(item.get(key))
                 if candidate is not None:
                     safe[key] = candidate
             code = item.get("error_code")
-            safe["error_code"] = code if code in ADVANCE_REASONS | STOP_REASONS else None
+            safe["error_code"] = code if isinstance(code, str) and code in ADVANCE_REASONS | STOP_REASONS else None
             attempts.append(safe)
         return {"route_identity": identity, "route_reason": reason, "attempts": attempts}
 
     @staticmethod
-    def _code(value: object) -> str | None:
-        if not isinstance(value, str):
+    def retained_route(value: object) -> dict | None:
+        if not isinstance(value, dict):
             return None
-        code = value.strip()
-        return code if _SAFE_CODE.fullmatch(code) else None
+        return OperationalEventService.route_observation({
+            "route_identity": value.get("route_identity"), "route_reason": value.get("route_reason"),
+            "provider_attempts": value.get("attempts"),
+        })
 
     @staticmethod
-    def _count(value: object) -> int | None:
+    def request_identity(value: object) -> str:
+        if isinstance(value, str):
+            try:
+                parsed = UUID(value)
+                if parsed.version == 4 and str(parsed) == value:
+                    return value
+            except ValueError:
+                pass
+        return "unknown-request"
+
+    @staticmethod
+    def error_code(value: object) -> str | None:
+        if value is None:
+            return None
+        return value if isinstance(value, str) and value in _ERROR_CODES else "APPLICATION_FAILED"
+
+    @staticmethod
+    def failure_category(value: object) -> str:
+        code = OperationalEventService.error_code(value)
+        if code == "application_failure":
+            return "application"
+        if code in ADVANCE_REASONS | STOP_REASONS | {"PROVIDER_TIMEOUT"}:
+            return "generation_provider"
+        return {
+            "CHAT_QUEUE_FULL": "queue", "CHAT_MEMBER_LIMIT": "queue", "CHAT_QUEUE_TIMEOUT": "queue",
+            "RETRIEVAL_FAILED": "retrieval", "ANSWER_EXECUTION_PERSISTENCE_FAILED": "persistence",
+            "CHAT_STREAM_INTERRUPTED": "stream",
+        }.get(code or "", "application")
+
+    @staticmethod
+    def route_class(value: object) -> str:
+        # Compare against registered templates, never a request path or free text.
+        from app.main import app
+
+        for path, operations in app.openapi()["paths"].items():
+            for method in operations:
+                for outcome in ("success", "client_error", "server_error"):
+                    expected = f"{method.upper()} {path}:{outcome}"
+                    if value == expected:
+                        return expected
+        return "unmatched"
+
+    @staticmethod
+    def dimensions(value: object) -> dict:
+        if not isinstance(value, dict):
+            return {}
+        safe: dict = {}
+        for key, allowed in {
+            "execution_state": {state.value for state in AnswerExecutionState},
+            "outcome": {outcome.value for outcome in AnswerOutcome},
+        }.items():
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate in allowed:
+                safe[key] = candidate
+        for key in ("configuration_identity", "policy_identity"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and re.fullmatch(r"configuration:[0-9a-f]{64}", candidate):
+                safe[key] = candidate
+        count = OperationalEventService.nonnegative_integer(value.get("evidence_count"))
+        if count is not None:
+            safe["evidence_count"] = count
+        raw_timings = value.get("stage_durations_ms")
+        if isinstance(raw_timings, dict):
+            safe["stage_durations_ms"] = {
+                key: duration for key in ("queue", "retrieval", "provider", "persistence", "stream", "application")
+                if (duration := OperationalEventService.nonnegative_integer(raw_timings.get(key))) is not None
+            }
+        return safe
+
+    @staticmethod
+    def nonnegative_integer(value: object) -> int | None:
         return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None

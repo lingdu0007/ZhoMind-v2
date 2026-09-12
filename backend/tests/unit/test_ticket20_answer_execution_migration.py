@@ -186,7 +186,7 @@ def test_answer_execution_tail_migration_adds_private_append_only_persistence(
         "published_knowledge_pointers",
         "candidate_publication_confirmations",
     }.issubset(tables)
-    assert revision == ("20260911_0027",)
+    assert revision == ("20260912_0028",)
 
 
 def test_answer_execution_migration_defines_postgresql_immutable_update_guards() -> None:

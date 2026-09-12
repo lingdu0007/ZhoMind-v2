@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping
+from time import perf_counter
 from typing import TypeVar
 
 from fastapi import APIRouter, Depends, Request
@@ -149,7 +150,16 @@ def _record_operational_context(request: Request, result: dict) -> None:
         ),
         {},
     )
+    execution = result.get("message", {}).get("answer_execution", {})
+    context = getattr(request.state, "operational_event", {})
+    dimensions = context.get("dimensions", {})
+    dimensions.update({
+        "execution_state": execution.get("state"),
+        "outcome": execution.get("outcome"),
+        "evidence_count": len(execution.get("item_identities") or []),
+    })
     request.state.operational_event = {
+        **context, "dimensions": dimensions,
         "generation_route": runtime,
         "gate_outcome": "passed" if gate.get("passed") is True else "rejected" if gate.get("passed") is False else "unavailable",
         "provider_identity": (
@@ -170,26 +180,78 @@ async def _run_admitted_chat(
     inherit_conditions: bool = False,
     progress: Callable[[str, str], Awaitable[None]] | None = None,
     on_admitted: Callable[[AnswerExecutionHandle], Awaitable[None]] | None = None,
+    operational: dict | None = None,
 ) -> dict:
     gate = get_chat_admission_gate()
-    if not gate.try_admit():
+    started = perf_counter()
+    stage_started = started
+    stage_name = "queue"
+    timings: dict[str, int] = {}
+    if operational is not None:
+        operational["dimensions"] = {
+            "configuration_identity": gate.configuration()["identity"], "stage_durations_ms": timings,
+        }
+    reservation = gate.reserve(member_id=user_id)
+    if reservation.state == "throttled":
+        if operational is not None:
+            operational["normalized_error"] = reservation.reason
+            operational["dimensions"]["execution_state"] = "throttled"
         raise AppError(
             status_code=429,
-            code="CHAT_CONCURRENCY_LIMIT_REACHED",
-            message="the first-release concurrent chat limit has been reached",
+            code=reservation.reason or "CHAT_QUEUE_FULL",
+            message="request capacity is unavailable; retry later",
+            detail={"state": "throttled", "retryable": True},
         )
+
+    def close_stage() -> None:
+        nonlocal stage_started
+        now = perf_counter()
+        timings[stage_name] = timings.get(stage_name, 0) + round((now - stage_started) * 1000)
+        stage_started = now
+
+    async def report(stage: str, message: str) -> None:
+        nonlocal stage_name
+        next_stage = {
+            "queued": "queue", "running": "application", "retrieval": "retrieval",
+            "generating": "provider", "persistence": "persistence",
+        }.get(stage)
+        if next_stage is not None and next_stage != stage_name:
+            close_stage()
+            stage_name = next_stage
+        if progress is not None:
+            await progress(stage, message)
+
+    async def await_capacity() -> None:
+        await gate.wait_for_member(reservation, session=service.session, progress=report)
+
     try:
+        if progress is not None and reservation.state == "queued":
+            await progress("queued", f"Waiting in queue: {gate.observe(reservation)['position']}")
         return await service.run_chat(
             user_id=user_id,
             question=question,
             session_id=session_id,
             query_conditions=query_conditions,
             inherit_conditions=inherit_conditions,
-            progress=progress,
+            progress=report,
             on_admitted=on_admitted,
+            await_capacity=await_capacity,
         )
+    except AppError as exc:
+        if operational is not None:
+            operational["normalized_error"] = exc.code
+            operational["dimensions"]["execution_state"] = "failed"
+        raise
+    except Exception:
+        if operational is not None:
+            operational["normalized_error"] = {
+                "retrieval": "RETRIEVAL_FAILED", "persistence": "ANSWER_EXECUTION_PERSISTENCE_FAILED",
+            }.get(stage_name, operational.get("normalized_error") or "APPLICATION_FAILED")
+            operational["dimensions"]["execution_state"] = "failed"
+        raise
     finally:
-        gate.release()
+        close_stage()
+        gate.finish(reservation)
 
 
 @router.post("")
@@ -200,9 +262,10 @@ async def chat(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     service = ChatService(session)
+    user_id, role = current_user.username, current_user.role
     result = await _run_admitted_chat(
         service,
-        user_id=current_user.username,
+        user_id=user_id,
         question=payload.message,
         session_id=payload.session_id,
         query_conditions=(
@@ -211,10 +274,11 @@ async def chat(
             else None
         ),
         inherit_conditions=payload.inherit_conditions,
+        operational=getattr(request.state, "operational_event", None),
     )
     _record_operational_context(request, result)
     return _ok(await service.project_current_chat_result(
-        result, user_id=current_user.username, role=current_user.role,
+        result, user_id=user_id, role=role,
     ))
 
 
@@ -226,6 +290,7 @@ async def chat_stream(
     session: AsyncSession = Depends(get_db_session),
 ) -> StreamingResponse:
     service = ChatService(session)
+    user_id, role = current_user.username, current_user.role
     progress_queue: asyncio.Queue[tuple[str, str, str] | None] = asyncio.Queue()
     admitted_execution: AnswerExecutionHandle | None = None
     completed_stream_result: dict | None = None
@@ -239,7 +304,7 @@ async def chat_stream(
         admitted_execution = execution
         await service.record_stream_delivery_pending(
             execution_id=execution.execution_id,
-            user_id=current_user.username,
+            user_id=user_id,
             session_id=execution.session_id,
         )
         if not isinstance(execution.assistant_message_id, str) or not execution.assistant_message_id:
@@ -250,7 +315,7 @@ async def chat_stream(
         try:
             return await _run_admitted_chat(
                 service,
-                user_id=current_user.username,
+                user_id=user_id,
                 question=payload.message,
                 session_id=payload.session_id,
                 query_conditions=(
@@ -261,6 +326,7 @@ async def chat_stream(
                 inherit_conditions=payload.inherit_conditions,
                 progress=progress,
                 on_admitted=remember_admitted,
+                operational=getattr(request.state, "operational_event", None),
             )
         finally:
             await progress_queue.put(None)
@@ -296,6 +362,9 @@ async def chat_stream(
     delivery_finished = False
 
     async def _record_incomplete_delivery(result: dict | None) -> None:
+        context = getattr(request.state, "operational_event", None)
+        if isinstance(context, dict):
+            context["normalized_error"] = "CHAT_STREAM_INTERRUPTED"
         message = result.get("message") if isinstance(result, dict) else None
         session_id = result.get("session_id") if isinstance(result, dict) else None
         execution_id = message.get("answer_execution_id") if isinstance(message, dict) else None
@@ -306,7 +375,7 @@ async def chat_stream(
             session_id = admitted_execution.session_id
         await service.record_stream_delivery_interruption(
             execution_id=execution_id,
-            user_id=current_user.username,
+            user_id=user_id,
             session_id=session_id,
         )
 
@@ -325,7 +394,7 @@ async def chat_stream(
             session_id = admitted_execution.session_id
         await service.record_stream_delivery_completion(
             execution_id=execution_id,
-            user_id=current_user.username,
+            user_id=user_id,
             session_id=session_id,
         )
 
@@ -334,7 +403,7 @@ async def chat_stream(
             return None
         return await service.get_answer_execution_projection(
             execution_id=admitted_execution.execution_id,
-            user_id=current_user.username,
+            user_id=user_id,
             session_id=admitted_execution.session_id,
         )
 
@@ -439,7 +508,7 @@ async def chat_stream(
                 completed_stream_result = result
                 consume_task_result(chat_task)
                 _record_operational_context(request, result)
-                projected_message = service.project_message(result["message"], current_user.role)
+                projected_message = service.project_message(result["message"], role)
 
                 if admitted_execution is None:
                     raise ValueError("completed stream has no admitted answer execution")
@@ -456,9 +525,9 @@ async def chat_stream(
                 projected_message = await service.refresh_pending_stream_message(
                     result["message"],
                     execution_id=admitted_execution.execution_id,
-                    user_id=current_user.username,
+                    user_id=user_id,
                     session_id=admitted_execution.session_id,
-                    role=current_user.role,
+                    role=role,
                 )
                 if projected_message.get("answer_execution") is not None:
                     yield _sse_event("answer_execution", {"answer_execution": projected_message["answer_execution"]})
