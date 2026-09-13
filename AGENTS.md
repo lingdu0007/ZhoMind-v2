@@ -4,8 +4,9 @@
 
 Work from the repository root. Before changing code, read the ticket, the
 parent PRD requirements it names, this file, and the normative contract for
-the domain being changed. Inspect the current implementation and focused tests
-before choosing an approach.
+the domain being changed. Follow `docs/agents/ticket-execution.md` for the
+required claim, TDD, verification, review, and closure sequence. Inspect the
+current implementation and focused tests before choosing an approach.
 
 The ticket defines the scoped deliverable and acceptance evidence. A ticket
 must not weaken a retained product invariant. When it intentionally replaces a
@@ -28,6 +29,17 @@ in the same change.
   local gate. Its Chinese mirror is a reader-facing translation, while English
   contract and ADR files are canonical for agent work.
 
+## Working Language
+
+- Use Chinese for user-facing progress updates, review summaries, questions,
+  blocker reports, and final responses.
+- Preserve the canonical language of repository artifacts. English PRDs,
+  contracts, ADRs, and existing English ticket prose remain English; update
+  their Chinese mirrors when required.
+- Keep commands, code identifiers, schema values, protocol names, error text,
+  and quoted source text in their original form when translation would reduce
+  precision.
+
 ## Durable Engineering Rules
 
 - Treat the server's current persisted facts as the authority for identity,
@@ -49,13 +61,36 @@ in the same change.
 
 - Preserve unrelated worktree changes. Do not reset, revert, or stage files
   outside the ticket's scope.
-- Drive behavior changes with focused tests first, then run the deterministic
-  checks from `README.md` that cover the changed surfaces.
+- Before editing, record the ticket owner or session, starting `BASE_SHA`,
+  current branch, and pre-existing worktree changes. Stop when ticket ownership
+  is uncertain.
+- Before writing tests, map every acceptance criterion to an approved public
+  test seam, an observable assertion, and any required negative case. The
+  repository owner has pre-approved the default seams and automatic risk
+  profiles in `docs/agents/ticket-execution.md`; ask only when a ticket truly
+  requires a new seam outside that policy.
+- Drive behavior changes as vertical TDD slices: one failing test at an
+  approved seam, the minimum implementation, and the affected focused tests
+  before the next slice.
+- For protected or cross-surface behavior, complete the review-risk matrix in
+  `docs/agents/ticket-execution.md`, including authority, immutable identity,
+  fail-closed behavior, state transitions, retries and races, legacy
+  compatibility, privacy, and projection equality.
+- Verify in layers: environment and baseline smoke, focused tests,
+  authenticated product-path tests, the applicable deterministic checks from
+  `README.md`, and separately declared deployment-only checks.
+- Never represent a skipped or unavailable Milvus, provider, PostgreSQL,
+  persistent-stack, ingress, or production check as completed acceptance.
 - When an English PRD, ADR, evidence report, or contract has a `.zh-CN.md`
   mirror, update the mirror in the same change and run
   `python3 scripts/check-docs-parity.py`.
-- Update the local ticket only after its acceptance criteria are demonstrably
-  met. Record the commands, results, and any remaining deployment-only risk
-  under its `## Comments` heading.
-- Run code review on the completed diff, address actionable findings, and
-  create a focused commit.
+- After focused and product-path verification passes, create one provisional
+  focused commit and review `BASE_SHA...HEAD` with both standards and
+  specification reviewers. Add a regression test for every behavioral
+  finding, amend the commit, and obtain fresh reviews of the final diff.
+- Do not mark a ticket resolved when a required reviewer is unavailable,
+  blocking findings remain, the final diff differs from the reviewed diff, or
+  an acceptance criterion lacks recorded evidence.
+- Keep the local ticket current throughout the work. Record the claim,
+  acceptance mapping, verification checkpoints, review findings and re-review,
+  final commit, and remaining deployment-only risks under `## Comments`.

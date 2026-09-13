@@ -14,6 +14,9 @@ ZhoMind-v2 是一个首发版本的 Team-Shared Knowledge Base 应用，处理�
 
 - [Agent Instructions](AGENTS.md) 规定必须遵循的实施、migration、privacy、
   verification 与交付纪律。
+- [Ticket 执行协议](docs/agents/ticket-execution.zh-CN.md) 定义必需的工作归属、
+  acceptance mapping、纵向 TDD、验证梯度、provisional-commit review 与 ticket
+  关闭顺序。
 - [Canonical Product Contracts](docs/contracts/canonical-product-contracts.zh-CN.md)
   定义稳定的产品 identity、state、authority、data boundary、audit shape、
   compatibility 与 product-path requirement。其中的 Pilot 身份权威与审计部分

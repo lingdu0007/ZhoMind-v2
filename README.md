@@ -15,6 +15,9 @@ long-lived product rules in every ticket:
 
 - [Agent instructions](AGENTS.md) define the mandatory implementation,
   migration, privacy, verification, and delivery discipline.
+- [Ticket Execution Protocol](docs/agents/ticket-execution.md) defines the
+  required ownership, acceptance mapping, vertical TDD, verification ladder,
+  provisional-commit review, and ticket-closure sequence.
 - [Canonical Product Contracts](docs/contracts/canonical-product-contracts.md)
   define stable product identities, states, authority, data boundaries, audit
   shapes, compatibility, and product-path requirements. Its Pilot Identity
